@@ -4,7 +4,7 @@ CMD := ./cmd/dotular
 .PHONY: build run tidy clean
 
 build:
-	go build -o $(BIN) $(CMD)
+	go build -o ./build/$(BIN) $(CMD)
 
 run:
 	go run $(CMD) $(ARGS)
@@ -13,7 +13,7 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f $(BIN)
+	rm -f ./build/$(BIN)
 
 # Quick smoke tests (uses --dry-run so nothing is mutated)
 test-list:
