@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/atomikpanda/dotular/internal/ageutil"
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
@@ -26,6 +27,7 @@ var (
 )
 
 func main() {
+	color.Init()
 	root := buildRoot()
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -251,7 +253,7 @@ func verifyCmd() *cobra.Command {
 				return err
 			}
 			if !allPassed {
-				fmt.Fprintln(os.Stderr, "\nsome verify checks failed")
+				fmt.Fprintln(os.Stderr, color.BoldRed("\nsome verify checks failed"))
 				os.Exit(1)
 			}
 			return nil
@@ -385,17 +387,26 @@ func logCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Printf("%-20s  %-8s  %-20s  %-8s  %s\n",
-				"TIME", "COMMAND", "MODULE", "OUTCOME", "ITEM")
-			fmt.Println(repeatStr("-", 90))
+			fmt.Println(color.Bold(fmt.Sprintf("%-20s  %-8s  %-20s  %-8s  %s",
+				"TIME", "COMMAND", "MODULE", "OUTCOME", "ITEM")))
+			fmt.Println(color.Dim(repeatStr("-", 90)))
 			for _, e := range entries {
 				ts := e.Time.Local().Format(time.DateTime)
 				outcome := e.Outcome
 				if e.Error != "" {
 					outcome += " (" + e.Error + ")"
 				}
-				fmt.Printf("%-20s  %-8s  %-20s  %-8s  %s\n",
-					ts, e.Command, e.Module, outcome, e.Item)
+				outcomePadded := fmt.Sprintf("%-8s", outcome)
+				switch e.Outcome {
+				case "success":
+					outcomePadded = color.Green(outcomePadded)
+				case "failure":
+					outcomePadded = color.BoldRed(outcomePadded)
+				case "skipped":
+					outcomePadded = color.Dim(outcomePadded)
+				}
+				fmt.Printf("%-20s  %-8s  %-20s  %s  %s\n",
+					ts, e.Command, e.Module, outcomePadded, e.Item)
 			}
 			fmt.Printf("\nlog: %s\n", audit.LogPath())
 			return nil
@@ -433,13 +444,23 @@ func registryCmd() *cobra.Command {
 					fmt.Println("(no cached registry modules)")
 					return nil
 				}
-				fmt.Printf("%-50s  %-8s  %s\n", "REF", "TRUST", "FETCHED")
-				fmt.Println(repeatStr("-", 80))
+				fmt.Println(color.Bold(fmt.Sprintf("%-50s  %-8s  %s", "REF", "TRUST", "FETCHED")))
+				fmt.Println(color.Dim(repeatStr("-", 80)))
 				for ref, entry := range lock.Registry {
 					ref := registry.ParseRef(ref)
-					fmt.Printf("%-50s  %-8s  %s\n",
+					trustStr := ref.Trust.String()
+					trustPadded := fmt.Sprintf("%-8s", trustStr)
+					switch trustStr {
+					case "official":
+						trustPadded = color.BoldGreen(trustPadded)
+					case "community":
+						trustPadded = color.Yellow(trustPadded)
+					default:
+						trustPadded = color.Dim(trustPadded)
+					}
+					fmt.Printf("%-50s  %s  %s\n",
 						ref.Raw,
-						ref.Trust.String(),
+						trustPadded,
 						entry.FetchedAt.Local().Format(time.DateTime),
 					)
 				}

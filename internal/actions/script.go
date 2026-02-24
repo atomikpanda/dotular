@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+
+	"github.com/atomikpanda/dotular/internal/color"
 )
 
 // ScriptAction runs a shell script, either from a local path or a remote URL.
@@ -22,7 +24,7 @@ func (a *ScriptAction) Describe() string {
 
 func (a *ScriptAction) Run(ctx context.Context, dryRun bool) error {
 	if dryRun {
-		fmt.Printf("    [dry-run] run script: %s (via %s)\n", a.Script, a.Via)
+		fmt.Printf("    %s\n", color.Dim(fmt.Sprintf("[dry-run] run script: %s (via %s)", a.Script, a.Via)))
 		return nil
 	}
 	switch a.Via {

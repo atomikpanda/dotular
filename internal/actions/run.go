@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+
+	"github.com/atomikpanda/dotular/internal/color"
 )
 
 // RunAction executes an inline shell command declared directly in the module.
@@ -34,7 +36,7 @@ func (a *RunAction) Describe() string {
 
 func (a *RunAction) Run(ctx context.Context, dryRun bool) error {
 	if dryRun {
-		fmt.Printf("    [dry-run] %s\n", a.Describe())
+		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))
 		return nil
 	}
 

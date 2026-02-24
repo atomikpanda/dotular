@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -39,7 +40,7 @@ func (a *BinaryAction) Describe() string {
 
 func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	if dryRun {
-		fmt.Printf("    [dry-run] %s\n", a.Describe())
+		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))
 		return nil
 	}
 

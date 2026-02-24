@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/ageutil"
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -107,9 +108,9 @@ func (a *FileAction) Run(ctx context.Context, dryRun bool) error {
 	target := filepath.Join(dest, filepath.Base(a.Source))
 
 	if dryRun {
-		fmt.Printf("    [dry-run] %s\n", a.Describe())
+		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))
 		if ps := a.PermissionsStatus(); ps != "" {
-			fmt.Printf("              %s\n", ps)
+			fmt.Printf("    %s\n", color.Dim("          "+ps))
 		}
 		return nil
 	}
@@ -179,7 +180,7 @@ func (a *FileAction) runSync(target string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return fmt.Errorf("create destination directory: %w", err)
 		}
-		fmt.Printf("    sync: system copy missing, pushing repo -> system\n")
+		fmt.Printf("    %s\n", color.Cyan("sync: system copy missing, pushing repo -> system"))
 		if a.Encrypted {
 			return a.decryptTo(repoPath, target)
 		}
@@ -189,7 +190,7 @@ func (a *FileAction) runSync(target string) error {
 		if err := os.MkdirAll(filepath.Dir(a.Source), 0o755); err != nil {
 			return fmt.Errorf("create repo directory: %w", err)
 		}
-		fmt.Printf("    sync: repo copy missing, pulling system -> repo\n")
+		fmt.Printf("    %s\n", color.Cyan("sync: repo copy missing, pulling system -> repo"))
 		if a.Encrypted {
 			return a.encryptFrom(target, repoPath)
 		}
@@ -202,7 +203,7 @@ func (a *FileAction) runSync(target string) error {
 			return fmt.Errorf("sync: compare: %w", err)
 		}
 		if equal {
-			fmt.Printf("    sync: already in sync\n")
+			fmt.Printf("    %s\n", color.Dim("sync: already in sync"))
 			return nil
 		}
 		return a.resolveConflict(repoPath, target)
@@ -231,11 +232,11 @@ func (a *FileAction) syncEqual(repoPath, sysPath string) (bool, error) {
 
 func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 	name := filepath.Base(a.Source)
-	fmt.Printf("\n    CONFLICT: %s differs between repo and system\n", name)
+	fmt.Printf("\n    %s\n", color.BoldYellow("CONFLICT: "+name+" differs between repo and system"))
 	fmt.Printf("      [1] keep repo   (push repo -> system)\n")
 	fmt.Printf("      [2] keep system (pull system -> repo)\n")
 	fmt.Printf("      [s] skip\n")
-	fmt.Printf("    > ")
+	fmt.Printf("    %s ", color.Bold(">"))
 
 	choice, err := readLine(os.Stdin)
 	if err != nil {
@@ -244,19 +245,19 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 
 	switch strings.ToLower(strings.TrimSpace(choice)) {
 	case "1":
-		fmt.Printf("    -> pushing repo copy to system\n")
+		fmt.Printf("    %s pushing repo copy to system\n", color.Dim("->"))
 		if a.Encrypted {
 			return a.decryptTo(repoPath, sysPath)
 		}
 		return copyFile(repoPath, sysPath)
 	case "2":
-		fmt.Printf("    -> pulling system copy to repo\n")
+		fmt.Printf("    %s pulling system copy to repo\n", color.Dim("->"))
 		if a.Encrypted {
 			return a.encryptFrom(sysPath, repoPath)
 		}
 		return copyFile(sysPath, a.Source)
 	default:
-		fmt.Printf("    -> skipped\n")
+		fmt.Printf("    %s\n", color.Dim("-> skipped"))
 		return nil
 	}
 }

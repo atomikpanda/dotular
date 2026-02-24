@@ -13,6 +13,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/audit"
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/shell"
@@ -29,8 +30,8 @@ type Runner struct {
 	OS          string
 	MachineTags []string
 	Out         io.Writer
-	AgeKey          *ageutil.Key
-	Command         string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
+	AgeKey           *ageutil.Key
+	Command          string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
 	DirectionOverride string // when set, overrides direction on all non-link file items
 }
 
@@ -59,7 +60,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 	for _, mod := range r.Config.Modules {
 		if !r.matchesTags(mod) {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "\n==> %s  [skip: tag mismatch]\n", mod.Name)
+				fmt.Fprintf(r.Out, "\n%s\n", color.Dim("==> "+mod.Name+"  [skip: tag mismatch]"))
 			}
 			continue
 		}
@@ -72,7 +73,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 
 // ApplyModule applies a single module with hooks, snapshot/rollback, and audit.
 func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) error {
-	fmt.Fprintf(r.Out, "\n==> %s\n", mod.Name)
+	fmt.Fprintf(r.Out, "\n%s\n", color.BoldCyan("==> "+mod.Name))
 
 	if err := r.runHook(ctx, mod.Hooks.BeforeApply, "module", mod.Name, "before_apply"); err != nil {
 		return err
@@ -90,9 +91,9 @@ func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) error {
 	applyErr := r.applyItems(ctx, mod, snap)
 
 	if applyErr != nil && snap != nil {
-		fmt.Fprintf(r.Out, "  [rollback] restoring snapshot after failure in %q\n", mod.Name)
+		fmt.Fprintf(r.Out, "  %s\n", color.BoldYellow(fmt.Sprintf("[rollback] restoring snapshot after failure in %q", mod.Name)))
 		if restoreErr := snap.Restore(); restoreErr != nil {
-			fmt.Fprintf(r.Out, "  [rollback] restore error: %v\n", restoreErr)
+			fmt.Fprintf(r.Out, "  %s\n", color.BoldYellow(fmt.Sprintf("[rollback] restore error: %v", restoreErr)))
 		}
 		snap.Discard()
 		return applyErr
@@ -135,13 +136,13 @@ func (r *Runner) VerifyAll(ctx context.Context) (allPassed bool, err error) {
 // It reports pass/fail per item without modifying any state.
 // Returns (false, nil) when checks ran but some failed.
 func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed bool, err error) {
-	fmt.Fprintf(r.Out, "\n==> %s\n", mod.Name)
+	fmt.Fprintf(r.Out, "\n%s\n", color.BoldCyan("==> "+mod.Name))
 	allPassed = true
 
 	for _, item := range mod.Items {
 		if item.Verify == "" {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  ----  %s  [no verify]\n", item.Type())
+				fmt.Fprintf(r.Out, "  %s\n", color.Dim("----  "+item.Type()+"  [no verify]"))
 			}
 			continue
 		}
@@ -156,9 +157,9 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 		if verifyErr != nil {
 			outcome = "failure"
 			allPassed = false
-			fmt.Fprintf(r.Out, "  FAIL  %s\n", action.Describe())
+			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldRed("FAIL"), action.Describe())
 		} else {
-			fmt.Fprintf(r.Out, "  PASS  %s\n", action.Describe())
+			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldGreen("PASS"), action.Describe())
 		}
 
 		audit.Log(audit.Entry{
@@ -211,7 +212,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 	if skip {
 		if r.Verbose {
-			fmt.Fprintf(r.Out, "  skip (%s not applicable on %s)\n", item.Type(), r.OS)
+			fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("skip (%s not applicable on %s)", item.Type(), r.OS)))
 		}
 		return nil
 	}
@@ -224,7 +225,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		}
 		if exitsZero {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  skip [skip_if] %s\n", action.Describe())
+				fmt.Fprintf(r.Out, "  %s\n", color.Dim("skip [skip_if] "+action.Describe()))
 			}
 			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
 			return nil
@@ -239,7 +240,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		}
 		if applied {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  skip [already applied] %s\n", action.Describe())
+				fmt.Fprintf(r.Out, "  %s\n", color.Dim("skip [already applied] "+action.Describe()))
 			}
 			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
 			return nil
@@ -274,7 +275,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 
 	// --- run ---
-	fmt.Fprintf(r.Out, "  -> %s\n", action.Describe())
+	fmt.Fprintf(r.Out, "  %s %s\n", color.Dim("->"), action.Describe())
 	if fa, ok := action.(*actions.FileAction); ok && fa.Permissions != "" {
 		if ps := fa.PermissionsStatus(); ps != "" {
 			fmt.Fprintf(r.Out, "     %s\n", ps)
@@ -410,11 +411,11 @@ func (r *Runner) runHook(ctx context.Context, cmd, scope, name, hookName string)
 		return nil
 	}
 	if r.DryRun {
-		fmt.Fprintf(r.Out, "  [dry-run] hook %s.%s: %s\n", hookName, scope, cmd)
+		fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("[dry-run] hook %s.%s: %s", hookName, scope, cmd)))
 		return nil
 	}
 	if r.Verbose {
-		fmt.Fprintf(r.Out, "  hook %s (%s %q)\n", hookName, scope, name)
+		fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("hook %s (%s %q)", hookName, scope, name)))
 	}
 	if err := shell.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("hook %s failed on %s %q: %w", hookName, scope, name, err)

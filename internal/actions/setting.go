@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strconv"
+
+	"github.com/atomikpanda/dotular/internal/color"
 )
 
 // SettingAction writes a system preference.
@@ -23,7 +25,7 @@ func (a *SettingAction) Describe() string {
 
 func (a *SettingAction) Run(ctx context.Context, dryRun bool) error {
 	if dryRun {
-		fmt.Printf("    [dry-run] set: %s %s = %v\n", a.Domain, a.Key, a.Value)
+		fmt.Printf("    %s\n", color.Dim(fmt.Sprintf("[dry-run] set: %s %s = %v", a.Domain, a.Key, a.Value)))
 		return nil
 	}
 	switch runtime.GOOS {

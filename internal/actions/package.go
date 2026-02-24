@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/atomikpanda/dotular/internal/color"
 )
 
 // PackageAction installs a package via the specified package manager.
@@ -29,7 +31,7 @@ func (a *PackageAction) Run(ctx context.Context, dryRun bool) error {
 		return err
 	}
 	if dryRun {
-		fmt.Printf("    [dry-run] %s %s\n", args[0], strings.Join(args[1:], " "))
+		fmt.Printf("    %s\n", color.Dim(fmt.Sprintf("[dry-run] %s %s", args[0], strings.Join(args[1:], " "))))
 		return nil
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)

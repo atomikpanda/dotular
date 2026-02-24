@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -70,7 +71,7 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 	target := filepath.Join(dest, filepath.Base(a.Source))
 
 	if dryRun {
-		fmt.Printf("    [dry-run] %s\n", a.Describe())
+		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))
 		return nil
 	}
 
@@ -91,14 +92,14 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 		case !repoExists && !sysExists:
 			return fmt.Errorf("sync-dir: neither repo nor system directory exists (%s)", filepath.Base(a.Source))
 		case repoExists && !sysExists:
-			fmt.Printf("    sync-dir: system copy missing, pushing\n")
+			fmt.Printf("    %s\n", color.Cyan("sync-dir: system copy missing, pushing"))
 			return copyDir(a.Source, target)
 		case !repoExists && sysExists:
-			fmt.Printf("    sync-dir: repo copy missing, pulling\n")
+			fmt.Printf("    %s\n", color.Cyan("sync-dir: repo copy missing, pulling"))
 			return copyDir(target, a.Source)
 		default:
 			// Both exist: push repo over system (per-file sync requires file items).
-			fmt.Printf("    sync-dir: both exist, pushing repo -> system\n")
+			fmt.Printf("    %s\n", color.Cyan("sync-dir: both exist, pushing repo -> system"))
 			return copyDir(a.Source, target)
 		}
 	default: // push
