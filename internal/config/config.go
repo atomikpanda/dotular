@@ -17,21 +17,31 @@ type Config struct {
 }
 
 // AgeConfig holds age encryption credentials for encrypted file items.
-// Exactly one of Identity or Passphrase should be set.
-// Passphrase supports the "env:VARNAME" syntax to read from an environment variable.
 type AgeConfig struct {
-	Identity   string `yaml:"identity,omitempty"`   // path to age identity file
+	Identity   string `yaml:"identity,omitempty"`
 	Passphrase string `yaml:"passphrase,omitempty"` // literal or "env:VARNAME"
 }
 
 // Module groups related items under a named application or topic.
+// A module may reference a registry module via From; at resolve time the
+// registry module's items are fetched, parameterised, and merged with Override.
 type Module struct {
-	Name        string      `yaml:"name"`
-	Items       []Item      `yaml:"items"`
+	// Local module identity.
+	Name        string      `yaml:"name,omitempty"`
+	Items       []Item      `yaml:"items,omitempty"`
 	OnlyTags    []string    `yaml:"only_tags,omitempty"`
 	ExcludeTags []string    `yaml:"exclude_tags,omitempty"`
 	Hooks       ModuleHooks `yaml:"hooks,omitempty"`
+
+	// Registry module reference (mutually exclusive with Items in source YAML;
+	// after resolution Items is populated from the registry module).
+	From     string         `yaml:"from,omitempty"`     // e.g. "dotular.dev/modules/neovim@1.0.0"
+	With     map[string]any `yaml:"with,omitempty"`     // parameter overrides
+	Override []Item         `yaml:"override,omitempty"` // items that replace matching registry items
 }
+
+// IsRegistry returns true when this module is backed by a registry reference.
+func (m Module) IsRegistry() bool { return m.From != "" }
 
 // ModuleHooks are shell commands that run around module application.
 type ModuleHooks struct {
@@ -59,24 +69,36 @@ type Item struct {
 	File        string      `yaml:"file,omitempty"`
 	Destination PlatformMap `yaml:"destination,omitempty"`
 	Direction   string      `yaml:"direction,omitempty"` // push | pull | sync (default: push)
-	Link        bool        `yaml:"link,omitempty"`      // symlink instead of copy
-	Permissions string      `yaml:"permissions,omitempty"` // Unix octal string, e.g. "0600"
-	Encrypted   bool        `yaml:"encrypted,omitempty"` // stored encrypted with age
+	Link        bool        `yaml:"link,omitempty"`
+	Permissions string      `yaml:"permissions,omitempty"` // Unix octal, e.g. "0600"
+	Encrypted   bool        `yaml:"encrypted,omitempty"`
+
+	// --- directory ---
+	// Directory manages a whole directory tree. Supports the same direction,
+	// link, and permissions semantics as file items.
+	Directory string `yaml:"directory,omitempty"`
+
+	// --- binary ---
+	// Binary downloads a pre-built binary from Source URLs, extracts it, and
+	// installs it to InstallTo. Version is used for template rendering and
+	// can be referenced in Source URLs via {{ .version }}.
+	Binary    string      `yaml:"binary,omitempty"`
+	Version   string      `yaml:"version,omitempty"`
+	Source    PlatformMap `yaml:"source,omitempty"`  // download URL per OS
+	InstallTo string      `yaml:"install_to,omitempty"` // destination directory
+
+	// --- run ---
+	// Run executes an inline shell command. After is informational: it names
+	// the item type this run step logically depends on (ordering is determined
+	// by declaration order in the items list).
+	Run   string `yaml:"run,omitempty"`
+	After string `yaml:"after,omitempty"`
 
 	// --- shared ---
-	// Via specifies the package manager (brew, winget, …) or script source (remote, local).
-	Via string `yaml:"via,omitempty"`
-
-	// --- idempotency ---
-	// SkipIf is a shell command; if it exits 0 the item is skipped.
+	Via    string `yaml:"via,omitempty"`
 	SkipIf string `yaml:"skip_if,omitempty"`
-
-	// --- verification ---
-	// Verify is a shell command run after apply; non-zero exit is a failure.
 	Verify string `yaml:"verify,omitempty"`
-
-	// --- hooks ---
-	Hooks ItemHooks `yaml:"hooks,omitempty"`
+	Hooks  ItemHooks `yaml:"hooks,omitempty"`
 }
 
 // ItemHooks are shell commands that run around individual item application.
@@ -98,12 +120,42 @@ func (i Item) Type() string {
 		return "setting"
 	case i.File != "":
 		return "file"
+	case i.Directory != "":
+		return "directory"
+	case i.Binary != "":
+		return "binary"
+	case i.Run != "":
+		return "run"
 	default:
 		return "unknown"
 	}
 }
 
-// EffectiveDirection returns the file transfer direction, defaulting to "push".
+// PrimaryValue returns the primary field value used for item matching (e.g.
+// when merging registry overrides).
+func (i Item) PrimaryValue() string {
+	switch i.Type() {
+	case "package":
+		return i.Package
+	case "script":
+		return i.Script
+	case "setting":
+		return i.Setting
+	case "file":
+		return i.File
+	case "directory":
+		return i.Directory
+	case "binary":
+		return i.Binary
+	case "run":
+		return i.Run
+	default:
+		return ""
+	}
+}
+
+// EffectiveDirection returns the file/directory transfer direction, defaulting
+// to "push".
 func (i Item) EffectiveDirection() string {
 	switch i.Direction {
 	case "pull", "sync":
@@ -113,11 +165,14 @@ func (i Item) EffectiveDirection() string {
 	}
 }
 
-// PlatformMap holds per-OS values for a field.
+// PlatformMap holds a per-OS value. It accepts two YAML forms:
+//
+//   - Scalar: a single string applied to all platforms.
+//   - Mapping: per-OS keys (macos, windows, linux).
 type PlatformMap struct {
-	MacOS   string `yaml:"macos,omitempty"`
-	Windows string `yaml:"windows,omitempty"`
-	Linux   string `yaml:"linux,omitempty"`
+	MacOS   string
+	Windows string
+	Linux   string
 }
 
 // ForOS returns the value for the given runtime.GOOS string.
@@ -134,6 +189,50 @@ func (p PlatformMap) ForOS(goos string) string {
 	}
 }
 
+// IsZero reports whether all platform values are empty.
+func (p PlatformMap) IsZero() bool {
+	return p.MacOS == "" && p.Windows == "" && p.Linux == ""
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler. It accepts both a scalar string
+// (used for all platforms) and the standard macos/windows/linux mapping.
+func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		p.MacOS = value.Value
+		p.Windows = value.Value
+		p.Linux = value.Value
+		return nil
+	case yaml.MappingNode:
+		type raw struct {
+			MacOS   string `yaml:"macos"`
+			Windows string `yaml:"windows"`
+			Linux   string `yaml:"linux"`
+		}
+		var m raw
+		if err := value.Decode(&m); err != nil {
+			return err
+		}
+		p.MacOS, p.Windows, p.Linux = m.MacOS, m.Windows, m.Linux
+		return nil
+	default:
+		return fmt.Errorf("destination/source must be a string or macos/windows/linux mapping")
+	}
+}
+
+// MarshalYAML implements yaml.Marshaler so round-trips work correctly.
+func (p PlatformMap) MarshalYAML() (any, error) {
+	// If all values are identical (set from a scalar), marshal back as scalar.
+	if p.MacOS != "" && p.MacOS == p.Windows && p.MacOS == p.Linux {
+		return p.MacOS, nil
+	}
+	return map[string]string{
+		"macos":   p.MacOS,
+		"windows": p.Windows,
+		"linux":   p.Linux,
+	}, nil
+}
+
 // Load reads and parses a config file. It accepts both the new mapping format
 // (with a "modules" key) and the legacy bare-sequence format.
 func Load(path string) (Config, error) {
@@ -142,13 +241,12 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 
-	// Parse into a raw YAML node so we can inspect the root kind.
 	var root yaml.Node
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 	if root.Kind == 0 || len(root.Content) == 0 {
-		return Config{}, nil // empty file
+		return Config{}, nil
 	}
 
 	doc := root.Content[0]
@@ -160,7 +258,6 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	case yaml.SequenceNode:
-		// Legacy format: bare list of modules.
 		if err := doc.Decode(&cfg.Modules); err != nil {
 			return Config{}, fmt.Errorf("parse config (legacy format): %w", err)
 		}

@@ -177,7 +177,8 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapshot.Snapshot) error {
 	hasSyncItem := false
 	for _, item := range mod.Items {
-		if item.Type() == "file" && r.fileDirection(item) == "sync" {
+		t := item.Type()
+		if (t == "file" || t == "directory") && r.fileDirection(item) == "sync" {
 			hasSyncItem = true
 			break
 		}
@@ -246,7 +247,8 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 
 	// --- item hooks: before ---
-	isSync := item.Type() == "file" && r.fileDirection(item) == "sync"
+	itemType := item.Type()
+	isSync := (itemType == "file" || itemType == "directory") && r.fileDirection(item) == "sync"
 	if err := r.runHook(ctx, item.Hooks.BeforeApply, "item", action.Describe(), "before_apply"); err != nil {
 		return fmt.Errorf("module %q: %w", mod.Name, err)
 	}
@@ -257,10 +259,14 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 
 	// --- snapshot destination before modification ---
-	if snap != nil && item.Type() == "file" {
+	if snap != nil && (itemType == "file" || itemType == "directory") {
 		dest := item.Destination.ForOS(r.OS)
-		if dest != "" {
-			destPath := filepath.Join(platform.ExpandPath(dest), filepath.Base(item.File))
+		srcName := item.File
+		if itemType == "directory" {
+			srcName = item.Directory
+		}
+		if dest != "" && srcName != "" {
+			destPath := filepath.Join(platform.ExpandPath(dest), filepath.Base(srcName))
 			if err := snap.Record(destPath); err != nil {
 				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
 			}
@@ -343,6 +349,38 @@ func (r *Runner) buildAction(item config.Item) (actions.Action, bool, error) {
 			Encrypted:   item.Encrypted,
 			AgeKey:      r.AgeKey,
 		}, false, nil
+
+	case "directory":
+		dest := item.Destination.ForOS(r.OS)
+		if dest == "" {
+			return nil, true, nil
+		}
+		return &actions.DirectoryAction{
+			Source:      item.Directory,
+			Destination: dest,
+			Direction:   r.fileDirection(item),
+			Link:        item.Link,
+			Permissions: item.Permissions,
+		}, false, nil
+
+	case "binary":
+		sourceURL := item.Source.ForOS(r.OS)
+		if sourceURL == "" {
+			return nil, true, nil // no binary for this OS
+		}
+		installTo := item.InstallTo
+		if installTo == "" {
+			installTo = "~/.local/bin"
+		}
+		return &actions.BinaryAction{
+			Name:      item.Binary,
+			Version:   item.Version,
+			SourceURL: sourceURL,
+			InstallTo: installTo,
+		}, false, nil
+
+	case "run":
+		return &actions.RunAction{Command: item.Run, After: item.After}, false, nil
 
 	case "setting":
 		return &actions.SettingAction{

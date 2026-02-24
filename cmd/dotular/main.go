@@ -12,6 +12,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
+	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/runner"
 	"github.com/atomikpanda/dotular/internal/tags"
 )
@@ -21,6 +22,7 @@ var (
 	dryRun     bool
 	verbose    bool
 	noAtomic   bool
+	noCache    bool
 )
 
 func main() {
@@ -43,6 +45,7 @@ and Linux using a single YAML file.`,
 	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "print actions without executing them")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "show skipped items and extra output")
 	root.PersistentFlags().BoolVar(&noAtomic, "no-atomic", false, "disable snapshot/rollback per module")
+	root.PersistentFlags().BoolVar(&noCache, "no-cache", false, "re-fetch registry modules from the network")
 
 	root.AddCommand(
 		applyCmd(),
@@ -57,17 +60,29 @@ and Linux using a single YAML file.`,
 		decryptCmd(),
 		tagCmd(),
 		logCmd(),
+		registryCmd(),
 	)
 
 	return root
 }
 
+// loadConfig parses the raw config file without registry resolution.
 func loadConfig() (config.Config, error) {
 	cfg, err := config.Load(configFile)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load config %q: %w", configFile, err)
 	}
 	return cfg, nil
+}
+
+// loadAndResolveConfig parses the config and resolves any registry module
+// references, fetching remote modules and applying param/override logic.
+func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return registry.Resolve(ctx, cfg, configFile, noCache)
 }
 
 func newRunner(cfg config.Config) *runner.Runner {
@@ -85,12 +100,12 @@ func applyCmd() *cobra.Command {
   dotular apply --dry-run
   dotular apply --no-atomic`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			ctx := context.Background()
+			cfg, err := loadAndResolveConfig(ctx)
 			if err != nil {
 				return err
 			}
 			r := newRunner(cfg)
-			ctx := context.Background()
 
 			if len(args) == 0 {
 				return r.ApplyAll(ctx)
@@ -111,9 +126,6 @@ func applyCmd() *cobra.Command {
 
 // --- push / pull / sync ------------------------------------------------------
 
-// directionCmd builds a push, pull, or sync command. All three work like
-// apply but set DirectionOverride so every non-link file item uses the given
-// direction regardless of what is declared in the YAML.
 func directionCmd(direction, short string) *cobra.Command {
 	return &cobra.Command{
 		Use:   fmt.Sprintf("%s [module...]", direction),
@@ -122,14 +134,14 @@ func directionCmd(direction, short string) *cobra.Command {
   dotular %[1]s "Visual Studio Code"
   dotular %[1]s --dry-run`, direction),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			ctx := context.Background()
+			cfg, err := loadAndResolveConfig(ctx)
 			if err != nil {
 				return err
 			}
 			r := newRunner(cfg)
 			r.Command = direction
 			r.DirectionOverride = direction
-			ctx := context.Background()
 
 			if len(args) == 0 {
 				return r.ApplyAll(ctx)
@@ -155,7 +167,8 @@ func listCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all modules defined in the config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			ctx := context.Background()
+			cfg, err := loadAndResolveConfig(ctx)
 			if err != nil {
 				return err
 			}
@@ -174,12 +187,13 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show what would be applied for the current platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			ctx := context.Background()
+			cfg, err := loadAndResolveConfig(ctx)
 			if err != nil {
 				return err
 			}
 			r := runner.New(cfg, true, true, false)
-			return r.ApplyAll(context.Background())
+			return r.ApplyAll(ctx)
 		},
 	}
 }
@@ -205,13 +219,13 @@ func verifyCmd() *cobra.Command {
 		Example: `  dotular verify
   dotular verify "Visual Studio Code"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := loadConfig()
+			ctx := context.Background()
+			cfg, err := loadAndResolveConfig(ctx)
 			if err != nil {
 				return err
 			}
 			r := runner.New(cfg, false, verbose, false)
 			r.Command = "verify"
-			ctx := context.Background()
 
 			var allPassed bool
 			if len(args) == 0 {
@@ -390,6 +404,79 @@ func logCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&moduleFilter, "module", "", "filter log by module name")
 	cmd.Flags().IntVar(&limit, "limit", 50, "maximum number of entries to show")
+	return cmd
+}
+
+// --- registry ----------------------------------------------------------------
+
+func registryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "registry",
+		Short: "Manage the local registry cache",
+	}
+
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "list",
+			Short: "List cached registry modules",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				cfg, err := loadConfig()
+				if err != nil {
+					return err
+				}
+				lockPath := registry.LockPath(configFile)
+				lock, err := registry.LoadLock(lockPath)
+				if err != nil {
+					return err
+				}
+				if len(lock.Registry) == 0 {
+					fmt.Println("(no cached registry modules)")
+					return nil
+				}
+				fmt.Printf("%-50s  %-8s  %s\n", "REF", "TRUST", "FETCHED")
+				fmt.Println(repeatStr("-", 80))
+				for ref, entry := range lock.Registry {
+					ref := registry.ParseRef(ref)
+					fmt.Printf("%-50s  %-8s  %s\n",
+						ref.Raw,
+						ref.Trust.String(),
+						entry.FetchedAt.Local().Format(time.DateTime),
+					)
+				}
+				_ = cfg
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "clear",
+			Short: "Remove all cached registry modules",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if err := registry.ClearCache(); err != nil {
+					return err
+				}
+				fmt.Println("registry cache cleared")
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "update",
+			Short: "Re-fetch all registry modules referenced in the config",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ctx := context.Background()
+				// Force re-fetch by passing noCache=true.
+				cfg, err := loadConfig()
+				if err != nil {
+					return err
+				}
+				_, err = registry.Resolve(ctx, cfg, configFile, true)
+				if err != nil {
+					return err
+				}
+				fmt.Println("registry modules updated")
+				return nil
+			},
+		},
+	)
 	return cmd
 }
 

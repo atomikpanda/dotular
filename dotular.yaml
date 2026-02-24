@@ -1,10 +1,8 @@
-# Age encryption key (optional — required only for encrypted: true items).
-# Passphrase supports "env:VARNAME" to read from an environment variable.
 age:
   identity: ~/.config/dotular/identity.txt
-  # passphrase: env:DOTULAR_AGE_PASSPHRASE
 
 modules:
+  # --- local module -----------------------------------------------------------
   - name: homebrew
     hooks:
       before_apply: echo "==> setting up Homebrew"
@@ -14,6 +12,16 @@ modules:
         skip_if: command -v brew
         verify: brew --version
 
+  # --- registry module --------------------------------------------------------
+  # - from: dotular.dev/modules/neovim@1.0.0
+  #   with:
+  #     neovim_version: "0.10.2"
+  #   override:
+  #     - directory: nvim
+  #       direction: push
+  #       destination: ~/.config/nvim
+
+  # --- local module with new item types ---------------------------------------
   - name: Visual Studio Code
     only_tags: [darwin, linux]
     hooks:
@@ -42,22 +50,20 @@ modules:
           macos: ~/Library/Application Support/Code/User
           windows: '%APPDATA%\\Code\\User'
 
-  - name: Spotify
+  - name: Neovim (manual)
     items:
-      - package: spotify
-        via: brew-cask
+      - binary: nvim
+        version: "0.10.2"
+        source:
+          macos: https://github.com/neovim/neovim/releases/download/v0.10.2/nvim-macos-arm64.tar.gz
+          linux: https://github.com/neovim/neovim/releases/download/v0.10.2/nvim-linux-x86_64.tar.gz
+        install_to: ~/.local/bin
+        skip_if: test -f ~/.local/bin/nvim
+        verify: nvim --version
 
-      - package: Spotify.Spotify
-        via: winget
+      - directory: nvim
+        direction: push
+        destination: ~/.config
 
-      - setting: com.spotify.client
-        key: someCustomSetting
-        value: true
-
-      - file: settings.xml
-        direction: sync
-        encrypted: true
-        permissions: "0600"
-        destination:
-          macos: ~/Library/Application Support/Spotify
-          windows: '%APPDATA%\\Spotify'
+      - run: nvim --headless "+Lazy sync" +qa
+        after: directory
