@@ -9,6 +9,11 @@ import (
 )
 
 // PackageAction installs a package via the specified package manager.
+//
+// Idempotency: PackageAction implements Idempotent. IsApplied queries the
+// package manager (e.g. `brew list`, `winget list`) to check whether the
+// package is already installed. If the check command is unavailable the
+// query is skipped and the install proceeds normally.
 type PackageAction struct {
 	Package string
 	Manager string // e.g. "brew", "winget", "apt"
@@ -34,7 +39,59 @@ func (a *PackageAction) Run(ctx context.Context, dryRun bool) error {
 	return cmd.Run()
 }
 
-// installArgs returns the command + arguments needed to install pkg with the given manager.
+// IsApplied returns true when the package is already installed according to
+// the package manager. Returns (false, nil) when the check is unsupported.
+func (a *PackageAction) IsApplied(ctx context.Context) (bool, error) {
+	args := checkArgs(a.Manager, a.Package)
+	if args == nil {
+		return false, nil // no check available for this manager
+	}
+	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	if _, ok := err.(*exec.ExitError); ok {
+		return false, nil // non-zero = not installed
+	}
+	// The check binary itself could not be executed — don't block the install.
+	return false, nil
+}
+
+// checkArgs returns the command to test whether a package is installed.
+// Returns nil when no check is defined for the manager.
+func checkArgs(manager, pkg string) []string {
+	switch manager {
+	case "brew":
+		return []string{"brew", "list", "--formula", pkg}
+	case "brew-cask":
+		return []string{"brew", "list", "--cask", pkg}
+	case "mas":
+		return []string{"mas", "list"} // imprecise but side-effect free
+	case "winget":
+		return []string{"winget", "list", "--id", pkg, "-e"}
+	case "choco":
+		return []string{"choco", "list", "--local-only", pkg}
+	case "scoop":
+		return []string{"scoop", "info", pkg}
+	case "apt", "apt-get":
+		return []string{"dpkg", "-s", pkg}
+	case "dnf":
+		return []string{"rpm", "-q", pkg}
+	case "yum":
+		return []string{"rpm", "-q", pkg}
+	case "pacman":
+		return []string{"pacman", "-Q", pkg}
+	case "snap":
+		return []string{"snap", "list", pkg}
+	case "flatpak":
+		return []string{"flatpak", "info", pkg}
+	default:
+		return nil
+	}
+}
+
+// installArgs returns the command + arguments needed to install pkg.
 func installArgs(manager, pkg string) ([]string, error) {
 	switch manager {
 	case "brew":

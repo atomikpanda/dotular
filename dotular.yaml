@@ -1,38 +1,63 @@
-- name: homebrew
-  items:
-    - script: https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
-      via: remote
+# Age encryption key (optional — required only for encrypted: true items).
+# Passphrase supports "env:VARNAME" to read from an environment variable.
+age:
+  identity: ~/.config/dotular/identity.txt
+  # passphrase: env:DOTULAR_AGE_PASSPHRASE
 
-- name: Visual Studio Code
-  items:
-    - package: visual-studio-code
-      via: brew
-    - package: Microsoft.VisualStudioCode
-      via: winget
-    - setting: com.microsoft.VSCode
-      key: someCustomSetting
-      value: true
-    - file: settings.json
-      direction: sync
-      destination:
-        macos: ~/Library/Application Support/Code/User
-        windows: '%APPDATA%\\Code\\User'
-    - file: keybindings.json
-      direction: push
-      destination:
-        macos: ~/Library/Application Support/Code/User
-        windows: '%APPDATA%\\Code\\User'
-- name: Spotify
-  items:
-    - package: spotify
-      via: brew
-    - package: Spotify.Spotify
-      via: winget
-    - setting: com.spotify.client
-      key: someCustomSetting
-      value: true
-    - file: settings.xml
-      destination:
-        macos: ~/Library/Application Support/Spotify
-        windows: '%APPDATA%\\Spotify'
-    
+modules:
+  - name: homebrew
+    hooks:
+      before_apply: echo "==> setting up Homebrew"
+    items:
+      - script: https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
+        via: remote
+        skip_if: command -v brew
+        verify: brew --version
+
+  - name: Visual Studio Code
+    only_tags: [darwin, linux]
+    hooks:
+      before_apply: echo "==> installing VS Code"
+      after_apply: echo "==> VS Code ready"
+    items:
+      - package: visual-studio-code
+        via: brew-cask
+        verify: code --version
+
+      - package: Microsoft.VisualStudioCode
+        via: winget
+
+      - file: settings.json
+        direction: sync
+        permissions: "0600"
+        destination:
+          macos: ~/Library/Application Support/Code/User
+          windows: '%APPDATA%\\Code\\User'
+        hooks:
+          before_sync: echo "syncing VS Code settings"
+
+      - file: keybindings.json
+        direction: push
+        destination:
+          macos: ~/Library/Application Support/Code/User
+          windows: '%APPDATA%\\Code\\User'
+
+  - name: Spotify
+    items:
+      - package: spotify
+        via: brew-cask
+
+      - package: Spotify.Spotify
+        via: winget
+
+      - setting: com.spotify.client
+        key: someCustomSetting
+        value: true
+
+      - file: settings.xml
+        direction: sync
+        encrypted: true
+        permissions: "0600"
+        destination:
+          macos: ~/Library/Application Support/Spotify
+          windows: '%APPDATA%\\Spotify'
