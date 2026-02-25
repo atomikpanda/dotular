@@ -56,9 +56,24 @@ type Ref struct {
 	FetchURL string
 }
 
-// ParseRef parses a registry reference string.
+// DefaultRegistry is the GitHub repository used to expand shorthand module
+// references (e.g. "wezterm" → "github.com/atomikpanda/dotular/modules/wezterm@main").
+const DefaultRegistry = "github.com/atomikpanda/dotular"
+
+// ParseRef parses a registry reference string. Bare names without a host
+// (e.g. "wezterm") are expanded against the DefaultRegistry.
 func ParseRef(raw string) Ref {
 	name, version, _ := strings.Cut(raw, "@")
+	// Shorthand: bare name with no slashes → default registry module.
+	if !strings.Contains(name, "/") {
+		expanded := DefaultRegistry + "/modules/" + name
+		if version != "" {
+			expanded += "@" + version
+		} else {
+			expanded += "@main"
+		}
+		return ParseRef(expanded)
+	}
 	parts := strings.SplitN(name, "/", 2)
 	host := parts[0]
 	path := ""
