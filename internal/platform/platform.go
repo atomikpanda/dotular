@@ -14,6 +14,11 @@ func Current() string {
 
 // ExpandPath expands a leading "~/" and environment variables in path.
 func ExpandPath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			path = filepath.Join(home, path[2:])

@@ -42,8 +42,26 @@ type FileAction struct {
 	AgeKey      *ageutil.Key // required when Encrypted is true
 }
 
+// resolvedTarget returns the fully expanded destination file path.
+// If the destination has a file extension (e.g. ~/.wezterm.lua), it is treated
+// as a complete file path. Otherwise it is treated as a directory and the
+// source basename is appended. A trailing "/" always forces directory treatment.
+func (a *FileAction) ResolvedTarget() string {
+	expanded := platform.ExpandPath(a.Destination)
+	base := filepath.Base(expanded)
+	if !strings.HasSuffix(a.Destination, "/") && filepath.Ext(base) != "" {
+		return expanded
+	}
+	return filepath.Join(expanded, filepath.Base(a.Source))
+}
+
+// resolvedDir returns the parent directory of the resolved target.
+func (a *FileAction) ResolvedDir() string {
+	return filepath.Dir(a.ResolvedTarget())
+}
+
 func (a *FileAction) Describe() string {
-	dest := filepath.Join(platform.ExpandPath(a.Destination), filepath.Base(a.Source))
+	dest := a.ResolvedTarget()
 	enc := ""
 	if a.Encrypted {
 		enc = " [encrypted]"
@@ -67,7 +85,7 @@ func (a *FileAction) PermissionsStatus() string {
 	if a.Permissions == "" || a.Link {
 		return ""
 	}
-	dest := filepath.Join(platform.ExpandPath(a.Destination), filepath.Base(a.Source))
+	dest := a.ResolvedTarget()
 	info, err := os.Stat(dest)
 	if err != nil {
 		return "" // file doesn't exist yet
@@ -89,8 +107,7 @@ func (a *FileAction) IsApplied(ctx context.Context) (bool, error) {
 		// Only link items support auto idempotency.
 		return false, nil
 	}
-	dest := platform.ExpandPath(a.Destination)
-	target := filepath.Join(dest, filepath.Base(a.Source))
+	target := a.ResolvedTarget()
 
 	linkDest, err := os.Readlink(target)
 	if err != nil {
@@ -104,8 +121,8 @@ func (a *FileAction) IsApplied(ctx context.Context) (bool, error) {
 }
 
 func (a *FileAction) Run(ctx context.Context, dryRun bool) error {
-	dest := platform.ExpandPath(a.Destination)
-	target := filepath.Join(dest, filepath.Base(a.Source))
+	target := a.ResolvedTarget()
+	dest := a.ResolvedDir()
 
 	if dryRun {
 		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))

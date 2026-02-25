@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/platform"
@@ -33,8 +34,32 @@ type DirectoryAction struct {
 	Permissions string // applied to every file written (optional)
 }
 
+// ResolvedTarget returns the fully expanded destination directory path.
+// If the destination's basename matches the source basename or has a file
+// extension, it is treated as the complete path. Otherwise the source basename
+// is appended. A trailing "/" always forces directory treatment (append basename).
+func (a *DirectoryAction) ResolvedTarget() string {
+	expanded := platform.ExpandPath(a.Destination)
+	base := filepath.Base(expanded)
+	srcBase := filepath.Base(a.Source)
+	// If the destination already ends with the source directory name, use as-is.
+	if base == srcBase {
+		return expanded
+	}
+	// If destination has a trailing slash, always treat as parent directory.
+	if strings.HasSuffix(a.Destination, "/") {
+		return filepath.Join(expanded, srcBase)
+	}
+	return filepath.Join(expanded, srcBase)
+}
+
+// ResolvedDir returns the parent directory of the resolved target.
+func (a *DirectoryAction) ResolvedDir() string {
+	return filepath.Dir(a.ResolvedTarget())
+}
+
 func (a *DirectoryAction) Describe() string {
-	dest := filepath.Join(platform.ExpandPath(a.Destination), filepath.Base(a.Source))
+	dest := a.ResolvedTarget()
 	if a.Link {
 		return fmt.Sprintf("link-dir  %s -> %s", a.Source, dest)
 	}
@@ -53,8 +78,7 @@ func (a *DirectoryAction) IsApplied(ctx context.Context) (bool, error) {
 	if !a.Link {
 		return false, nil
 	}
-	dest := platform.ExpandPath(a.Destination)
-	target := filepath.Join(dest, filepath.Base(a.Source))
+	target := a.ResolvedTarget()
 	link, err := os.Readlink(target)
 	if err != nil {
 		return false, nil
@@ -67,8 +91,8 @@ func (a *DirectoryAction) IsApplied(ctx context.Context) (bool, error) {
 }
 
 func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
-	dest := platform.ExpandPath(a.Destination)
-	target := filepath.Join(dest, filepath.Base(a.Source))
+	target := a.ResolvedTarget()
+	dest := a.ResolvedDir()
 
 	if dryRun {
 		fmt.Printf("    %s\n", color.Dim("[dry-run] "+a.Describe()))

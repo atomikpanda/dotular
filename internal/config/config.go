@@ -204,16 +204,25 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 		p.Linux = value.Value
 		return nil
 	case yaml.MappingNode:
-		type raw struct {
-			MacOS   string `yaml:"macos"`
-			Windows string `yaml:"windows"`
-			Linux   string `yaml:"linux"`
+		// Walk key/value pairs manually so that YAML null values (bare ~)
+		// are preserved as the literal string "~" — important for paths.
+		for i := 0; i+1 < len(value.Content); i += 2 {
+			key := value.Content[i].Value
+			val := value.Content[i+1]
+			v := val.Value
+			// Preserve "~" when YAML interprets it as null.
+			if val.Tag == "!!null" && v == "~" {
+				v = "~"
+			}
+			switch key {
+			case "macos":
+				p.MacOS = v
+			case "windows":
+				p.Windows = v
+			case "linux":
+				p.Linux = v
+			}
 		}
-		var m raw
-		if err := value.Decode(&m); err != nil {
-			return err
-		}
-		p.MacOS, p.Windows, p.Linux = m.MacOS, m.Windows, m.Linux
 		return nil
 	default:
 		return fmt.Errorf("destination/source must be a string or macos/windows/linux mapping")

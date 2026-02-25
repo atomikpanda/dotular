@@ -67,3 +67,15 @@ modules:
 
       - run: nvim --headless "+Lazy sync" +qa
         after: directory
+
+  - name: WezTerm
+    items:
+      - package: wezterm
+        via: brew-cask
+        verify: wezterm --version
+
+      - file: .wezterm.lua
+        direction: push
+        destination:
+          macos: ~
+          linux: ~

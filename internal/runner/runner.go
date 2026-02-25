@@ -147,7 +147,7 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 			continue
 		}
 
-		action, skip, buildErr := r.buildAction(item)
+		action, skip, buildErr := r.buildAction(item, mod.Name)
 		if buildErr != nil || skip {
 			continue
 		}
@@ -206,7 +206,7 @@ func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapsh
 }
 
 func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.Item, snap *snapshot.Snapshot) error {
-	action, skip, err := r.buildAction(item)
+	action, skip, err := r.buildAction(item, mod.Name)
 	if err != nil {
 		return fmt.Errorf("module %q: %w", mod.Name, err)
 	}
@@ -260,14 +260,17 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 
 	// --- snapshot destination before modification ---
-	if snap != nil && (itemType == "file" || itemType == "directory") {
-		dest := item.Destination.ForOS(r.OS)
-		srcName := item.File
-		if itemType == "directory" {
-			srcName = item.Directory
+	if snap != nil && itemType == "file" {
+		if fa, ok := action.(*actions.FileAction); ok {
+			destPath := fa.ResolvedTarget()
+			if err := snap.Record(destPath); err != nil {
+				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
+			}
 		}
-		if dest != "" && srcName != "" {
-			destPath := filepath.Join(platform.ExpandPath(dest), filepath.Base(srcName))
+	}
+	if snap != nil && itemType == "directory" {
+		if da, ok := action.(*actions.DirectoryAction); ok {
+			destPath := da.ResolvedTarget()
 			if err := snap.Record(destPath); err != nil {
 				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
 			}
@@ -325,7 +328,14 @@ func (r *Runner) fileDirection(item config.Item) string {
 	return item.EffectiveDirection()
 }
 
-func (r *Runner) buildAction(item config.Item) (actions.Action, bool, error) {
+func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Action, bool, error) {
+	// sourcePrefix prepends the module name directory to a repo-side path.
+	sourcePrefix := func(name string) string {
+		if len(moduleName) > 0 && moduleName[0] != "" {
+			return filepath.Join(moduleName[0], name)
+		}
+		return name
+	}
 	switch item.Type() {
 	case "package":
 		if r.skipManager(item.Via) {
@@ -342,7 +352,7 @@ func (r *Runner) buildAction(item config.Item) (actions.Action, bool, error) {
 			return nil, true, nil
 		}
 		return &actions.FileAction{
-			Source:      item.File,
+			Source:      sourcePrefix(item.File),
 			Destination: dest,
 			Direction:   r.fileDirection(item),
 			Link:        item.Link,
@@ -357,7 +367,7 @@ func (r *Runner) buildAction(item config.Item) (actions.Action, bool, error) {
 			return nil, true, nil
 		}
 		return &actions.DirectoryAction{
-			Source:      item.Directory,
+			Source:      sourcePrefix(item.Directory),
 			Destination: dest,
 			Direction:   r.fileDirection(item),
 			Link:        item.Link,

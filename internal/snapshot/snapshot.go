@@ -5,6 +5,7 @@ package snapshot
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,14 +41,24 @@ func (s *Snapshot) Record(path string) error {
 		}
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	info, err := os.Stat(path)
+	if os.IsNotExist(err) {
 		s.created = append(s.created, path)
 		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("snapshot %s: %w", path, err)
+	}
 
 	tmpPath := filepath.Join(s.dir, strconv.Itoa(len(s.saved)))
-	if err := copyFile(path, tmpPath); err != nil {
-		return fmt.Errorf("snapshot %s: %w", path, err)
+	if info.IsDir() {
+		if err := copyDir(path, tmpPath); err != nil {
+			return fmt.Errorf("snapshot %s: %w", path, err)
+		}
+	} else {
+		if err := copyFile(path, tmpPath); err != nil {
+			return fmt.Errorf("snapshot %s: %w", path, err)
+		}
 	}
 	s.saved[path] = tmpPath
 	return nil
@@ -58,12 +69,25 @@ func (s *Snapshot) Record(path string) error {
 func (s *Snapshot) Restore() error {
 	var first error
 	for dest, tmp := range s.saved {
-		if err := copyFile(tmp, dest); err != nil && first == nil {
+		info, err := os.Stat(tmp)
+		if err != nil {
+			if first == nil {
+				first = fmt.Errorf("restore %s: %w", dest, err)
+			}
+			continue
+		}
+		if info.IsDir() {
+			os.RemoveAll(dest)
+			err = copyDir(tmp, dest)
+		} else {
+			err = copyFile(tmp, dest)
+		}
+		if err != nil && first == nil {
 			first = fmt.Errorf("restore %s: %w", dest, err)
 		}
 	}
 	for _, path := range s.created {
-		os.Remove(path) // best-effort
+		os.RemoveAll(path) // best-effort; handles both files and directories
 	}
 	return first
 }
@@ -71,6 +95,24 @@ func (s *Snapshot) Restore() error {
 // Discard removes the temporary snapshot directory.
 func (s *Snapshot) Discard() error {
 	return os.RemoveAll(s.dir)
+}
+
+func copyDir(src, dst string) error {
+	src = filepath.Clean(src)
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFile(path, target)
+	})
 }
 
 func copyFile(src, dst string) error {
