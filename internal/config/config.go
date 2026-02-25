@@ -286,3 +286,12 @@ func (c Config) Module(name string) *Module {
 	}
 	return nil
 }
+
+// Save marshals the config and writes it to path using the mapping format.
+func Save(path string, cfg Config) error {
+	data, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}

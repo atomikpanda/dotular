@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -50,6 +52,7 @@ and Linux using a single YAML file.`,
 	root.PersistentFlags().BoolVar(&noCache, "no-cache", false, "re-fetch registry modules from the network")
 
 	root.AddCommand(
+		addCmd(),
 		applyCmd(),
 		directionCmd("push", "Push repo files to the system (overrides direction on all file items)"),
 		directionCmd("pull", "Pull system files back into the repo (overrides direction on all file items)"),
@@ -89,6 +92,161 @@ func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
 
 func newRunner(cfg config.Config) *runner.Runner {
 	return runner.New(cfg, dryRun, verbose, !noAtomic)
+}
+
+// --- add ---------------------------------------------------------------------
+
+func addCmd() *cobra.Command {
+	var link bool
+	var direction string
+
+	cmd := &cobra.Command{
+		Use:   "add <module> <path>",
+		Short: "Add a file or directory to a module",
+		Long: `Adds a file or directory to a named module. If the module doesn't exist
+it is created. Copies (or symlinks with --link) the path into the module's
+managed store and records it in the config YAML.`,
+		Example: `  dotular add nvim ~/.config/nvim
+  dotular add nvim ~/.config/nvim/init.lua --link
+  dotular add shell ~/.zshrc --direction sync`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			moduleName := args[0]
+			srcPath := platform.ExpandPath(args[1])
+
+			// Resolve the source to an absolute path.
+			absSrc, err := filepath.Abs(srcPath)
+			if err != nil {
+				return fmt.Errorf("resolve path: %w", err)
+			}
+
+			info, err := os.Stat(absSrc)
+			if err != nil {
+				return fmt.Errorf("stat %q: %w", absSrc, err)
+			}
+
+			isDir := info.IsDir()
+			baseName := filepath.Base(absSrc)
+
+			// Determine where the config file lives so we can compute
+			// the module store directory relative to it.
+			cfgDir := filepath.Dir(configFile)
+			if !filepath.IsAbs(cfgDir) {
+				cfgDir, _ = filepath.Abs(cfgDir)
+			}
+			moduleDir := filepath.Join(cfgDir, moduleName)
+
+			// Create the module store directory.
+			if err := os.MkdirAll(moduleDir, 0o755); err != nil {
+				return fmt.Errorf("create module directory: %w", err)
+			}
+
+			dest := filepath.Join(moduleDir, baseName)
+
+			// Copy the file or directory into the store.
+			if isDir {
+				if err := copyDirRecursive(absSrc, dest); err != nil {
+					return fmt.Errorf("copy directory: %w", err)
+				}
+			} else {
+				if err := copyFileSimple(absSrc, dest); err != nil {
+					return fmt.Errorf("copy file: %w", err)
+				}
+			}
+
+			// Determine the destination platform map — use the parent
+			// directory of the source path as the destination for the
+			// current platform.
+			srcParent := filepath.Dir(absSrc)
+			pmap := config.PlatformMap{}
+			switch platform.Current() {
+			case "darwin":
+				pmap.MacOS = srcParent
+			case "windows":
+				pmap.Windows = srcParent
+			case "linux":
+				pmap.Linux = srcParent
+			}
+
+			// Load the existing config (or start fresh if it doesn't exist).
+			cfg, err := loadConfig()
+			if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+
+			// Build the new item.
+			item := config.Item{
+				Destination: pmap,
+				Direction:   direction,
+				Link:        link,
+			}
+			if isDir {
+				item.Directory = baseName
+			} else {
+				item.File = baseName
+			}
+
+			// Find or create the module.
+			mod := cfg.Module(moduleName)
+			if mod == nil {
+				cfg.Modules = append(cfg.Modules, config.Module{
+					Name:  moduleName,
+					Items: []config.Item{item},
+				})
+			} else {
+				mod.Items = append(mod.Items, item)
+			}
+
+			// Write the config back.
+			if err := config.Save(configFile, cfg); err != nil {
+				return err
+			}
+
+			typeStr := "file"
+			if isDir {
+				typeStr = "directory"
+			}
+			fmt.Printf("added %s %q to module %q\n", typeStr, baseName, moduleName)
+			fmt.Printf("  store: %s\n", dest)
+			fmt.Printf("  config: %s\n", configFile)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&link, "link", false, "use symlink instead of copy at apply time")
+	cmd.Flags().StringVar(&direction, "direction", "push", "file direction: push, pull, or sync")
+	return cmd
+}
+
+// copyFileSimple copies a single file from src to dst.
+func copyFileSimple(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+// copyDirRecursive copies a directory tree from src to dst.
+func copyDirRecursive(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		return copyFileSimple(path, target)
+	})
 }
 
 // --- apply -------------------------------------------------------------------
