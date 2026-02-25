@@ -120,3 +120,46 @@ func TestRenderEmpty(t *testing.T) {
 		t.Errorf("Render('') = %q", got)
 	}
 }
+
+func TestRenderItemInvalidTemplate(t *testing.T) {
+	item := config.Item{
+		Package: "{{ .bad",
+	}
+	_, err := RenderItem(item, map[string]any{"x": "y"})
+	if err == nil {
+		t.Error("expected error for invalid template in item")
+	}
+}
+
+func TestRenderItemFileFields(t *testing.T) {
+	item := config.Item{
+		File:      "{{ .filename }}",
+		Direction: "{{ .dir }}",
+	}
+	params := map[string]any{"filename": "config.json", "dir": "push"}
+	result, err := RenderItem(item, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.File != "config.json" {
+		t.Errorf("File = %q", result.File)
+	}
+	if result.Direction != "push" {
+		t.Errorf("Direction = %q", result.Direction)
+	}
+}
+
+func TestRenderItemScriptFields(t *testing.T) {
+	item := config.Item{
+		Script: "https://example.com/{{ .version }}/install.sh",
+		Via:    "remote",
+	}
+	params := map[string]any{"version": "1.2.3"}
+	result, err := RenderItem(item, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Script != "https://example.com/1.2.3/install.sh" {
+		t.Errorf("Script = %q", result.Script)
+	}
+}

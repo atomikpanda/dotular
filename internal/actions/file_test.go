@@ -531,3 +531,179 @@ func TestFileActionEncryptedPullNoKey(t *testing.T) {
 		t.Error("expected error for encrypted pull with no key")
 	}
 }
+
+func TestSyncEqualNonEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	repoFile := filepath.Join(dir, "repo.txt")
+	sysFile := filepath.Join(dir, "system.txt")
+	os.WriteFile(repoFile, []byte("same"), 0o644)
+	os.WriteFile(sysFile, []byte("same"), 0o644)
+
+	a := &FileAction{Source: repoFile, Destination: dir + "/", Direction: "sync"}
+	equal, err := a.syncEqual(repoFile, sysFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Error("expected equal")
+	}
+}
+
+func TestSyncEqualNonEncryptedDifferent(t *testing.T) {
+	dir := t.TempDir()
+	repoFile := filepath.Join(dir, "repo.txt")
+	sysFile := filepath.Join(dir, "system.txt")
+	os.WriteFile(repoFile, []byte("repo"), 0o644)
+	os.WriteFile(sysFile, []byte("system"), 0o644)
+
+	a := &FileAction{Source: repoFile, Destination: dir + "/", Direction: "sync"}
+	equal, err := a.syncEqual(repoFile, sysFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equal {
+		t.Error("expected not equal")
+	}
+}
+
+func TestFileActionIsAppliedLinkNotExists(t *testing.T) {
+	a := &FileAction{
+		Source:      "/tmp/dotular-nonexistent",
+		Destination: "/tmp/dotular-nonexistent-link.txt",
+		Link:        true,
+	}
+	applied, err := a.IsApplied(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("expected IsApplied=false for nonexistent link")
+	}
+}
+
+func TestFileActionResolvedDir(t *testing.T) {
+	a := &FileAction{Source: "test.txt", Destination: "/home/user/dest/"}
+	got := a.ResolvedDir()
+	if got != "/home/user/dest" {
+		t.Errorf("ResolvedDir() = %q", got)
+	}
+}
+
+func TestFileActionRunPushInvalidPermissions(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	destDir := filepath.Join(dir, "dest")
+	os.WriteFile(src, []byte("data"), 0o644)
+
+	a := &FileAction{
+		Source:      src,
+		Destination: destDir + "/",
+		Direction:   "push",
+		Permissions: "invalid",
+	}
+	err := a.Run(context.Background(), false)
+	if err == nil {
+		t.Error("expected error for invalid permissions")
+	}
+}
+
+func TestFileActionEncryptedSyncNoKey(t *testing.T) {
+	dir := t.TempDir()
+	repoFile := filepath.Join(dir, "repo.txt.age")
+	sysFile := filepath.Join(dir, "system.txt")
+	os.WriteFile(repoFile, []byte("encrypted"), 0o644)
+	os.WriteFile(sysFile, []byte("plain"), 0o644)
+
+	a := &FileAction{
+		Source:      filepath.Join(dir, "repo.txt"),
+		Destination: sysFile,
+		Direction:   "sync",
+		Encrypted:   true,
+		AgeKey:      nil,
+	}
+	// syncEqual for encrypted files will try to decrypt — should fail with no key.
+	_, err := a.syncEqual(repoFile, sysFile)
+	if err == nil {
+		t.Error("expected error for encrypted sync with no key")
+	}
+}
+
+func TestFileActionRunSyncConflictChoice1(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "repo", "test.txt")
+	destDir := filepath.Join(dir, "system")
+	os.MkdirAll(filepath.Join(dir, "repo"), 0o755)
+	os.MkdirAll(destDir, 0o755)
+	os.WriteFile(src, []byte("repo version"), 0o644)
+	destFile := filepath.Join(destDir, "test.txt")
+	os.WriteFile(destFile, []byte("system version"), 0o644)
+
+	a := &FileAction{
+		Source:      src,
+		Destination: destDir + "/",
+		Direction:   "sync",
+	}
+
+	// Simulate user choosing "1" (keep repo).
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	w.Write([]byte("1\n"))
+	w.Close()
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(destFile)
+	if string(data) != "repo version" {
+		t.Errorf("expected repo version pushed, got %q", string(data))
+	}
+}
+
+func TestFileActionRunSyncConflictChoice2(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "repo", "test.txt")
+	destDir := filepath.Join(dir, "system")
+	os.MkdirAll(filepath.Join(dir, "repo"), 0o755)
+	os.MkdirAll(destDir, 0o755)
+	os.WriteFile(src, []byte("repo version"), 0o644)
+	destFile := filepath.Join(destDir, "test.txt")
+	os.WriteFile(destFile, []byte("system version"), 0o644)
+
+	a := &FileAction{
+		Source:      src,
+		Destination: destDir + "/",
+		Direction:   "sync",
+	}
+
+	// Simulate user choosing "2" (keep system).
+	oldStdin := os.Stdin
+	r, w, _ := os.Pipe()
+	w.Write([]byte("2\n"))
+	w.Close()
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(src)
+	if string(data) != "system version" {
+		t.Errorf("expected system version pulled, got %q", string(data))
+	}
+}
+
+func TestFileActionPermissionsStatusNonexistent(t *testing.T) {
+	a := &FileAction{
+		Source:      "nonexistent.txt",
+		Destination: "/tmp/dotular-nonexistent-dir/",
+		Permissions: "0644",
+	}
+	// File doesn't exist — should return empty.
+	if a.PermissionsStatus() != "" {
+		t.Error("expected empty status for nonexistent file")
+	}
+}

@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"context"
 	"testing"
 )
 
@@ -86,5 +87,54 @@ func TestCheckArgs(t *testing.T) {
 				t.Errorf("expected non-nil for %q", tt.manager)
 			}
 		})
+	}
+}
+
+func TestPackageActionRunDryRun(t *testing.T) {
+	a := &PackageAction{Package: "git", Manager: "brew"}
+	if err := a.Run(context.Background(), true); err != nil {
+		t.Errorf("dry run error: %v", err)
+	}
+}
+
+func TestPackageActionRunUnknownManager(t *testing.T) {
+	a := &PackageAction{Package: "git", Manager: "nonexistent"}
+	err := a.Run(context.Background(), false)
+	if err == nil {
+		t.Error("expected error for unknown manager")
+	}
+}
+
+func TestPackageActionRunDryRunUnknownManager(t *testing.T) {
+	// Dry run still calls installArgs, which fails for unknown managers.
+	a := &PackageAction{Package: "git", Manager: "nonexistent"}
+	err := a.Run(context.Background(), true)
+	if err == nil {
+		t.Error("expected error for unknown manager even in dry run")
+	}
+}
+
+func TestPackageActionIsAppliedNoCheck(t *testing.T) {
+	// nix has no check command — should return false, nil.
+	a := &PackageAction{Package: "git", Manager: "nix"}
+	applied, err := a.IsApplied(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("expected false for manager with no check")
+	}
+}
+
+func TestPackageActionIsAppliedMissingBinary(t *testing.T) {
+	// Use a manager whose check binary won't exist — should return false, nil.
+	a := &PackageAction{Package: "test-pkg", Manager: "pacman"}
+	applied, err := a.IsApplied(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// pacman likely doesn't exist on macOS/other, so the exec will fail.
+	if applied {
+		t.Error("expected false when check binary is missing")
 	}
 }

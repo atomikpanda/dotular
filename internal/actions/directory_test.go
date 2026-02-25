@@ -262,3 +262,85 @@ func TestDirectoryActionRunLink(t *testing.T) {
 		t.Errorf("link = %q, want %q", linkDest, absSrc)
 	}
 }
+
+func TestCreateDirSymlinkOverwriteExisting(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	os.MkdirAll(src, 0o755)
+	dst := filepath.Join(dir, "link")
+
+	// Create an existing symlink pointing elsewhere.
+	other := filepath.Join(dir, "other")
+	os.MkdirAll(other, 0o755)
+	absOther, _ := filepath.Abs(other)
+	os.Symlink(absOther, dst)
+
+	// Overwriting existing symlink should succeed.
+	if err := createDirSymlink(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.Readlink(dst)
+	absSrc, _ := filepath.Abs(src)
+	if got != absSrc {
+		t.Errorf("symlink = %q, want %q", got, absSrc)
+	}
+}
+
+func TestCreateDirSymlinkFailsOnExistingDir(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	os.MkdirAll(src, 0o755)
+	dst := filepath.Join(dir, "existing-dir")
+	os.MkdirAll(dst, 0o755)
+
+	// Should fail because dst is a real directory (not a symlink).
+	err := createDirSymlink(src, dst)
+	if err == nil {
+		t.Error("expected error when destination is a real directory")
+	}
+}
+
+func TestDirectoryActionIsAppliedLinkWrong(t *testing.T) {
+	dir := t.TempDir()
+	srcDir := filepath.Join(dir, "source")
+	os.MkdirAll(srcDir, 0o755)
+	otherDir := filepath.Join(dir, "other")
+	os.MkdirAll(otherDir, 0o755)
+	dstDir := filepath.Join(dir, "dest", "source")
+	os.MkdirAll(filepath.Dir(dstDir), 0o755)
+
+	absOther, _ := filepath.Abs(otherDir)
+	os.Symlink(absOther, dstDir)
+
+	a := &DirectoryAction{Source: srcDir, Destination: filepath.Join(dir, "dest") + "/", Link: true}
+	applied, err := a.IsApplied(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("expected IsApplied=false for wrong symlink target")
+	}
+}
+
+func TestDirectoryActionIsAppliedLinkNotExists(t *testing.T) {
+	a := &DirectoryAction{
+		Source:      "/tmp/dotular-test-nonexistent-src",
+		Destination: "/tmp/dotular-test-nonexistent-dst/",
+		Link:        true,
+	}
+	applied, err := a.IsApplied(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if applied {
+		t.Error("expected IsApplied=false for nonexistent link")
+	}
+}
+
+func TestDirectoryActionResolvedDir(t *testing.T) {
+	a := &DirectoryAction{Source: "nvim", Destination: "/home/user/.config/"}
+	got := a.ResolvedDir()
+	if got != "/home/user/.config" {
+		t.Errorf("ResolvedDir() = %q", got)
+	}
+}

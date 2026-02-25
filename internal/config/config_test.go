@@ -278,6 +278,106 @@ func TestModuleIsRegistry(t *testing.T) {
 	}
 }
 
+func TestSave(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.yaml")
+	cfg := Config{
+		Modules: []Module{
+			{
+				Name: "testmod",
+				Items: []Item{
+					{Package: "git", Via: "brew"},
+					{File: ".vimrc", Destination: PlatformMap{MacOS: "~/"}},
+				},
+			},
+		},
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reload and verify round-trip.
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Modules) != 1 {
+		t.Fatalf("expected 1 module, got %d", len(loaded.Modules))
+	}
+	if loaded.Modules[0].Name != "testmod" {
+		t.Errorf("module name = %q", loaded.Modules[0].Name)
+	}
+	if len(loaded.Modules[0].Items) != 2 {
+		t.Errorf("expected 2 items, got %d", len(loaded.Modules[0].Items))
+	}
+}
+
+func TestSaveWithAge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.yaml")
+	cfg := Config{
+		Age:     &AgeConfig{Passphrase: "secret"},
+		Modules: []Module{{Name: "test"}},
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Age == nil {
+		t.Fatal("expected age config")
+	}
+	if loaded.Age.Passphrase != "secret" {
+		t.Errorf("passphrase = %q", loaded.Age.Passphrase)
+	}
+}
+
+func TestSaveEmptyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.yaml")
+	if err := Save(path, Config{}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Modules) != 0 {
+		t.Errorf("expected 0 modules, got %d", len(loaded.Modules))
+	}
+}
+
+func TestLoadInvalidRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.yaml")
+	// A bare scalar is neither a mapping nor a sequence.
+	if err := os.WriteFile(path, []byte("42"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Error("expected error for scalar root")
+	}
+}
+
+func TestPlatformMapUnmarshalTildeNull(t *testing.T) {
+	// YAML ~ is interpreted as null — PlatformMap should preserve it.
+	data := `
+macos: ~
+windows: /win
+linux: /linux
+`
+	var pm PlatformMap
+	if err := yaml.Unmarshal([]byte(data), &pm); err != nil {
+		t.Fatal(err)
+	}
+	if pm.MacOS != "~" {
+		t.Errorf("MacOS = %q, want ~", pm.MacOS)
+	}
+}
+
 func TestLoadWithAge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dotular.yaml")
