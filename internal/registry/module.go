@@ -100,12 +100,25 @@ func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 		return Private, "https://" + host + "/" + path
 
 	case "github.com":
-		// github.com/user/repo@ref → raw.githubusercontent.com/user/repo/<ref>/dotular-module.yaml
+		// github.com/user/repo@ref → raw file URL.
+		// Supports two forms:
+		//   github.com/user/repo@ref           → .../user/repo/<ref>/dotular-module.yaml
+		//   github.com/user/repo/sub/path@ref  → .../user/repo/<ref>/sub/path.yaml
 		ref := version
 		if ref == "" {
 			ref = "main"
 		}
-		url := "https://raw.githubusercontent.com/" + path + "/" + ref + "/dotular-module.yaml"
+		parts := strings.SplitN(path, "/", 3)
+		var url string
+		if len(parts) <= 2 {
+			// Simple: github.com/user/repo
+			url = "https://raw.githubusercontent.com/" + path + "/" + ref + "/dotular-module.yaml"
+		} else {
+			// Extended: github.com/user/repo/sub/path
+			repoPath := parts[0] + "/" + parts[1]
+			subPath := parts[2]
+			url = "https://raw.githubusercontent.com/" + repoPath + "/" + ref + "/" + subPath + ".yaml"
+		}
 		return Private, url
 
 	default:

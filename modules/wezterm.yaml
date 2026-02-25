@@ -1,0 +1,12 @@
+name: wezterm
+version: "1.0.0"
+items:
+  - package: wezterm
+    via: brew-cask
+    verify: wezterm --version
+
+  - file: wezterm.lua
+    direction: push
+    destination:
+      macos: ~/.wezterm.lua
+      linux: ~/.wezterm.lua
