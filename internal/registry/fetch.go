@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 // Fetch retrieves a remote module by its reference string, using the cache
@@ -20,7 +21,7 @@ import (
 //
 // If the module is already in the lockfile, the cached copy's checksum is
 // verified against the recorded value; a mismatch is a fatal error.
-func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool) (*RemoteModule, TrustLevel, error) {
+func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *ui.UI) (*RemoteModule, TrustLevel, error) {
 	ref := ParseRef(rawRef)
 
 	cachePath := moduleCachePath(rawRef)
@@ -64,7 +65,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool) (*R
 	}
 	if err := writeCacheFile(cachePath, data); err != nil {
 		// Non-fatal: we have the data in memory.
-		fmt.Fprintf(os.Stderr, "  warning: could not cache registry module: %v\n", err)
+		u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
 	}
 
 	mod, _, err := parseModule(data)

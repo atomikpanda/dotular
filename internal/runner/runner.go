@@ -9,17 +9,34 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/audit"
-	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/shell"
 	"github.com/atomikpanda/dotular/internal/snapshot"
 	"github.com/atomikpanda/dotular/internal/tags"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
+
+type itemOutcome int
+
+const (
+	outcomeApplied itemOutcome = iota
+	outcomeSkipped
+	outcomeFailed
+)
+
+// ModuleResult holds the outcome counts for a single applied module.
+type ModuleResult struct {
+	Applied int
+	Skipped int
+	Failed  int
+	Err     error
+}
 
 // Runner orchestrates applying config modules on the current platform.
 type Runner struct {
@@ -30,6 +47,7 @@ type Runner struct {
 	OS          string
 	MachineTags []string
 	Out         io.Writer
+	UI          *ui.UI
 	AgeKey           *ageutil.Key
 	Command          string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
 	DirectionOverride string // when set, overrides direction on all non-link file items
@@ -47,6 +65,7 @@ func New(cfg config.Config, dryRun, verbose, atomic bool) *Runner {
 		Out:     os.Stdout,
 		Command: "apply",
 	}
+	r.UI = ui.New(r.Out, os.Stderr)
 
 	r.AgeKey = resolveAgeKey(cfg.Age)
 	r.MachineTags = loadMachineTags()
@@ -57,26 +76,39 @@ func New(cfg config.Config, dryRun, verbose, atomic bool) *Runner {
 
 // ApplyAll applies every module in order, respecting tag filters.
 func (r *Runner) ApplyAll(ctx context.Context) error {
+	start := time.Now()
+	var totalApplied, totalSkipped, totalFailed int
+	var firstErr error
+
+	defer func() {
+		r.UI.Summary(totalApplied, totalSkipped, totalFailed, time.Since(start))
+	}()
+
 	for _, mod := range r.Config.Modules {
 		if !r.matchesTags(mod) {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "\n%s\n", color.Dim("==> "+mod.Name+"  [skip: tag mismatch]"))
+				r.UI.SkipHeader(mod.Name, "tag mismatch")
 			}
 			continue
 		}
-		if err := r.ApplyModule(ctx, mod); err != nil {
-			return err
+		result := r.ApplyModule(ctx, mod)
+		totalApplied += result.Applied
+		totalSkipped += result.Skipped
+		totalFailed += result.Failed
+		if result.Err != nil {
+			firstErr = result.Err
+			break
 		}
 	}
-	return nil
+	return firstErr
 }
 
 // ApplyModule applies a single module with hooks, snapshot/rollback, and audit.
-func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) error {
-	fmt.Fprintf(r.Out, "\n%s\n", color.BoldCyan("==> "+mod.Name))
+func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) ModuleResult {
+	r.UI.Header(mod.Name)
 
 	if err := r.runHook(ctx, mod.Hooks.BeforeApply, "module", mod.Name, "before_apply"); err != nil {
-		return err
+		return ModuleResult{Err: err}
 	}
 
 	var snap *snapshot.Snapshot
@@ -84,32 +116,37 @@ func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) error {
 		var err error
 		snap, err = snapshot.New()
 		if err != nil {
-			return fmt.Errorf("module %q: create snapshot: %w", mod.Name, err)
+			return ModuleResult{Err: fmt.Errorf("module %q: create snapshot: %w", mod.Name, err)}
 		}
 	}
 
-	applyErr := r.applyItems(ctx, mod, snap)
+	applied, skipped, failed, applyErr := r.applyItems(ctx, mod, snap)
 
 	if applyErr != nil && snap != nil {
-		fmt.Fprintf(r.Out, "  %s\n", color.BoldYellow(fmt.Sprintf("[rollback] restoring snapshot after failure in %q", mod.Name)))
+		r.UI.Warn(fmt.Sprintf("[rollback] restoring snapshot after failure in %q", mod.Name))
 		if restoreErr := snap.Restore(); restoreErr != nil {
-			fmt.Fprintf(r.Out, "  %s\n", color.BoldYellow(fmt.Sprintf("[rollback] restore error: %v", restoreErr)))
+			r.UI.Warn(fmt.Sprintf("[rollback] restore error: %v", restoreErr))
 		}
 		snap.Discard()
-		return applyErr
+		r.UI.ModuleSummary(applied, skipped, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: applyErr}
 	}
 	if snap != nil {
 		snap.Discard()
 	}
 
 	if applyErr != nil {
-		return applyErr
+		r.UI.ModuleSummary(applied, skipped, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: applyErr}
 	}
 
 	if err := r.runHook(ctx, mod.Hooks.AfterApply, "module", mod.Name, "after_apply"); err != nil {
-		return err
+		r.UI.ModuleSummary(applied, skipped, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: err}
 	}
-	return nil
+
+	r.UI.ModuleSummary(applied, skipped, failed)
+	return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed}
 }
 
 // --- public verify API -------------------------------------------------------
@@ -136,13 +173,13 @@ func (r *Runner) VerifyAll(ctx context.Context) (allPassed bool, err error) {
 // It reports pass/fail per item without modifying any state.
 // Returns (false, nil) when checks ran but some failed.
 func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed bool, err error) {
-	fmt.Fprintf(r.Out, "\n%s\n", color.BoldCyan("==> "+mod.Name))
+	r.UI.Header(mod.Name)
 	allPassed = true
 
 	for _, item := range mod.Items {
 		if item.Verify == "" {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  %s\n", color.Dim("----  "+item.Type()+"  [no verify]"))
+				r.UI.Skip("no verify", item.Type())
 			}
 			continue
 		}
@@ -152,14 +189,16 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 			continue
 		}
 
+		start := time.Now()
 		verifyErr := shell.Run(ctx, item.Verify)
+		dur := time.Since(start)
 		outcome := "success"
 		if verifyErr != nil {
 			outcome = "failure"
 			allPassed = false
-			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldRed("FAIL"), action.Describe())
+			r.UI.ItemResult(action.Describe(), dur, verifyErr)
 		} else {
-			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldGreen("PASS"), action.Describe())
+			r.UI.ItemResult(action.Describe(), dur, nil)
 		}
 
 		audit.Log(audit.Entry{
@@ -175,7 +214,7 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 // --- internal apply flow -----------------------------------------------------
 
 // applyItems applies every item in the module, firing sync hooks around sync items.
-func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapshot.Snapshot) error {
+func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapshot.Snapshot) (applied, skipped, failed int, err error) {
 	hasSyncItem := false
 	for _, item := range mod.Items {
 		t := item.Type()
@@ -187,48 +226,57 @@ func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapsh
 
 	if hasSyncItem {
 		if err := r.runHook(ctx, mod.Hooks.BeforeSync, "module", mod.Name, "before_sync"); err != nil {
-			return err
+			return applied, skipped, failed, err
 		}
 	}
 
 	for _, item := range mod.Items {
-		if err := r.applyItem(ctx, mod, item, snap); err != nil {
-			return err
+		outcome, itemErr := r.applyItem(ctx, mod, item, snap)
+		switch outcome {
+		case outcomeApplied:
+			applied++
+		case outcomeSkipped:
+			skipped++
+		case outcomeFailed:
+			failed++
+		}
+		if itemErr != nil {
+			return applied, skipped, failed, itemErr
 		}
 	}
 
 	if hasSyncItem {
 		if err := r.runHook(ctx, mod.Hooks.AfterSync, "module", mod.Name, "after_sync"); err != nil {
-			return err
+			return applied, skipped, failed, err
 		}
 	}
-	return nil
+	return applied, skipped, failed, nil
 }
 
-func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.Item, snap *snapshot.Snapshot) error {
+func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.Item, snap *snapshot.Snapshot) (itemOutcome, error) {
 	action, skip, err := r.buildAction(item, mod.Name)
 	if err != nil {
-		return fmt.Errorf("module %q: %w", mod.Name, err)
+		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 	}
 	if skip {
 		if r.Verbose {
-			fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("skip (%s not applicable on %s)", item.Type(), r.OS)))
+			r.UI.Skip(item.Type()+" not applicable on "+r.OS, item.Type())
 		}
-		return nil
+		return outcomeSkipped, nil
 	}
 
 	// --- skip_if ---
 	if item.SkipIf != "" {
 		exitsZero, err := shell.Eval(ctx, item.SkipIf)
 		if err != nil {
-			return fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, err)
+			return outcomeFailed, fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, err)
 		}
 		if exitsZero {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  %s\n", color.Dim("skip [skip_if] "+action.Describe()))
+				r.UI.Skip("skip_if", action.Describe())
 			}
 			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
-			return nil
+			return outcomeSkipped, nil
 		}
 	}
 
@@ -236,14 +284,14 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	if idem, ok := action.(actions.Idempotent); ok {
 		applied, err := idem.IsApplied(ctx)
 		if err != nil {
-			return fmt.Errorf("module %q: idempotency check: %w", mod.Name, err)
+			return outcomeFailed, fmt.Errorf("module %q: idempotency check: %w", mod.Name, err)
 		}
 		if applied {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  %s\n", color.Dim("skip [already applied] "+action.Describe()))
+				r.UI.Skip("already applied", action.Describe())
 			}
 			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
-			return nil
+			return outcomeSkipped, nil
 		}
 	}
 
@@ -251,11 +299,11 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	itemType := item.Type()
 	isSync := (itemType == "file" || itemType == "directory") && r.fileDirection(item) == "sync"
 	if err := r.runHook(ctx, item.Hooks.BeforeApply, "item", action.Describe(), "before_apply"); err != nil {
-		return fmt.Errorf("module %q: %w", mod.Name, err)
+		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 	}
 	if isSync {
 		if err := r.runHook(ctx, item.Hooks.BeforeSync, "item", action.Describe(), "before_sync"); err != nil {
-			return fmt.Errorf("module %q: %w", mod.Name, err)
+			return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 		}
 	}
 
@@ -264,7 +312,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		if fa, ok := action.(*actions.FileAction); ok {
 			destPath := fa.ResolvedTarget()
 			if err := snap.Record(destPath); err != nil {
-				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
+				return outcomeFailed, fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
 			}
 		}
 	}
@@ -272,20 +320,27 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		if da, ok := action.(*actions.DirectoryAction); ok {
 			destPath := da.ResolvedTarget()
 			if err := snap.Record(destPath); err != nil {
-				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
+				return outcomeFailed, fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
 			}
 		}
 	}
 
 	// --- run ---
-	fmt.Fprintf(r.Out, "  %s %s\n", color.Dim("->"), action.Describe())
+	if r.DryRun {
+		r.UI.DryRun(action.Describe())
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "success"})
+		return outcomeApplied, nil
+	}
+
 	if fa, ok := action.(*actions.FileAction); ok && fa.Permissions != "" {
 		if ps := fa.PermissionsStatus(); ps != "" {
-			fmt.Fprintf(r.Out, "     %s\n", ps)
+			r.UI.Info("     " + ps)
 		}
 	}
 
-	runErr := action.Run(ctx, r.DryRun)
+	start := time.Now()
+	runErr := action.Run(ctx, false)
+	r.UI.ItemResult(action.Describe(), time.Since(start), runErr)
 
 	outcome, errMsg := "success", ""
 	if runErr != nil {
@@ -294,27 +349,27 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: outcome, Error: errMsg})
 
 	if runErr != nil {
-		return fmt.Errorf("module %q: %w", mod.Name, runErr)
+		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, runErr)
 	}
 
 	// --- verify ---
-	if item.Verify != "" && !r.DryRun {
+	if item.Verify != "" {
 		if err := shell.Run(ctx, item.Verify); err != nil {
-			return fmt.Errorf("module %q: verify failed for %q: %w", mod.Name, action.Describe(), err)
+			return outcomeFailed, fmt.Errorf("module %q: verify failed for %q: %w", mod.Name, action.Describe(), err)
 		}
 	}
 
 	// --- item hooks: after ---
 	if isSync {
 		if err := r.runHook(ctx, item.Hooks.AfterSync, "item", action.Describe(), "after_sync"); err != nil {
-			return fmt.Errorf("module %q: %w", mod.Name, err)
+			return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 		}
 	}
 	if err := r.runHook(ctx, item.Hooks.AfterApply, "item", action.Describe(), "after_apply"); err != nil {
-		return fmt.Errorf("module %q: %w", mod.Name, err)
+		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 	}
 
-	return nil
+	return outcomeApplied, nil
 }
 
 // --- action builder ----------------------------------------------------------
@@ -421,11 +476,11 @@ func (r *Runner) runHook(ctx context.Context, cmd, scope, name, hookName string)
 		return nil
 	}
 	if r.DryRun {
-		fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("[dry-run] hook %s.%s: %s", hookName, scope, cmd)))
+		r.UI.DryRun(fmt.Sprintf("hook %s.%s: %s", hookName, scope, cmd))
 		return nil
 	}
 	if r.Verbose {
-		fmt.Fprintf(r.Out, "  %s\n", color.Dim(fmt.Sprintf("hook %s (%s %q)", hookName, scope, name)))
+		r.UI.Info(fmt.Sprintf("  hook %s (%s %q)", hookName, scope, name))
 	}
 	if err := shell.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("hook %s failed on %s %q: %w", hookName, scope, name, err)

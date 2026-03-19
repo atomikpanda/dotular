@@ -42,20 +42,20 @@ func TestBuildRoot(t *testing.T) {
 	}
 }
 
-func TestRepeatStr(t *testing.T) {
+func TestFormatTypeCounts(t *testing.T) {
 	tests := []struct {
-		s    string
-		n    int
-		want string
+		counts map[string]int
+		want   string
 	}{
-		{"-", 5, "-----"},
-		{"ab", 4, "abababab"},
-		{"-", 0, ""},
+		{map[string]int{"package": 3}, "3 packages"},
+		{map[string]int{"file": 1}, "1 file"},
+		{map[string]int{"package": 2, "file": 1, "run": 3}, "2 packages, 1 file, 3 runs"},
+		{map[string]int{}, ""},
 	}
 	for _, tt := range tests {
-		got := repeatStr(tt.s, tt.n)
+		got := formatTypeCounts(tt.counts)
 		if got != tt.want {
-			t.Errorf("repeatStr(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+			t.Errorf("formatTypeCounts(%v) = %q, want %q", tt.counts, got, tt.want)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 func TestFetchFromServer(t *testing.T) {
@@ -79,7 +81,7 @@ func TestResolveLocalModules(t *testing.T) {
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
 
-	result, err := Resolve(context.Background(), cfg, configPath, false)
+	result, err := Resolve(context.Background(), cfg, configPath, false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestResolvePreservesAge(t *testing.T) {
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
 
-	result, err := Resolve(context.Background(), cfg, configPath, false)
+	result, err := Resolve(context.Background(), cfg, configPath, false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
 		t.Fatal(err)
 	}

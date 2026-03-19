@@ -3,10 +3,10 @@ package registry
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	tmpl "github.com/atomikpanda/dotular/internal/template"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 // Resolve processes every module in cfg. Modules with a From field are
@@ -15,7 +15,7 @@ import (
 //
 // configPath is the path to dotular.yaml and is used to locate the lockfile.
 // When noCache is true, all registry modules are re-fetched from the network.
-func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache bool) (config.Config, error) {
+func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache bool, u *ui.UI) (config.Config, error) {
 	lockPath := LockPath(configPath)
 	lock, err := LoadLock(lockPath)
 	if err != nil {
@@ -31,16 +31,16 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 			continue
 		}
 
-		remote, trust, err := Fetch(ctx, mod.From, lock, noCache)
+		remote, trust, err := Fetch(ctx, mod.From, lock, noCache, u)
 		if err != nil {
 			return config.Config{}, err
 		}
 
 		switch trust {
 		case Community:
-			fmt.Fprintf(os.Stderr, "  [community] %s — unverified third-party module\n", mod.From)
+			u.Warn(fmt.Sprintf("[community] %s — unverified third-party module", mod.From))
 		case Private:
-			fmt.Fprintf(os.Stderr, "  [private]   %s\n", mod.From)
+			u.Warn(fmt.Sprintf("[private] %s", mod.From))
 		}
 
 		params := resolveParams(remote.Params, mod.With)
@@ -69,7 +69,7 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 
 	if lockDirty {
 		if err := SaveLock(lockPath, lock); err != nil {
-			fmt.Fprintf(os.Stderr, "  warning: could not save lockfile: %v\n", err)
+			u.Warn(fmt.Sprintf("could not save lockfile: %v", err))
 		}
 	}
 

@@ -9,9 +9,11 @@ import (
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 func newTestRunner(cfg config.Config) *Runner {
+	var buf bytes.Buffer
 	return &Runner{
 		Config:      cfg,
 		DryRun:      true,
@@ -19,7 +21,8 @@ func newTestRunner(cfg config.Config) *Runner {
 		Atomic:      false,
 		OS:          "darwin",
 		MachineTags: []string{"darwin", "amd64", "testhost"},
-		Out:         &bytes.Buffer{},
+		Out:         &buf,
+		UI:          ui.New(&buf, &bytes.Buffer{}),
 		Command:     "apply",
 	}
 }
@@ -314,6 +317,7 @@ func TestApplyAllTagFilter(t *testing.T) {
 	r := newTestRunner(cfg)
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 
 	if err := r.ApplyAll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -335,8 +339,8 @@ func TestApplyModuleDryRun(t *testing.T) {
 		},
 	}
 	r := newTestRunner(config.Config{})
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -354,8 +358,9 @@ func TestApplyModuleDryRunWithHooks(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -374,8 +379,9 @@ func TestApplyModuleDryRunWithSyncHooks(t *testing.T) {
 	r.DirectionOverride = "sync"
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -393,8 +399,9 @@ func TestApplyItemSkipIf(t *testing.T) {
 	r.DryRun = false
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 	if !containsStr(buf.String(), "skip") {
 		t.Error("expected skip output")
@@ -415,8 +422,9 @@ func TestApplyItemVerify(t *testing.T) {
 	r.DryRun = false
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -439,6 +447,7 @@ func TestVerifyModuleDryRun(t *testing.T) {
 
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 	passed, err := r.VerifyModule(context.Background(), mod)
 	if err != nil {
 		t.Fatal(err)
@@ -462,6 +471,7 @@ func TestVerifyAllDryRun(t *testing.T) {
 	r.DryRun = false
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 	passed, err := r.VerifyAll(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -483,6 +493,7 @@ func TestRunHookDryRun(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 	err := r.runHook(context.Background(), "echo hello", "module", "test", "before_apply")
 	if err != nil {
 		t.Errorf("dry-run hook should not error: %v", err)
@@ -500,6 +511,7 @@ func TestRunHookVerbose(t *testing.T) {
 	r.DryRun = false
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 	err := r.runHook(context.Background(), "true", "module", "test", "before_apply")
 	if err != nil {
 		t.Errorf("hook should not error: %v", err)
@@ -524,6 +536,9 @@ func TestNewRunner(t *testing.T) {
 	}
 	if r.Command != "apply" {
 		t.Errorf("Command = %q, want apply", r.Command)
+	}
+	if r.UI == nil {
+		t.Error("expected UI to be initialized")
 	}
 }
 
@@ -624,8 +639,9 @@ func TestApplyModuleSkipsOSMismatch(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 	if !containsStr(buf.String(), "skip") {
 		t.Error("expected skip output for apt on darwin")
@@ -648,8 +664,9 @@ func TestApplyItemWithItemHooks(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -668,8 +685,9 @@ func TestApplyModuleNonDryRun(t *testing.T) {
 	r.Atomic = false
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -688,8 +706,9 @@ func TestApplyModuleWithAtomic(t *testing.T) {
 	r.Atomic = true
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -707,13 +726,15 @@ func TestApplyModuleAtomicRollback(t *testing.T) {
 	r.DryRun = false
 	r.Atomic = true
 	var buf bytes.Buffer
+	var errBuf bytes.Buffer
 	r.Out = &buf
-	err := r.ApplyModule(context.Background(), mod)
-	if err == nil {
+	r.UI = ui.New(&buf, &errBuf)
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err == nil {
 		t.Error("expected error from failed command")
 	}
-	if !containsStr(buf.String(), "rollback") {
-		t.Error("expected rollback message")
+	if !containsStr(errBuf.String(), "rollback") {
+		t.Error("expected rollback message in error output")
 	}
 }
 
@@ -736,8 +757,9 @@ func TestApplyModuleWithHooksNonDryRun(t *testing.T) {
 	r.Atomic = false
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -755,6 +777,7 @@ func TestVerifyModuleFailure(t *testing.T) {
 	r.DryRun = false
 	var buf bytes.Buffer
 	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
 	passed, err := r.VerifyModule(context.Background(), mod)
 	if err != nil {
 		t.Fatal(err)
@@ -796,8 +819,9 @@ func TestApplyModuleFileItemWithSnapshot(t *testing.T) {
 	r.Atomic = true
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
@@ -831,8 +855,9 @@ func TestApplyModuleDirItemWithSnapshot(t *testing.T) {
 	r.Atomic = true
 	var buf bytes.Buffer
 	r.Out = &buf
-	if err := r.ApplyModule(context.Background(), mod); err != nil {
-		t.Fatal(err)
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 
