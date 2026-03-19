@@ -19,7 +19,16 @@ import (
 	"github.com/atomikpanda/dotular/internal/shell"
 	"github.com/atomikpanda/dotular/internal/snapshot"
 	"github.com/atomikpanda/dotular/internal/tags"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
+
+// ModuleResult holds the outcome counts for a single applied module.
+type ModuleResult struct {
+	Applied int
+	Skipped int
+	Failed  int
+	Err     error
+}
 
 // Runner orchestrates applying config modules on the current platform.
 type Runner struct {
@@ -30,6 +39,7 @@ type Runner struct {
 	OS          string
 	MachineTags []string
 	Out         io.Writer
+	UI          *ui.UI
 	AgeKey           *ageutil.Key
 	Command          string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
 	DirectionOverride string // when set, overrides direction on all non-link file items
@@ -47,6 +57,7 @@ func New(cfg config.Config, dryRun, verbose, atomic bool) *Runner {
 		Out:     os.Stdout,
 		Command: "apply",
 	}
+	r.UI = ui.New(r.Out, os.Stderr)
 
 	r.AgeKey = resolveAgeKey(cfg.Age)
 	r.MachineTags = loadMachineTags()
