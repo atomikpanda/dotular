@@ -62,6 +62,32 @@ func TestSettingActionRunDarwin(t *testing.T) {
 	}
 }
 
+func TestWindowsRegistryArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    any
+		wantType string
+		wantVal  string
+	}{
+		{"string", "hello", "REG_SZ", "hello"},
+		{"int", 42, "REG_DWORD", "42"},
+		{"bool true", true, "REG_DWORD", "1"},
+		{"bool false", false, "REG_DWORD", "0"},
+		{"float", 3.14, "REG_SZ", "3.14"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regType, regVal := windowsValueArgs(tt.value)
+			if regType != tt.wantType {
+				t.Errorf("regType = %q, want %q", regType, tt.wantType)
+			}
+			if regVal != tt.wantVal {
+				t.Errorf("regVal = %q, want %q", regVal, tt.wantVal)
+			}
+		})
+	}
+}
+
 func TestSettingActionRunLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only test")

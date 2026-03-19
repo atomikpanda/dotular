@@ -74,7 +74,7 @@ func TestCheckArgs(t *testing.T) {
 		{"pacman", false},
 		{"snap", false},
 		{"flatpak", false},
-		{"nix", true},
+		{"nix", false},
 		{"unknown", true},
 	}
 	for _, tt := range tests {
@@ -115,14 +115,24 @@ func TestPackageActionRunDryRunUnknownManager(t *testing.T) {
 }
 
 func TestPackageActionIsAppliedNoCheck(t *testing.T) {
-	// nix has no check command — should return false, nil.
-	a := &PackageAction{Package: "git", Manager: "nix"}
+	// unknown manager has no check command — should return false, nil.
+	a := &PackageAction{Package: "git", Manager: "unknown"}
 	applied, err := a.IsApplied(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if applied {
 		t.Error("expected false for manager with no check")
+	}
+}
+
+func TestCheckArgsNix(t *testing.T) {
+	args := checkArgs("nix", "nixpkgs.git")
+	if args == nil {
+		t.Fatal("expected non-nil check args for nix")
+	}
+	if args[0] != "nix-env" {
+		t.Errorf("first arg = %q, want %q", args[0], "nix-env")
 	}
 }
 

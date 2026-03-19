@@ -88,6 +88,8 @@ func checkArgs(manager, pkg string) []string {
 		return []string{"snap", "list", pkg}
 	case "flatpak":
 		return []string{"flatpak", "info", pkg}
+	case "nix":
+		return []string{"nix-env", "-q", pkg}
 	default:
 		return nil
 	}
