@@ -317,3 +317,72 @@ func TestModuleSummary(t *testing.T) {
 		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "1 skipped")
 	}
 }
+
+func TestTable(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	headers := []string{"NAME", "ITEMS", "TAGS"}
+	rows := [][]string{
+		{"nvim", "5", "dev"},
+		{"git", "12", "all"},
+	}
+	u.Table(headers, rows, nil)
+	got := out.String()
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("Table output has %d lines, want at least 4:\n%s", len(lines), got)
+	}
+	// Header line should contain all headers
+	for _, h := range headers {
+		if !strings.Contains(lines[0], h) {
+			t.Errorf("header line = %q, want to contain %q", lines[0], h)
+		}
+	}
+	// Separator line
+	if !strings.Contains(lines[1], "-") {
+		t.Errorf("separator line = %q, want to contain dashes", lines[1])
+	}
+	// Data rows
+	if !strings.Contains(lines[2], "nvim") {
+		t.Errorf("row 1 = %q, want to contain %q", lines[2], "nvim")
+	}
+	if !strings.Contains(lines[3], "git") {
+		t.Errorf("row 2 = %q, want to contain %q", lines[3], "git")
+	}
+	// Check alignment: "5" and "12" should be in the same column position
+	idx1 := strings.Index(lines[2], "5")
+	idx2 := strings.Index(lines[3], "12")
+	if idx1 == -1 || idx2 == -1 {
+		t.Fatalf("could not find data values in rows")
+	}
+	// Both should start at the same column (ITEMS column)
+	if idx1 != idx2 {
+		t.Errorf("column alignment: '5' at %d, '12' at %d", idx1, idx2)
+	}
+}
+
+func TestTableEmpty(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	headers := []string{"NAME", "ITEMS"}
+	u.Table(headers, nil, nil)
+	got := out.String()
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("Table empty output has %d lines, want 2:\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[0], "NAME") {
+		t.Errorf("header line = %q, want to contain %q", lines[0], "NAME")
+	}
+	if !strings.Contains(lines[1], "-") {
+		t.Errorf("separator line = %q, want to contain dashes", lines[1])
+	}
+}
