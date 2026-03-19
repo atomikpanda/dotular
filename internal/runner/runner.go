@@ -14,7 +14,6 @@ import (
 	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/audit"
-	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/shell"
@@ -174,13 +173,13 @@ func (r *Runner) VerifyAll(ctx context.Context) (allPassed bool, err error) {
 // It reports pass/fail per item without modifying any state.
 // Returns (false, nil) when checks ran but some failed.
 func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed bool, err error) {
-	fmt.Fprintf(r.Out, "\n%s\n", color.BoldCyan("==> "+mod.Name))
+	r.UI.Header(mod.Name)
 	allPassed = true
 
 	for _, item := range mod.Items {
 		if item.Verify == "" {
 			if r.Verbose {
-				fmt.Fprintf(r.Out, "  %s\n", color.Dim("----  "+item.Type()+"  [no verify]"))
+				r.UI.Skip("no verify", item.Type())
 			}
 			continue
 		}
@@ -190,14 +189,16 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 			continue
 		}
 
+		start := time.Now()
 		verifyErr := shell.Run(ctx, item.Verify)
+		dur := time.Since(start)
 		outcome := "success"
 		if verifyErr != nil {
 			outcome = "failure"
 			allPassed = false
-			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldRed("FAIL"), action.Describe())
+			r.UI.ItemResult(action.Describe(), dur, verifyErr)
 		} else {
-			fmt.Fprintf(r.Out, "  %s  %s\n", color.BoldGreen("PASS"), action.Describe())
+			r.UI.ItemResult(action.Describe(), dur, nil)
 		}
 
 		audit.Log(audit.Entry{
