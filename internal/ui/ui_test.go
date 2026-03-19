@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,5 +92,163 @@ func TestFormatDuration(t *testing.T) {
 				t.Errorf("formatDuration(%v) = %q, want %q", tt.d, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHeader(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Header("nvim")
+	got := out.String()
+	if !strings.Contains(got, "==> nvim") {
+		t.Errorf("Header output = %q, want to contain %q", got, "==> nvim")
+	}
+}
+
+func TestSkipHeader(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.SkipHeader("nvim", "tag mismatch")
+	got := out.String()
+	if !strings.Contains(got, "nvim") {
+		t.Errorf("SkipHeader output = %q, want to contain %q", got, "nvim")
+	}
+	if !strings.Contains(got, "tag mismatch") {
+		t.Errorf("SkipHeader output = %q, want to contain %q", got, "tag mismatch")
+	}
+}
+
+func TestItem(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Item("install neovim")
+	got := out.String()
+	if !strings.Contains(got, "->") {
+		t.Errorf("Item output = %q, want to contain %q", got, "->")
+	}
+	if !strings.Contains(got, "install neovim") {
+		t.Errorf("Item output = %q, want to contain %q", got, "install neovim")
+	}
+}
+
+func TestItemResultSuccess(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.ItemResult("install neovim", 3200*time.Millisecond, nil)
+	got := out.String()
+	if !strings.Contains(got, "[ok]") {
+		t.Errorf("ItemResult output = %q, want to contain %q", got, "[ok]")
+	}
+	if !strings.Contains(got, "(3.2s)") {
+		t.Errorf("ItemResult output = %q, want to contain %q", got, "(3.2s)")
+	}
+}
+
+func TestItemResultFailure(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.ItemResult("install neovim", 300*time.Millisecond, errors.New("not found"))
+	got := out.String()
+	if !strings.Contains(got, "[FAIL]") {
+		t.Errorf("ItemResult output = %q, want to contain %q", got, "[FAIL]")
+	}
+	if !strings.Contains(got, "(300ms)") {
+		t.Errorf("ItemResult output = %q, want to contain %q", got, "(300ms)")
+	}
+}
+
+func TestSkip(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Skip("already applied", "install neovim")
+	got := out.String()
+	if !strings.Contains(got, "skip") {
+		t.Errorf("Skip output = %q, want to contain %q", got, "skip")
+	}
+	if !strings.Contains(got, "already applied") {
+		t.Errorf("Skip output = %q, want to contain %q", got, "already applied")
+	}
+}
+
+func TestDryRun(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.DryRun("install neovim")
+	got := out.String()
+	if !strings.Contains(got, "[dry-run]") {
+		t.Errorf("DryRun output = %q, want to contain %q", got, "[dry-run]")
+	}
+}
+
+func TestWarn(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out, errBuf bytes.Buffer
+	u := New(&out, &errBuf)
+	u.Warn("something is wrong")
+	if out.Len() != 0 {
+		t.Errorf("Warn wrote to Out: %q", out.String())
+	}
+	got := errBuf.String()
+	if !strings.Contains(got, "[!]") {
+		t.Errorf("Warn output = %q, want to contain %q", got, "[!]")
+	}
+}
+
+func TestSuccess(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Success("all done")
+	got := out.String()
+	if !strings.Contains(got, "[ok]") {
+		t.Errorf("Success output = %q, want to contain %q", got, "[ok]")
+	}
+}
+
+func TestInfo(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Info("hello world")
+	got := out.String()
+	if got != "hello world\n" {
+		t.Errorf("Info output = %q, want %q", got, "hello world\n")
 	}
 }
