@@ -724,6 +724,32 @@ if r.UI == nil {
 }
 ```
 
+**CRITICAL:** After Task 6 changes `ApplyModule` to return `ModuleResult` instead of `error`, all runner tests that call `r.ApplyModule` must update their return type handling. Replace:
+
+```go
+if err := r.ApplyModule(context.Background(), mod); err != nil {
+    t.Fatal(err)
+}
+```
+
+With:
+
+```go
+if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+    t.Fatal(result.Err)
+}
+```
+
+And for `TestApplyModuleAtomicRollback` which expects an error:
+```go
+result := r.ApplyModule(context.Background(), mod)
+if result.Err == nil {
+    t.Error("expected error from failed command")
+}
+```
+
+Affected tests: `TestApplyModuleDryRun`, `TestApplyModuleDryRunWithHooks`, `TestApplyModuleDryRunWithSyncHooks`, `TestApplyItemSkipIf`, `TestApplyItemVerify`, `TestApplyModuleSkipsOSMismatch`, `TestApplyItemWithItemHooks`, `TestApplyModuleNonDryRun`, `TestApplyModuleWithAtomic`, `TestApplyModuleAtomicRollback`, `TestApplyModuleWithHooksNonDryRun`, `TestApplyModuleFileItemWithSnapshot`, `TestApplyModuleDirItemWithSnapshot`.
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/runner/ -v`
@@ -1111,8 +1137,15 @@ Replace:
 - `fmt.Fprintf(os.Stderr, "  [private]   %s\n", ...)` → `u.Warn(fmt.Sprintf("[private] %s", mod.From))`
 - `fmt.Fprintf(os.Stderr, "  warning: could not save lockfile: ...")` → `u.Warn(fmt.Sprintf("could not save lockfile: %v", err))`
 
-Update `Fetch` similarly for the cache warning:
+Pass the `*ui.UI` from `Resolve` down to `Fetch` internally (add it as a parameter to `Fetch`'s signature):
+```go
+func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *ui.UI) (*RemoteModule, TrustLevel, error)
+```
+
+Replace `Fetch`'s cache warning:
 - `fmt.Fprintf(os.Stderr, "  warning: could not cache registry module: ...")` → `u.Warn(...)`
+
+Since `Fetch` is only called from `Resolve`, this is a contained change.
 
 - [ ] **Step 2: Update ALL call sites in `main.go`**
 
@@ -1139,6 +1172,8 @@ _, err = registry.Resolve(ctx, cfg, configFile, true, u)
 - [ ] **Step 3: Update registry tests**
 
 Registry tests that call `Resolve` or `Fetch` need to pass a `*ui.UI`. Use `ui.New(&bytes.Buffer{}, &bytes.Buffer{})` in tests.
+
+Check `internal/registry/` for test files (e.g., `resolver_test.go`, any integration tests) and update all `Resolve()` and `Fetch()` call sites to include the new `*ui.UI` parameter.
 
 - [ ] **Step 4: Run full test suite**
 
