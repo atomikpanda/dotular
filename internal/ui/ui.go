@@ -122,3 +122,31 @@ func (u *UI) Success(msg string) {
 func (u *UI) Info(msg string) {
 	fmt.Fprintf(u.Out, "%s\n", msg)
 }
+
+// summaryIcon returns the appropriate icon and color function for a summary line.
+func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
+	s := u.symbols()
+	if failed > 0 {
+		return s.Cross, color.BoldRed
+	}
+	if applied == 0 {
+		return s.Dash, color.Dim
+	}
+	return s.Check, color.Green
+}
+
+// Summary writes a final summary line with counts and elapsed time to Out.
+func (u *UI) Summary(applied, skipped, failed int, elapsed time.Duration) {
+	icon, colorFn := u.summaryIcon(applied, failed)
+	body := fmt.Sprintf("%s %d applied, %d skipped, %d failed %s",
+		icon, applied, skipped, failed, formatDuration(elapsed))
+	fmt.Fprintf(u.Out, "\n%s\n", colorFn(body))
+}
+
+// ModuleSummary writes an indented summary line for a single module to Out.
+func (u *UI) ModuleSummary(applied, skipped, failed int) {
+	icon, colorFn := u.summaryIcon(applied, failed)
+	body := fmt.Sprintf("%s %d applied, %d skipped, %d failed",
+		icon, applied, skipped, failed)
+	fmt.Fprintf(u.Out, "  %s\n", colorFn(body))
+}
