@@ -338,6 +338,7 @@ func listCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			u := ui.New(os.Stdout, os.Stderr)
 			for _, mod := range cfg.Modules {
 				counts := make(map[string]int)
 				for _, item := range mod.Items {
@@ -345,9 +346,9 @@ func listCmd() *cobra.Command {
 				}
 				total := len(mod.Items)
 				breakdown := formatTypeCounts(counts)
-				fmt.Fprintf(os.Stdout, "%s  %s\n",
+				u.Info(fmt.Sprintf("%s  %s",
 					color.Bold(fmt.Sprintf("%-30s", mod.Name)),
-					color.Dim(fmt.Sprintf("%d items (%s)", total, breakdown)))
+					color.Dim(fmt.Sprintf("%d items (%s)", total, breakdown))))
 			}
 			return nil
 		},
