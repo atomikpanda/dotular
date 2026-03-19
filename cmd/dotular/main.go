@@ -89,7 +89,8 @@ func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
-	return registry.Resolve(ctx, cfg, configFile, noCache)
+	u := ui.New(os.Stdout, os.Stderr)
+	return registry.Resolve(ctx, cfg, configFile, noCache, u)
 }
 
 func newRunner(cfg config.Config) *runner.Runner {
@@ -684,11 +685,11 @@ func registryCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				_, err = registry.Resolve(ctx, cfg, configFile, true)
+				u := ui.New(os.Stdout, os.Stderr)
+				_, err = registry.Resolve(ctx, cfg, configFile, true, u)
 				if err != nil {
 					return err
 				}
-				u := ui.New(os.Stdout, os.Stderr)
 				u.Success("registry modules updated")
 				return nil
 			},
