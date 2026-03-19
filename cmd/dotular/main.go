@@ -11,13 +11,14 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/atomikpanda/dotular/internal/ageutil"
-	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/audit"
+	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/runner"
 	"github.com/atomikpanda/dotular/internal/tags"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 var (
@@ -275,8 +276,9 @@ func applyCmd() *cobra.Command {
 				if mod == nil {
 					return fmt.Errorf("module %q not found in config", name)
 				}
-				if err := r.ApplyModule(ctx, *mod); err != nil {
-					return err
+				result := r.ApplyModule(ctx, *mod)
+				if result.Err != nil {
+					return result.Err
 				}
 			}
 			return nil
@@ -311,8 +313,9 @@ func directionCmd(direction, short string) *cobra.Command {
 				if mod == nil {
 					return fmt.Errorf("module %q not found in config", name)
 				}
-				if err := r.ApplyModule(ctx, *mod); err != nil {
-					return err
+				result := r.ApplyModule(ctx, *mod)
+				if result.Err != nil {
+					return result.Err
 				}
 			}
 			return nil
@@ -411,7 +414,8 @@ func verifyCmd() *cobra.Command {
 				return err
 			}
 			if !allPassed {
-				fmt.Fprintln(os.Stderr, color.BoldRed("\nsome verify checks failed"))
+				u := ui.New(os.Stdout, os.Stderr)
+				u.Warn("some verify checks failed")
 				os.Exit(1)
 			}
 			return nil
