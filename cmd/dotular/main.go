@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -207,9 +208,10 @@ managed store and records it in the config YAML.`,
 			if isDir {
 				typeStr = "directory"
 			}
-			fmt.Printf("added %s %q to module %q\n", typeStr, baseName, moduleName)
-			fmt.Printf("  store: %s\n", dest)
-			fmt.Printf("  config: %s\n", configFile)
+			u := ui.New(os.Stdout, os.Stderr)
+			u.Success(fmt.Sprintf("added %s %q to module %q", typeStr, baseName, moduleName))
+			u.Info(fmt.Sprintf("  store: %s", dest))
+			u.Info(fmt.Sprintf("  config: %s", configFile))
 			return nil
 		},
 	}
@@ -336,11 +338,35 @@ func listCmd() *cobra.Command {
 				return err
 			}
 			for _, mod := range cfg.Modules {
-				fmt.Fprintf(os.Stdout, "%-30s  %d item(s)\n", mod.Name, len(mod.Items))
+				counts := make(map[string]int)
+				for _, item := range mod.Items {
+					counts[item.Type()]++
+				}
+				total := len(mod.Items)
+				breakdown := formatTypeCounts(counts)
+				fmt.Fprintf(os.Stdout, "%s  %s\n",
+					color.Bold(fmt.Sprintf("%-30s", mod.Name)),
+					color.Dim(fmt.Sprintf("%d items (%s)", total, breakdown)))
 			}
 			return nil
 		},
 	}
+}
+
+// formatTypeCounts formats a map of item type counts into a human-readable string.
+func formatTypeCounts(counts map[string]int) string {
+	types := []string{"package", "file", "directory", "script", "binary", "run", "setting"}
+	var parts []string
+	for _, t := range types {
+		if n, ok := counts[t]; ok && n > 0 {
+			label := t
+			if n != 1 {
+				label += "s"
+			}
+			parts = append(parts, fmt.Sprintf("%d %s", n, label))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // --- status ------------------------------------------------------------------
@@ -368,7 +394,8 @@ func platformCmd() *cobra.Command {
 		Use:   "platform",
 		Short: "Print the detected platform (OS)",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Fprintf(os.Stdout, "os: %s\n", platform.Current())
+			u := ui.New(os.Stdout, os.Stderr)
+			u.Info(fmt.Sprintf("os: %s", platform.Current()))
 		},
 	}
 }
@@ -437,7 +464,8 @@ func encryptCmd() *cobra.Command {
 			}
 			src := args[0]
 			dst := ageutil.RepoPath(src)
-			fmt.Printf("encrypting %s -> %s\n", src, dst)
+			u := ui.New(os.Stdout, os.Stderr)
+			u.Info(fmt.Sprintf("encrypting %s → %s", src, dst))
 			return key.EncryptFile(src, dst)
 		},
 	}
@@ -458,7 +486,8 @@ func decryptCmd() *cobra.Command {
 			if len(dst) > 4 && dst[len(dst)-4:] == ".age" {
 				dst = dst[:len(dst)-4]
 			}
-			fmt.Printf("decrypting %s -> %s\n", src, dst)
+			u := ui.New(os.Stdout, os.Stderr)
+			u.Info(fmt.Sprintf("decrypting %s → %s", src, dst))
 			return key.DecryptFile(src, dst)
 		},
 	}
@@ -497,13 +526,14 @@ func tagCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Printf("machine config: %s\n", tags.ConfigPath())
+				u := ui.New(os.Stdout, os.Stderr)
+				u.Info(color.Bold(fmt.Sprintf("machine config: %s", tags.ConfigPath())))
 				if len(cfg.Tags) == 0 {
-					fmt.Println("(no tags)")
+					u.Info(color.Dim("(no tags)"))
 					return nil
 				}
 				for _, t := range cfg.Tags {
-					fmt.Printf("  - %s\n", t)
+					u.Info(fmt.Sprintf("  · %s", t))
 				}
 				return nil
 			},
@@ -519,7 +549,8 @@ func tagCmd() *cobra.Command {
 				if err := tags.Add(args[0]); err != nil {
 					return err
 				}
-				fmt.Printf("added tag %q\n", args[0])
+				u := ui.New(os.Stdout, os.Stderr)
+				u.Success(fmt.Sprintf("added tag %q", args[0]))
 				return nil
 			},
 		},
@@ -544,33 +575,33 @@ func logCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read audit log: %w", err)
 			}
+			u := ui.New(os.Stdout, os.Stderr)
 			if len(entries) == 0 {
-				fmt.Println("(no log entries)")
+				u.Info("(no log entries)")
 				return nil
 			}
 
-			fmt.Println(color.Bold(fmt.Sprintf("%-20s  %-8s  %-20s  %-8s  %s",
-				"TIME", "COMMAND", "MODULE", "OUTCOME", "ITEM")))
-			fmt.Println(color.Dim(repeatStr("-", 90)))
+			headers := []string{"TIME", "COMMAND", "MODULE", "OUTCOME", "ITEM"}
+			var rows [][]string
 			for _, e := range entries {
 				ts := e.Time.Local().Format(time.DateTime)
 				outcome := e.Outcome
 				if e.Error != "" {
 					outcome += " (" + e.Error + ")"
 				}
-				outcomePadded := fmt.Sprintf("%-8s", outcome)
+				// Pre-color outcome
 				switch e.Outcome {
 				case "success":
-					outcomePadded = color.Green(outcomePadded)
+					outcome = color.Green(outcome)
 				case "failure":
-					outcomePadded = color.BoldRed(outcomePadded)
+					outcome = color.BoldRed(outcome)
 				case "skipped":
-					outcomePadded = color.Dim(outcomePadded)
+					outcome = color.Dim(outcome)
 				}
-				fmt.Printf("%-20s  %-8s  %-20s  %s  %s\n",
-					ts, e.Command, e.Module, outcomePadded, e.Item)
+				rows = append(rows, []string{ts, e.Command, e.Module, outcome, e.Item})
 			}
-			fmt.Printf("\nlog: %s\n", audit.LogPath())
+			u.Table(headers, rows, nil)
+			u.Info(fmt.Sprintf("\nlog: %s", audit.LogPath()))
 			return nil
 		},
 	}
@@ -593,7 +624,7 @@ func registryCmd() *cobra.Command {
 			Use:   "list",
 			Short: "List cached registry modules",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				cfg, err := loadConfig()
+				_, err := loadConfig()
 				if err != nil {
 					return err
 				}
@@ -602,31 +633,32 @@ func registryCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
+				u := ui.New(os.Stdout, os.Stderr)
 				if len(lock.Registry) == 0 {
-					fmt.Println("(no cached registry modules)")
+					u.Info("(no cached registry modules)")
 					return nil
 				}
-				fmt.Println(color.Bold(fmt.Sprintf("%-50s  %-8s  %s", "REF", "TRUST", "FETCHED")))
-				fmt.Println(color.Dim(repeatStr("-", 80)))
+				headers := []string{"REF", "TRUST", "FETCHED"}
+				var rows [][]string
 				for ref, entry := range lock.Registry {
 					ref := registry.ParseRef(ref)
 					trustStr := ref.Trust.String()
-					trustPadded := fmt.Sprintf("%-8s", trustStr)
+					// Pre-color trust
 					switch trustStr {
 					case "official":
-						trustPadded = color.BoldGreen(trustPadded)
+						trustStr = color.BoldGreen(trustStr)
 					case "community":
-						trustPadded = color.Yellow(trustPadded)
+						trustStr = color.Yellow(trustStr)
 					default:
-						trustPadded = color.Dim(trustPadded)
+						trustStr = color.Dim(trustStr)
 					}
-					fmt.Printf("%-50s  %s  %s\n",
+					rows = append(rows, []string{
 						ref.Raw,
-						trustPadded,
+						trustStr,
 						entry.FetchedAt.Local().Format(time.DateTime),
-					)
+					})
 				}
-				_ = cfg
+				u.Table(headers, rows, nil)
 				return nil
 			},
 		},
@@ -637,7 +669,8 @@ func registryCmd() *cobra.Command {
 				if err := registry.ClearCache(); err != nil {
 					return err
 				}
-				fmt.Println("registry cache cleared")
+				u := ui.New(os.Stdout, os.Stderr)
+				u.Success("registry cache cleared")
 				return nil
 			},
 		},
@@ -655,19 +688,11 @@ func registryCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Println("registry modules updated")
+				u := ui.New(os.Stdout, os.Stderr)
+				u.Success("registry modules updated")
 				return nil
 			},
 		},
 	)
 	return cmd
-}
-
-// repeatStr returns s repeated n times.
-func repeatStr(s string, n int) string {
-	b := make([]byte, n*len(s))
-	for i := range b {
-		b[i] = s[i%len(s)]
-	}
-	return string(b)
 }
