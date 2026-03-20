@@ -9,7 +9,7 @@ import (
 )
 
 func TestModuleCachePath(t *testing.T) {
-	got := moduleCachePath("dotular.dev/modules/neovim@1.0.0")
+	got := moduleCachePath("github.com/atomikpanda/dotular/modules/neovim@main")
 	if got == "" {
 		t.Error("expected non-empty cache path")
 	}
@@ -42,7 +42,7 @@ func TestCollectActiveRefs(t *testing.T) {
 	cfg := config.Config{
 		Modules: []config.Module{
 			{Name: "local", Items: []config.Item{{Package: "git"}}},
-			{Name: "remote", From: "dotular.dev/modules/neovim@1.0.0"},
+			{Name: "remote", From: "github.com/atomikpanda/dotular/modules/neovim@main"},
 			{Name: "remote2", From: "github.com/user/repo"},
 		},
 	}
@@ -50,7 +50,7 @@ func TestCollectActiveRefs(t *testing.T) {
 	if len(refs) != 2 {
 		t.Fatalf("expected 2 refs, got %d", len(refs))
 	}
-	if !refs["dotular.dev/modules/neovim@1.0.0"] {
+	if !refs["github.com/atomikpanda/dotular/modules/neovim@main"] {
 		t.Error("missing neovim ref")
 	}
 	if !refs["github.com/user/repo"] {

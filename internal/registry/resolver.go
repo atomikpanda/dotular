@@ -37,10 +37,8 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 		}
 
 		switch trust {
-		case Community:
-			u.Warn(fmt.Sprintf("[community] %s — unverified third-party module", mod.From))
-		case Private:
-			u.Warn(fmt.Sprintf("[private] %s", mod.From))
+		case External:
+			u.Warn(fmt.Sprintf("[external] %s", mod.From))
 		}
 
 		params := resolveParams(remote.Params, mod.With)

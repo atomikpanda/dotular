@@ -268,7 +268,7 @@ func TestConfigModule(t *testing.T) {
 }
 
 func TestModuleIsRegistry(t *testing.T) {
-	m := Module{From: "dotular.dev/modules/foo"}
+	m := Module{From: "github.com/user/repo"}
 	if !m.IsRegistry() {
 		t.Error("expected IsRegistry() true")
 	}

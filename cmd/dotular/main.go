@@ -649,10 +649,10 @@ func registryCmd() *cobra.Command {
 					switch trustStr {
 					case "official":
 						trustStr = color.BoldGreen(trustStr)
-					case "community":
-						trustStr = color.Yellow(trustStr)
-					default:
+					case "github":
 						trustStr = color.Dim(trustStr)
+					case "external":
+						trustStr = color.Yellow(trustStr)
 					}
 					rows = append(rows, []string{
 						ref.Raw,

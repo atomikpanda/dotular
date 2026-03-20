@@ -3,7 +3,10 @@
     "allow": [
       "Bash(go mod:*)",
       "Bash(go test:*)",
-      "Bash(go tool:*)"
+      "Bash(go tool:*)",
+      "Bash(grep:*)",
+      "Bash(go vet:*)",
+      "Bash(make build:*)"
     ]
   }
 }

@@ -10,9 +10,9 @@ func TestTrustLevelString(t *testing.T) {
 		want  string
 	}{
 		{Official, "official"},
-		{Community, "community"},
-		{Private, "private"},
-		{TrustLevel(99), "private"},
+		{GitHub, "github"},
+		{External, "external"},
+		{TrustLevel(99), "external"},
 	}
 	for _, tt := range tests {
 		if got := tt.level.String(); got != tt.want {
@@ -29,8 +29,8 @@ func TestParseRefBare(t *testing.T) {
 	if ref.Version != "main" {
 		t.Errorf("Version = %q", ref.Version)
 	}
-	if ref.Trust != Private {
-		t.Errorf("Trust = %v", ref.Trust)
+	if ref.Trust != Official {
+		t.Errorf("Trust = %v, want Official", ref.Trust)
 	}
 	if ref.FetchURL == "" {
 		t.Error("FetchURL should not be empty")
@@ -42,35 +42,24 @@ func TestParseRefBareWithVersion(t *testing.T) {
 	if ref.Version != "v1.0.0" {
 		t.Errorf("Version = %q", ref.Version)
 	}
+	if ref.Trust != Official {
+		t.Errorf("Trust = %v, want Official", ref.Trust)
+	}
 }
 
-func TestParseRefOfficial(t *testing.T) {
-	ref := ParseRef("dotular.dev/modules/neovim@1.0.0")
-	if ref.Host != "dotular.dev" {
+func TestParseRefOfficialGitHub(t *testing.T) {
+	ref := ParseRef("github.com/atomikpanda/dotular/modules/neovim@main")
+	if ref.Host != "github.com" {
 		t.Errorf("Host = %q", ref.Host)
 	}
 	if ref.Trust != Official {
 		t.Errorf("Trust = %v, want Official", ref.Trust)
 	}
-	if ref.Version != "1.0.0" {
+	if ref.Version != "main" {
 		t.Errorf("Version = %q", ref.Version)
 	}
-	if ref.FetchURL != "https://dotular.dev/modules/neovim/1.0.0.yaml" {
+	if ref.FetchURL != "https://raw.githubusercontent.com/atomikpanda/dotular/main/modules/neovim.yaml" {
 		t.Errorf("FetchURL = %q", ref.FetchURL)
-	}
-}
-
-func TestParseRefOfficialLatest(t *testing.T) {
-	ref := ParseRef("dotular.dev/modules/neovim")
-	if ref.FetchURL != "https://dotular.dev/modules/neovim/latest.yaml" {
-		t.Errorf("FetchURL = %q", ref.FetchURL)
-	}
-}
-
-func TestParseRefCommunity(t *testing.T) {
-	ref := ParseRef("dotular.dev/community/somemod")
-	if ref.Trust != Community {
-		t.Errorf("Trust = %v, want Community", ref.Trust)
 	}
 }
 
@@ -79,8 +68,8 @@ func TestParseRefGitHub(t *testing.T) {
 	if ref.Host != "github.com" {
 		t.Errorf("Host = %q", ref.Host)
 	}
-	if ref.Trust != Private {
-		t.Errorf("Trust = %v", ref.Trust)
+	if ref.Trust != GitHub {
+		t.Errorf("Trust = %v, want GitHub", ref.Trust)
 	}
 	if ref.Version != "v1" {
 		t.Errorf("Version = %q", ref.Version)
@@ -93,6 +82,9 @@ func TestParseRefGitHub(t *testing.T) {
 
 func TestParseRefGitHubExtended(t *testing.T) {
 	ref := ParseRef("github.com/user/repo/modules/neovim@main")
+	if ref.Trust != GitHub {
+		t.Errorf("Trust = %v, want GitHub", ref.Trust)
+	}
 	if ref.FetchURL != "https://raw.githubusercontent.com/user/repo/main/modules/neovim.yaml" {
 		t.Errorf("FetchURL = %q", ref.FetchURL)
 	}
@@ -100,8 +92,8 @@ func TestParseRefGitHubExtended(t *testing.T) {
 
 func TestParseRefCustomHost(t *testing.T) {
 	ref := ParseRef("custom.host/path/to/module@v2")
-	if ref.Trust != Private {
-		t.Errorf("Trust = %v", ref.Trust)
+	if ref.Trust != External {
+		t.Errorf("Trust = %v, want External", ref.Trust)
 	}
 	if ref.FetchURL != "https://custom.host/path/to/module@v2" {
 		t.Errorf("FetchURL = %q", ref.FetchURL)

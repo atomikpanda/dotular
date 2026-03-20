@@ -345,7 +345,7 @@ Reuse and share module definitions:
 
 ```yaml
 modules:
-  - from: dotular.dev/modules/neovim@1.0.0
+  - from: neovim
     with:
       neovim_version: "0.10.2"
     override:
@@ -365,11 +365,11 @@ modules:
 
 | Source | Trust |
 |--------|-------|
-| `dotular.dev/modules/` | Official |
-| `dotular.dev/community/` | Community |
-| GitHub / arbitrary URL | Private |
+| `github.com/atomikpanda/dotular/...` or bare name | Official |
+| Other `github.com/...` repos | GitHub |
+| Other URLs | External |
 
-GitHub refs (`github.com/user/repo@ref`) are automatically rewritten to `raw.githubusercontent.com`.
+Bare names (e.g. `neovim`) expand to `github.com/atomikpanda/dotular/modules/neovim@main`. GitHub refs are automatically rewritten to `raw.githubusercontent.com`.
 
 ### Cache
 

@@ -106,9 +106,9 @@ func download(ctx context.Context, url string) ([]byte, error) {
 func parseModule(data []byte) (*RemoteModule, TrustLevel, error) {
 	var mod RemoteModule
 	if err := yaml.Unmarshal(data, &mod); err != nil {
-		return nil, Private, fmt.Errorf("parse registry module: %w", err)
+		return nil, External, fmt.Errorf("parse registry module: %w", err)
 	}
-	return &mod, Private, nil
+	return &mod, External, nil
 }
 
 func moduleCachePath(rawRef string) string {

@@ -35,7 +35,7 @@ type Module struct {
 
 	// Registry module reference (mutually exclusive with Items in source YAML;
 	// after resolution Items is populated from the registry module).
-	From     string         `yaml:"from,omitempty"`     // e.g. "dotular.dev/modules/neovim@1.0.0"
+	From     string         `yaml:"from,omitempty"`     // e.g. "github.com/atomikpanda/dotular/modules/neovim@main"
 	With     map[string]any `yaml:"with,omitempty"`     // parameter overrides
 	Override []Item         `yaml:"override,omitempty"` // items that replace matching registry items
 }

@@ -13,7 +13,7 @@ modules:
         verify: brew --version
 
   # --- registry module --------------------------------------------------------
-  # - from: dotular.dev/modules/neovim@1.0.0
+  # - from: neovim
   #   with:
   #     neovim_version: "0.10.2"
   #   override:

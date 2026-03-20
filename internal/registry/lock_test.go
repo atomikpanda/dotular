@@ -34,10 +34,10 @@ func TestSaveAndLoadLock(t *testing.T) {
 
 	lf := &LockFile{
 		Registry: map[string]LockEntry{
-			"dotular.dev/modules/neovim@1.0.0": {
+			"github.com/atomikpanda/dotular/modules/neovim@main": {
 				SHA256:    "abc123",
 				FetchedAt: time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC),
-				URL:       "https://dotular.dev/modules/neovim/1.0.0.yaml",
+				URL:       "https://raw.githubusercontent.com/atomikpanda/dotular/main/modules/neovim.yaml",
 			},
 		},
 	}
@@ -51,14 +51,14 @@ func TestSaveAndLoadLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entry, ok := loaded.Registry["dotular.dev/modules/neovim@1.0.0"]
+	entry, ok := loaded.Registry["github.com/atomikpanda/dotular/modules/neovim@main"]
 	if !ok {
 		t.Fatal("expected entry in loaded lock")
 	}
 	if entry.SHA256 != "abc123" {
 		t.Errorf("SHA256 = %q", entry.SHA256)
 	}
-	if entry.URL != "https://dotular.dev/modules/neovim/1.0.0.yaml" {
+	if entry.URL != "https://raw.githubusercontent.com/atomikpanda/dotular/main/modules/neovim.yaml" {
 		t.Errorf("URL = %q", entry.URL)
 	}
 }

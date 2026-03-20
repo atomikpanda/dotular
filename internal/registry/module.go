@@ -12,23 +12,22 @@ import (
 type TrustLevel int
 
 const (
-	// Official modules are maintained by Dotular and hosted at dotular.dev/modules.
+	// Official modules are from the DefaultRegistry (github.com/atomikpanda/dotular).
 	Official TrustLevel = iota
-	// Community modules are published by third parties via dotular.dev/community.
-	// They are not reviewed and should be treated as untrusted.
-	Community
-	// Private modules are hosted on arbitrary URLs or GitHub repositories.
-	Private
+	// GitHub modules are from other github.com repositories.
+	GitHub
+	// External modules are from arbitrary URLs.
+	External
 )
 
 func (t TrustLevel) String() string {
 	switch t {
 	case Official:
 		return "official"
-	case Community:
-		return "community"
+	case GitHub:
+		return "github"
 	default:
-		return "private"
+		return "external"
 	}
 }
 
@@ -46,7 +45,7 @@ type RemoteModule struct {
 	Items   []config.Item     `yaml:"items"`
 }
 
-// Ref holds a parsed registry reference string (e.g. "dotular.dev/modules/neovim@1.0.0").
+// Ref holds a parsed registry reference string (e.g. "github.com/atomikpanda/dotular/modules/neovim@main").
 type Ref struct {
 	Raw     string
 	Host    string
@@ -94,26 +93,6 @@ func ParseRef(raw string) Ref {
 
 func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 	switch host {
-	case "dotular.dev":
-		if strings.HasPrefix(path, "modules/") {
-			// Official: https://dotular.dev/modules/<name>/<version>.yaml
-			v := version
-			if v == "" {
-				v = "latest"
-			}
-			modName := strings.TrimPrefix(path, "modules/")
-			url := "https://dotular.dev/modules/" + modName + "/" + v + ".yaml"
-			return Official, url
-		}
-		if strings.HasPrefix(path, "community/") {
-			url := "https://dotular.dev/" + path
-			if version != "" {
-				url += "@" + version
-			}
-			return Community, url
-		}
-		return Private, "https://" + host + "/" + path
-
 	case "github.com":
 		// github.com/user/repo@ref → raw file URL.
 		// Supports two forms:
@@ -134,7 +113,13 @@ func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 			subPath := parts[2]
 			url = "https://raw.githubusercontent.com/" + repoPath + "/" + ref + "/" + subPath + ".yaml"
 		}
-		return Private, url
+
+		// Determine trust: official if from the DefaultRegistry repo.
+		trust := GitHub
+		if strings.HasPrefix(path, "atomikpanda/dotular") {
+			trust = Official
+		}
+		return trust, url
 
 	default:
 		// Fallback: treat as a direct HTTPS URL.
@@ -142,6 +127,6 @@ func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 		if version != "" {
 			url += "@" + version
 		}
-		return Private, url
+		return External, url
 	}
 }
