@@ -6,7 +6,11 @@
       "Bash(go tool:*)",
       "Bash(grep:*)",
       "Bash(go vet:*)",
-      "Bash(make build:*)"
+      "Bash(make build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(go build:*)",
+      "Bash(go get:*)"
     ]
   }
 }
