@@ -34,7 +34,7 @@ func TestBuildRoot(t *testing.T) {
 		names[cmd.Name()] = true
 	}
 
-	expected := []string{"add", "apply", "push", "pull", "sync", "list", "status", "platform", "verify", "encrypt", "decrypt", "tag", "log", "registry"}
+	expected := []string{"init", "add", "apply", "push", "pull", "sync", "list", "status", "platform", "verify", "encrypt", "decrypt", "tag", "log", "registry"}
 	for _, name := range expected {
 		if !names[name] {
 			t.Errorf("missing subcommand %q", name)
@@ -509,6 +509,28 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 	root.SetArgs([]string{"registry", "update", "--config", path})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInitCmdExists(t *testing.T) {
+	root := buildRoot()
+	cmd, _, err := root.Find([]string{"init"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Use != "init" {
+		t.Errorf("init command Use = %q", cmd.Use)
+	}
+}
+
+func TestAddCmdAcceptsNewArgOrder(t *testing.T) {
+	root := buildRoot()
+	cmd, _, err := root.Find([]string{"add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Use != "add <path> [module]" {
+		t.Errorf("add command Use = %q, want %q", cmd.Use, "add <path> [module]")
 	}
 }
 
