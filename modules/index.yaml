@@ -1,3 +1,5 @@
 modules:
   - name: wezterm
     version: "1.0.0"
+  - name: git
+    version: "1.0.0"

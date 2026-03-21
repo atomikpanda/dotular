@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -198,7 +199,7 @@ managed store and records it in the config YAML.`,
 
 			// Load the existing config (or start fresh if it doesn't exist).
 			cfg, err := loadConfig()
-			if err != nil && !os.IsNotExist(err) {
+			if err != nil && !errors.Is(err, fs.ErrNotExist) {
 				return err
 			}
 
@@ -930,7 +931,7 @@ modules to add to your dotular.yaml.`,
 
 			// 5. Load or create config, merge selections.
 			cfg, loadErr := loadConfig()
-			if loadErr != nil && !os.IsNotExist(loadErr) {
+			if loadErr != nil && !errors.Is(loadErr, fs.ErrNotExist) {
 				return loadErr
 			}
 
