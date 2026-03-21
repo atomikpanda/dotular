@@ -49,6 +49,10 @@ type FileAction struct {
 func (a *FileAction) ResolvedTarget() string {
 	expanded := platform.ExpandPath(a.Destination)
 	base := filepath.Base(expanded)
+	// If the path is an existing directory, always append the source basename.
+	if info, err := os.Stat(expanded); err == nil && info.IsDir() {
+		return filepath.Join(expanded, filepath.Base(a.Source))
+	}
 	if !strings.HasSuffix(a.Destination, "/") && filepath.Ext(base) != "" {
 		return expanded
 	}
