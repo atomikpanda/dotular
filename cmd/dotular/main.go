@@ -109,18 +109,38 @@ func addCmd() *cobra.Command {
 	var direction string
 
 	cmd := &cobra.Command{
-		Use:   "add <module> <path>",
+		Use:   "add <path> [module]",
 		Short: "Add a file or directory to a module",
-		Long: `Adds a file or directory to a named module. If the module doesn't exist
+		Long: `Adds a file or directory to a module. The path is the first argument;
+the module name is optional — if omitted, dotular will try to infer it
+from the registry or prompt you interactively. If the module doesn't exist
 it is created. Copies (or symlinks with --link) the path into the module's
 managed store and records it in the config YAML.`,
-		Example: `  dotular add nvim ~/.config/nvim
-  dotular add nvim ~/.config/nvim/init.lua --link
-  dotular add shell ~/.zshrc --direction sync`,
-		Args: cobra.ExactArgs(2),
+		Example: `  dotular add ~/.config/nvim nvim
+  dotular add ~/.config/nvim/init.lua nvim --link
+  dotular add ~/.zshrc shell --direction sync
+  dotular add ~/.zshrc`,
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			moduleName := args[0]
-			srcPath := platform.ExpandPath(args[1])
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			srcPath := platform.ExpandPath(args[0])
+			var moduleName string
+			if len(args) >= 2 {
+				moduleName = args[1]
+			} else {
+				absSrcForInfer, inferErr := filepath.Abs(srcPath)
+				if inferErr != nil {
+					return fmt.Errorf("resolve path: %w", inferErr)
+				}
+				inferred, inferErr := inferModuleName(ctx, absSrcForInfer)
+				if inferErr != nil {
+					return inferErr
+				}
+				moduleName = inferred
+			}
 
 			// Resolve the source to an absolute path.
 			absSrc, err := filepath.Abs(srcPath)
@@ -225,6 +245,61 @@ managed store and records it in the config YAML.`,
 	cmd.Flags().BoolVar(&link, "link", false, "use symlink instead of copy at apply time")
 	cmd.Flags().StringVar(&direction, "direction", "push", "file direction: push, pull, or sync")
 	return cmd
+}
+
+func inferModuleName(ctx context.Context, absPath string) (string, error) {
+	u := ui.New(os.Stdout, os.Stderr)
+
+	// Try registry-based inference.
+	entries, err := registry.FetchIndex(ctx, u)
+	if err == nil && len(entries) > 0 {
+		lockPath := registry.LockPath(configFile)
+		lock, lockErr := registry.LoadLock(lockPath)
+		if lockErr == nil {
+			var modules []registry.RemoteModule
+			for _, entry := range entries {
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				if fetchErr == nil {
+					modules = append(modules, *mod)
+				}
+			}
+			if len(modules) > 0 {
+				matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath)
+				if len(matches) == 1 {
+					u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
+					return matches[0].ModuleName, nil
+				}
+				if len(matches) > 1 {
+					u.Info("Multiple registry modules match this path:")
+					for _, m := range matches {
+						u.Info(fmt.Sprintf("  - %s", m.ModuleName))
+					}
+				}
+			}
+		}
+	}
+
+	// Prompt the user.
+	if !isTerminal() {
+		return "", fmt.Errorf("module name required when stdin is not a terminal; use: dotular add <path> <module>")
+	}
+
+	var name string
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Module name").
+				Description("Enter a name for the module").
+				Value(&name),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return "", err
+	}
+	if name == "" {
+		return "", fmt.Errorf("module name cannot be empty")
+	}
+	return name, nil
 }
 
 // copyFileSimple copies a single file from src to dst.

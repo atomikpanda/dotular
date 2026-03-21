@@ -516,7 +516,7 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 
 func TestAddCmdDef(t *testing.T) {
 	cmd := addCmd()
-	if cmd.Use != "add <module> <path>" {
+	if cmd.Use != "add <path> [module]" {
 		t.Errorf("Use = %q", cmd.Use)
 	}
 }
@@ -531,7 +531,7 @@ func TestAddCmdFile(t *testing.T) {
 	os.WriteFile(srcFile, []byte("hello"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "mymod", srcFile})
+	root.SetArgs([]string{"add", "--config", cfgPath, srcFile, "mymod"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestAddCmdDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("bbb"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "mymod", srcDir})
+	root.SetArgs([]string{"add", "--config", cfgPath, srcDir, "mymod"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +618,7 @@ modules:
 	os.WriteFile(srcFile, []byte("extra"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "existing", srcFile})
+	root.SetArgs([]string{"add", "--config", cfgPath, srcFile, "existing"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -645,7 +645,7 @@ func TestAddCmdWithLink(t *testing.T) {
 	os.WriteFile(srcFile, []byte("data"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "--link", "linkmod", srcFile})
+	root.SetArgs([]string{"add", "--config", cfgPath, "--link", srcFile, "linkmod"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +672,7 @@ func TestAddCmdWithDirection(t *testing.T) {
 	os.WriteFile(srcFile, []byte("data"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "--direction", "sync", "syncmod", srcFile})
+	root.SetArgs([]string{"add", "--config", cfgPath, "--direction", "sync", srcFile, "syncmod"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +696,7 @@ func TestAddCmdMissingPath(t *testing.T) {
 	os.WriteFile(cfgPath, []byte("modules: []\n"), 0o644)
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "mymod", "/nonexistent/path"})
+	root.SetArgs([]string{"add", "--config", cfgPath, "/nonexistent/path", "mymod"})
 	if err := root.Execute(); err == nil {
 		t.Error("expected error for nonexistent source path")
 	}
