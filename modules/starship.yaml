@@ -25,6 +25,6 @@ items:
 
   - file: starship.toml
     destination:
-      macos: ~/.config
-      linux: ~/.config
-      windows: "%USERPROFILE%\\.config"
+      macos: ~/.config/starship.toml
+      linux: ~/.config/starship.toml
+      windows: "%USERPROFILE%\\.config\\starship.toml"
