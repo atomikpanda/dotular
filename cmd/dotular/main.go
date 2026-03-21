@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
+	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/color"
@@ -18,6 +21,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/runner"
+	"github.com/atomikpanda/dotular/internal/scanner"
 	"github.com/atomikpanda/dotular/internal/tags"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
@@ -54,6 +58,7 @@ and Linux using a single YAML file.`,
 	root.PersistentFlags().BoolVar(&noCache, "no-cache", false, "re-fetch registry modules from the network")
 
 	root.AddCommand(
+		initCmd(),
 		addCmd(),
 		applyCmd(),
 		directionCmd("push", "Push repo files to the system (overrides direction on all file items)"),
@@ -697,4 +702,199 @@ func registryCmd() *cobra.Command {
 		},
 	)
 	return cmd
+}
+
+// --- init --------------------------------------------------------------------
+
+func isTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+func runPicker(results []scanner.ScanResult) ([]scanner.ScanResult, error) {
+	options := make([]huh.Option[int], len(results))
+	for i, r := range results {
+		label := fmt.Sprintf("%s (%d/%d items matched)",
+			r.Module.Name, len(r.MatchedItems), r.TotalItems)
+		options[i] = huh.NewOption(label, i)
+	}
+
+	var selectedIndices []int
+
+	// Pre-select full matches.
+	for i, r := range results {
+		if r.Score == 1.0 {
+			selectedIndices = append(selectedIndices, i)
+		}
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[int]().
+				Title("Select modules to add").
+				Options(options...).
+				Value(&selectedIndices),
+		),
+	)
+
+	if err := form.Run(); err != nil {
+		return nil, err
+	}
+
+	var selected []scanner.ScanResult
+	for _, idx := range selectedIndices {
+		selected = append(selected, results[idx])
+	}
+	return selected, nil
+}
+
+func initCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "init",
+		Short: "Scan this machine and suggest modules from the registry",
+		Long: `Scans your machine for installed packages and config files, matches
+them against the official module registry, and lets you pick which
+modules to add to your dotular.yaml.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			u := ui.New(os.Stdout, os.Stderr)
+
+			// 1. Fetch the registry index.
+			u.Info("Fetching module registry...")
+			entries, err := registry.FetchIndex(ctx, u)
+			if err != nil {
+				return fmt.Errorf("fetch registry index: %w", err)
+			}
+			if len(entries) == 0 {
+				u.Info("No modules found in registry.")
+				return nil
+			}
+
+			// 2. Fetch all module definitions.
+			lockPath := registry.LockPath(configFile)
+			lock, err := registry.LoadLock(lockPath)
+			if err != nil {
+				return err
+			}
+
+			var modules []registry.RemoteModule
+			for _, entry := range entries {
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				if fetchErr != nil {
+					u.Warn(fmt.Sprintf("skipping %s: %v", entry.Name, fetchErr))
+					continue
+				}
+				modules = append(modules, *mod)
+			}
+			if len(modules) == 0 {
+				u.Info("No modules could be fetched from registry.")
+				return nil
+			}
+
+			// Save updated lock file.
+			if err := registry.SaveLock(lockPath, lock); err != nil {
+				u.Warn(fmt.Sprintf("could not save lock file: %v", err))
+			}
+
+			// 3. Scan the machine.
+			u.Info("Scanning installed software...")
+			expand := platform.ExpandPath
+			fileExists := func(path string) bool {
+				_, err := os.Stat(path)
+				return err == nil
+			}
+			pkgInstalled := func(manager, pkg string) bool {
+				checkArgs := actions.CheckArgs(manager, pkg)
+				if checkArgs == nil {
+					return false
+				}
+				c := exec.CommandContext(ctx, checkArgs[0], checkArgs[1:]...)
+				return c.Run() == nil
+			}
+
+			results := scanner.ScanInstalled(modules, platform.Current(), expand, fileExists, pkgInstalled)
+
+			// Filter to results that have at least one match.
+			var matched []scanner.ScanResult
+			for _, r := range results {
+				if len(r.MatchedItems) > 0 {
+					matched = append(matched, r)
+				}
+			}
+
+			if len(matched) == 0 {
+				u.Info("No matching modules found on this machine.")
+				return nil
+			}
+
+			// 4. Interactive picker or auto-select.
+			var selected []scanner.ScanResult
+			if isTerminal() {
+				selected, err = runPicker(matched)
+				if err != nil {
+					return err
+				}
+			} else {
+				// Non-interactive: auto-select full matches.
+				for _, r := range matched {
+					if r.Score == 1.0 {
+						selected = append(selected, r)
+						u.Info(fmt.Sprintf("auto-selected: %s (%d/%d items matched)",
+							r.Module.Name, len(r.MatchedItems), r.TotalItems))
+					}
+				}
+			}
+
+			if len(selected) == 0 {
+				u.Info("No modules selected.")
+				return nil
+			}
+
+			// 5. Load or create config, merge selections.
+			cfg, loadErr := loadConfig()
+			if loadErr != nil && !os.IsNotExist(loadErr) {
+				return loadErr
+			}
+
+			// Normalize existing from: refs for dedup comparison.
+			existingURLs := make(map[string]bool)
+			for _, mod := range cfg.Modules {
+				if mod.From != "" {
+					ref := registry.ParseRef(mod.From)
+					existingURLs[ref.FetchURL] = true
+				}
+			}
+
+			added := 0
+			for _, r := range selected {
+				fromRef := r.Module.Name // bare name expands to official registry
+				ref := registry.ParseRef(fromRef)
+				if existingURLs[ref.FetchURL] {
+					u.Warn(fmt.Sprintf("skipping %s (already in config)", fromRef))
+					continue
+				}
+				cfg.Modules = append(cfg.Modules, config.Module{
+					From: fromRef,
+				})
+				added++
+			}
+
+			if added == 0 {
+				u.Info("All selected modules are already in your config.")
+				return nil
+			}
+
+			// 6. Write config.
+			if err := config.Save(configFile, cfg); err != nil {
+				return err
+			}
+
+			u.Success(fmt.Sprintf("Added %d module(s) to %s", added, configFile))
+			u.Info(fmt.Sprintf("\nNext: run %s to apply", color.Bold("dotular apply")))
+			return nil
+		},
+	}
 }
