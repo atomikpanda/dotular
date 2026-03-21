@@ -5,21 +5,21 @@
 class Dotular < Formula
   desc "A config-driven dotfile manager"
   homepage "https://github.com/atomikpanda/dotular"
-  version "0.1.0"
+  version "0.1.1"
   license "MIT"
 
   on_macos do
     if Hardware::CPU.intel?
-      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.0/dotular_0.1.0_darwin_amd64.tar.gz"
-      sha256 "b6455d0b2fe350d5094310c54628c6a106de1de18f00e68419e9a9a9f6c30a96"
+      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.1/dotular_0.1.1_darwin_amd64.tar.gz"
+      sha256 "47297f77e49ffc9a89a14d3da3ba8a22dea33839caa51d59d74b35dbdc5f0cee"
 
       define_method(:install) do
         bin.install "dotular"
       end
     end
     if Hardware::CPU.arm?
-      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.0/dotular_0.1.0_darwin_arm64.tar.gz"
-      sha256 "d0c72bb8639b9a462d79b1af7131bd80ff873db746c1293474df3cdf453d8233"
+      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.1/dotular_0.1.1_darwin_arm64.tar.gz"
+      sha256 "3fc56417549a5c3841a763c913e92cff0eebc73b7215e518135c9a8c828a1265"
 
       define_method(:install) do
         bin.install "dotular"
@@ -29,15 +29,15 @@ class Dotular < Formula
 
   on_linux do
     if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?
-      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.0/dotular_0.1.0_linux_amd64.tar.gz"
-      sha256 "189c40616fbea8f111754e64206b55c341d35dd5fdbe4d34b0559aea8897951a"
+      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.1/dotular_0.1.1_linux_amd64.tar.gz"
+      sha256 "d3a4b78fa4854b57d61e5ba38c0371df69c787f501df5399a38bebfb250b0a34"
       define_method(:install) do
         bin.install "dotular"
       end
     end
     if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?
-      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.0/dotular_0.1.0_linux_arm64.tar.gz"
-      sha256 "77b27430be98382d4a638c70dd8536d81b15c5bbacc7fdd9a6875ffa85b49f5a"
+      url "https://github.com/atomikpanda/dotular/releases/download/v0.1.1/dotular_0.1.1_linux_arm64.tar.gz"
+      sha256 "cf80ded84cdaf0a97da2b6c6c5fbbc98ca52d2626516d7aaf27c24904d7a4f29"
       define_method(:install) do
         bin.install "dotular"
       end
