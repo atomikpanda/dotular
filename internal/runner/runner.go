@@ -455,6 +455,9 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Ac
 		}, false, nil
 
 	case "run":
+		if r.DirectionOverride == "pull" {
+			return nil, true, nil
+		}
 		return &actions.RunAction{Command: item.Run, After: item.After}, false, nil
 
 	case "setting":

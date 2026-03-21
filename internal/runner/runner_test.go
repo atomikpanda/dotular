@@ -185,6 +185,19 @@ func TestBuildActionRun(t *testing.T) {
 	}
 }
 
+func TestBuildActionRunSkippedOnPull(t *testing.T) {
+	r := newTestRunner(config.Config{})
+	r.DirectionOverride = "pull"
+	item := config.Item{Run: "echo hello"}
+	_, skip, err := r.buildAction(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skip {
+		t.Error("run action should be skipped on pull")
+	}
+}
+
 func TestBuildActionSetting(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{Setting: "com.apple.dock", Key: "autohide", Value: true}
