@@ -1,0 +1,59 @@
+name: git
+version: "1.0.0"
+items:
+  - package: git
+    via: brew
+    skip_if: command -v git
+    verify: git --version
+
+  - package: git
+    via: apt
+    skip_if: command -v git
+    verify: git --version
+
+  - package: git
+    via: dnf
+    skip_if: command -v git
+    verify: git --version
+
+  - package: git
+    via: pacman
+    skip_if: command -v git
+    verify: git --version
+
+  - package: Git.Git
+    via: winget
+    skip_if: command -v git
+    verify: git --version
+
+  - package: git
+    via: choco
+    skip_if: command -v git
+    verify: git --version
+
+  - file: .gitconfig
+    direction: sync
+    destination:
+      macos: ~
+      linux: ~
+      windows: '%USERPROFILE%'
+
+  - file: .gitignore_global
+    direction: sync
+    destination:
+      macos: ~
+      linux: ~
+      windows: '%USERPROFILE%'
+
+  - file: .gitattributes
+    direction: sync
+    destination:
+      macos: ~
+      linux: ~
+      windows: '%USERPROFILE%'
+
+  - file: ignore
+    direction: sync
+    destination:
+      macos: ~/.config/git
+      linux: ~/.config/git
