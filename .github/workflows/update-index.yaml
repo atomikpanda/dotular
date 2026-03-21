@@ -1,0 +1,39 @@
+name: Update module index
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'modules/*.yaml'
+      - '!modules/index.yaml'
+
+jobs:
+  update-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate modules/index.yaml
+        run: |
+          echo "modules:" > modules/index.yaml
+          for f in modules/*.yaml; do
+            [ "$(basename "$f")" = "index.yaml" ] && continue
+            name=$(grep '^name:' "$f" | head -1 | sed 's/name: *//;s/"//g')
+            version=$(grep '^version:' "$f" | head -1 | sed 's/version: *//;s/"//g')
+            echo "  - name: $name" >> modules/index.yaml
+            echo "    version: \"$version\"" >> modules/index.yaml
+          done
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --quiet modules/index.yaml || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add modules/index.yaml
+          git commit -m "chore: update modules/index.yaml [skip ci]"
+          git push
