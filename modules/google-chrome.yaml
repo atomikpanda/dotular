@@ -19,3 +19,28 @@ items:
 
   - package: googlechrome
     via: choco
+
+  - file: Preferences
+    destination:
+      macos: ~/Library/Application Support/Google/Chrome/Default
+      linux: ~/.config/google-chrome/Default
+      windows: "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default"
+
+  - file: Bookmarks
+    permissions: "0600"
+    destination:
+      macos: ~/Library/Application Support/Google/Chrome/Default
+      linux: ~/.config/google-chrome/Default
+      windows: "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default"
+
+  - file: Local State
+    destination:
+      macos: ~/Library/Application Support/Google/Chrome
+      linux: ~/.config/google-chrome
+      windows: "%LOCALAPPDATA%\\Google\\Chrome\\User Data"
+
+  - directory: Extensions
+    destination:
+      macos: ~/Library/Application Support/Google/Chrome/Default/Extensions
+      linux: ~/.config/google-chrome/Default/Extensions
+      windows: "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Extensions"

@@ -28,6 +28,12 @@ import (
 )
 
 var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+var (
 	configFile string
 	dryRun     bool
 	verbose    bool
@@ -59,6 +65,7 @@ and Linux using a single YAML file.`,
 	root.PersistentFlags().BoolVar(&noCache, "no-cache", false, "re-fetch registry modules from the network")
 
 	root.AddCommand(
+		versionCmd(),
 		initCmd(),
 		addCmd(),
 		applyCmd(),
@@ -77,6 +84,18 @@ and Linux using a single YAML file.`,
 	)
 
 	return root
+}
+
+// --- version -----------------------------------------------------------------
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version of dotular",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("dotular %s (commit: %s, built: %s)\n", version, commit, date)
+		},
+	}
 }
 
 // loadConfig parses the raw config file without registry resolution.
