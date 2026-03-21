@@ -35,6 +35,15 @@ Items are polymorphic — the type is determined by which primary field is set (
 
 `PlatformMap` accepts either a scalar (all platforms) or a `macos`/`windows`/`linux` mapping. It has custom YAML marshal/unmarshal methods.
 
+## CLI Commands
+
+- `dotular init` — scan machine against registry and suggest modules to adopt
+- `dotular add <path> [module]` — add a file or directory to a module (creates module if needed)
+- `dotular apply [module...]` — apply all or named modules
+- `dotular list` — list modules and item counts
+- `dotular status` — verbose dry-run showing all actions
+- `dotular platform` — print detected OS
+
 ## Dependencies
 
 - `github.com/spf13/cobra` — CLI framework
