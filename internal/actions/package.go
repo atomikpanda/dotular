@@ -44,7 +44,7 @@ func (a *PackageAction) Run(ctx context.Context, dryRun bool) error {
 // IsApplied returns true when the package is already installed according to
 // the package manager. Returns (false, nil) when the check is unsupported.
 func (a *PackageAction) IsApplied(ctx context.Context) (bool, error) {
-	args := checkArgs(a.Manager, a.Package)
+	args := CheckArgs(a.Manager, a.Package)
 	if args == nil {
 		return false, nil // no check available for this manager
 	}
@@ -60,9 +60,9 @@ func (a *PackageAction) IsApplied(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// checkArgs returns the command to test whether a package is installed.
+// CheckArgs returns the command to test whether a package is installed.
 // Returns nil when no check is defined for the manager.
-func checkArgs(manager, pkg string) []string {
+func CheckArgs(manager, pkg string) []string {
 	switch manager {
 	case "brew":
 		return []string{"brew", "list", "--formula", pkg}

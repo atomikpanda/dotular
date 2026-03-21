@@ -59,32 +59,29 @@ func TestInstallArgs(t *testing.T) {
 func TestCheckArgs(t *testing.T) {
 	tests := []struct {
 		manager string
+		pkg     string
 		wantNil bool
+		want0   string
 	}{
-		{"brew", false},
-		{"brew-cask", false},
-		{"mas", false},
-		{"winget", false},
-		{"choco", false},
-		{"scoop", false},
-		{"apt", false},
-		{"apt-get", false},
-		{"dnf", false},
-		{"yum", false},
-		{"pacman", false},
-		{"snap", false},
-		{"flatpak", false},
-		{"nix", false},
-		{"unknown", true},
+		{"brew", "git", false, "brew"},
+		{"brew-cask", "wezterm", false, "brew"},
+		{"apt", "curl", false, "dpkg"},
+		{"unknown-mgr", "foo", true, ""},
 	}
 	for _, tt := range tests {
-		t.Run(tt.manager, func(t *testing.T) {
-			args := checkArgs(tt.manager, "pkg")
-			if tt.wantNil && args != nil {
-				t.Errorf("expected nil for %q", tt.manager)
+		t.Run(tt.manager+"/"+tt.pkg, func(t *testing.T) {
+			got := CheckArgs(tt.manager, tt.pkg)
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("CheckArgs(%q, %q) = %v, want nil", tt.manager, tt.pkg, got)
+				}
+				return
 			}
-			if !tt.wantNil && args == nil {
-				t.Errorf("expected non-nil for %q", tt.manager)
+			if got == nil {
+				t.Fatalf("CheckArgs(%q, %q) = nil, want non-nil", tt.manager, tt.pkg)
+			}
+			if got[0] != tt.want0 {
+				t.Errorf("CheckArgs(%q, %q)[0] = %q, want %q", tt.manager, tt.pkg, got[0], tt.want0)
 			}
 		})
 	}
@@ -127,7 +124,7 @@ func TestPackageActionIsAppliedNoCheck(t *testing.T) {
 }
 
 func TestCheckArgsNix(t *testing.T) {
-	args := checkArgs("nix", "nixpkgs.git")
+	args := CheckArgs("nix", "nixpkgs.git")
 	if args == nil {
 		t.Fatal("expected non-nil check args for nix")
 	}
