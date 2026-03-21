@@ -42,3 +42,19 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: Verify modules index
+        run: |
+          # Generate index.yaml from module files
+          echo "modules:" > /tmp/index.yaml
+          for f in modules/*.yaml; do
+            [ "$(basename "$f")" = "index.yaml" ] && continue
+            name=$(grep '^name:' "$f" | head -1 | sed 's/^name: *//')
+            version=$(grep '^version:' "$f" | head -1 | sed 's/^version: *//')
+            echo "  - name: $name" >> /tmp/index.yaml
+            echo "    version: $version" >> /tmp/index.yaml
+          done
+          if ! diff -u modules/index.yaml /tmp/index.yaml; then
+            echo "::error::modules/index.yaml is out of date. Run 'make index' to regenerate."
+            exit 1
+          fi

@@ -1,0 +1,30 @@
+name: starship
+version: "1.0.0"
+items:
+  - package: starship
+    via: brew
+    skip_if: command -v starship
+    verify: starship --version
+
+  - package: starship
+    via: pacman
+    skip_if: command -v starship
+
+  - package: starship
+    via: apt
+    skip_if: command -v starship
+
+  - package: Starship.Starship
+    via: winget
+
+  - package: starship
+    via: choco
+
+  - package: starship
+    via: scoop
+
+  - file: starship.toml
+    destination:
+      macos: ~/.config
+      linux: ~/.config
+      windows: "%USERPROFILE%\\.config"

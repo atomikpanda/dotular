@@ -108,6 +108,9 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 
 	switch a.Direction {
 	case "pull":
+		if !dirExists(target) {
+			return fmt.Errorf("pull: system directory does not exist: %s: %w", target, ErrSkipped)
+		}
 		return copyDir(target, a.Source)
 	case "sync":
 		repoExists := dirExists(a.Source)

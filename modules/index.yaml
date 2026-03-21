@@ -1,5 +1,13 @@
 modules:
-  - name: wezterm
+  - name: fastfetch
     version: "1.0.0"
   - name: git
+    version: "1.0.0"
+  - name: htop
+    version: "1.0.0"
+  - name: starship
+    version: "1.0.0"
+  - name: wezterm
+    version: "1.0.0"
+  - name: zsh
     version: "1.0.0"

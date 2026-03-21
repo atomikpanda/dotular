@@ -1,0 +1,24 @@
+name: htop
+version: "1.0.0"
+items:
+  - package: htop
+    via: brew
+    skip_if: command -v htop
+    verify: htop --version
+
+  - package: htop
+    via: pacman
+    skip_if: command -v htop
+
+  - package: htop
+    via: apt
+    skip_if: command -v htop
+
+  - package: htop
+    via: dnf
+    skip_if: command -v htop
+
+  - file: htoprc
+    destination:
+      macos: ~/.config/htop
+      linux: ~/.config/htop

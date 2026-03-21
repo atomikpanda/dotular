@@ -1,0 +1,35 @@
+name: zsh
+version: "1.0.0"
+items:
+  - package: zsh
+    via: apt
+    skip_if: command -v zsh
+    verify: zsh --version
+
+  - package: zsh
+    via: dnf
+    skip_if: command -v zsh
+    verify: zsh --version
+
+  - package: zsh
+    via: pacman
+    skip_if: command -v zsh
+    verify: zsh --version
+
+  - file: .zshenv
+    destination:
+      macos: ~
+      linux: ~
+
+  - file: .zprofile
+    destination:
+      macos: ~
+      linux: ~
+
+  - file: .zshrc
+    destination:
+      macos: ~
+      linux: ~
+
+  - run: chsh -s $(which zsh)
+    after: package

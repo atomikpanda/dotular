@@ -1,6 +1,14 @@
 package actions
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+// ErrSkipped is returned by an action's Run method when the action cannot
+// proceed but the failure is not an error (e.g. pulling a file that does not
+// exist on the system). The runner treats this as a skip rather than a failure.
+var ErrSkipped = errors.New("skipped")
 
 // Action is a single executable step produced from a config item.
 type Action interface {

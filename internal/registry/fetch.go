@@ -48,9 +48,10 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 		return nil, ref.Trust, fmt.Errorf("fetch %s: %w", rawRef, err)
 	}
 
-	// Verify against existing lockfile entry (if any).
+	// Verify against existing lockfile entry when using cache; skip when
+	// explicitly re-fetching so that updated modules are accepted.
 	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	if inLock && entry.SHA256 != sum {
+	if !noCache && inLock && entry.SHA256 != sum {
 		return nil, ref.Trust, fmt.Errorf(
 			"registry: checksum mismatch for %s after re-fetch (lockfile: %s, got: %s)",
 			rawRef, entry.SHA256, sum,

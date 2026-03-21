@@ -4,6 +4,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -340,6 +341,14 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 
 	start := time.Now()
 	runErr := action.Run(ctx, false)
+
+	if runErr != nil && errors.Is(runErr, actions.ErrSkipped) {
+		msg := strings.TrimSuffix(runErr.Error(), ": "+actions.ErrSkipped.Error())
+		r.UI.Skip(msg, action.Describe())
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+		return outcomeSkipped, nil
+	}
+
 	r.UI.ItemResult(action.Describe(), time.Since(start), runErr)
 
 	outcome, errMsg := "success", ""

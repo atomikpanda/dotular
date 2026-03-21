@@ -7,6 +7,12 @@ description: Use when user asks to create a dotular module, add a tool to dotula
 
 Create a complete dotular registry module for a tool by researching its config files, scanning the local machine, and writing the module YAML.
 
+## Critical Rule
+
+1. **NEVER use `dotular add`**. That command writes to the user's personal `dotular.yaml` and only sets the destination for the current platform. This skill creates **registry modules** — standalone YAML files in `modules/` with cross-platform destinations. Always create files manually as described in Step 4.
+
+2. **NEVER copy personal config files into registry modules**. Registry modules are shared/generic — they define package items and file destination mappings only. The `file:` items tell dotular *where* a config file belongs, but the actual config content comes from the user's own store, not the registry module. Do NOT create a `modules/<tool>/` subdirectory or copy files like `~/.config/tool/config.toml` into it.
+
 ## Process
 
 ```dot
@@ -56,7 +62,7 @@ ls -la ~/.config/toolname/ 2>/dev/null
 ls -la ~/Library/Application\ Support/ToolName/ 2>/dev/null
 ```
 
-Record which files/directories exist. This validates your research and identifies files available to copy into the module store.
+Record which files/directories exist. This validates your research and confirms the correct destination paths for the `file:` items in the module YAML. Do NOT copy these files — the scan is only to verify paths.
 
 ## Step 3: Present Summary
 
@@ -97,47 +103,34 @@ Include a clear recommendation. Wait for user confirmation before proceeding.
 
 ## Step 4: Execute
 
-After user confirms:
+After user confirms, **write the module YAML** at `modules/<tool>.yaml`:
 
-1. **Create module directory** (if config files exist to store):
-   ```bash
-   mkdir -p modules/<tool>/
-   ```
+```yaml
+name: <tool-name>
+version: "1.0.0"
+items:
+  - package: <name>
+    via: brew
+    skip_if: command -v <name>
+    verify: <name> --version
 
-2. **Copy existing config files** into the module store:
-   ```bash
-   cp ~/.config/tool/config.yml modules/<tool>/config.yml
-   ```
-   File placement rule: files go at `modules/<tool>/<filename>` where `<filename>` matches the `file:` value in the YAML. The runner prepends the module name as `sourcePrefix`.
+  - package: <name>
+    via: apt
+    skip_if: command -v <name>
 
-3. **Write module YAML** at `modules/<tool>.yaml`:
+  - package: <name-or-id>
+    via: winget
 
-   ```yaml
-   name: <tool-name>
-   version: "1.0.0"
-   items:
-     - package: <name>
-       via: brew
-       skip_if: command -v <name>
-       verify: <name> --version
+  - file: <filename>
+    destination:
+      macos: <path>
+      linux: <path>
+      windows: <path>
+```
 
-     - package: <name>
-       via: apt
-       skip_if: command -v <name>
+**Multiple package items**: Create a separate `package` item for each platform's package manager (see `dotular.yaml` VS Code module for this pattern). Use `skip_if: command -v <tool>` so only the available manager runs. The runner executes all items — an unavailable package manager simply fails, but `skip_if` prevents redundant installs after the first succeeds.
 
-     - package: <name-or-id>
-       via: winget
-
-     - file: <filename>
-       destination:
-         macos: <path>
-         linux: <path>
-         windows: <path>
-   ```
-
-   **Multiple package items**: Create a separate `package` item for each platform's package manager (see `dotular.yaml` VS Code module for this pattern). Use `skip_if: command -v <tool>` so only the available manager runs. The runner executes all items — an unavailable package manager simply fails, but `skip_if` prevents redundant installs after the first succeeds.
-
-4. If **no config files** to store (package-only module), skip creating the subdirectory.
+**File items**: The `file:` and `directory:` items define destination mappings only — where config files belong on each platform. Do NOT create a `modules/<tool>/` subdirectory or copy personal config files into it. The user's own dotular store provides the actual file content at apply time.
 
 ## Step 5: Verify
 
@@ -172,6 +165,8 @@ Display the complete contents of the generated `modules/<tool>.yaml` for user re
 | Missing `skip_if` on package items | Add `skip_if: command -v <tool>` for idempotency |
 | Using trailing `/` in destination | Match existing convention: `~/.config/tool` not `~/.config/tool/` |
 | Forgetting Windows paths | Always research all 3 platforms for PlatformMap |
+| Using `dotular add` command | NEVER — it writes to personal `dotular.yaml` with single-platform destinations. Manually create `modules/<tool>.yaml` instead |
+| Copying personal config files into module | NEVER — registry modules define destination mappings only, not file content. Do not create `modules/<tool>/` subdirectories or `cp` user configs into them |
 | Editing user's `dotular.yaml` | This skill creates REGISTRY modules only — never touch personal config |
 | Updating `modules/index.yaml` | Out of scope — tell user to add the entry manually |
 

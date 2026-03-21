@@ -702,11 +702,14 @@ func registryCmd() *cobra.Command {
 		Short: "Manage the local registry cache",
 	}
 
-	cmd.AddCommand(
-		&cobra.Command{
-			Use:   "list",
-			Short: "List cached registry modules",
-			RunE: func(cmd *cobra.Command, args []string) error {
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List available registry modules",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cached, _ := cmd.Flags().GetBool("cached")
+			u := ui.New(os.Stdout, os.Stderr)
+
+			if cached {
 				_, err := loadConfig()
 				if err != nil {
 					return err
@@ -716,7 +719,6 @@ func registryCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				u := ui.New(os.Stdout, os.Stderr)
 				if len(lock.Registry) == 0 {
 					u.Info("(no cached registry modules)")
 					return nil
@@ -726,7 +728,6 @@ func registryCmd() *cobra.Command {
 				for ref, entry := range lock.Registry {
 					ref := registry.ParseRef(ref)
 					trustStr := ref.Trust.String()
-					// Pre-color trust
 					switch trustStr {
 					case "official":
 						trustStr = color.BoldGreen(trustStr)
@@ -743,8 +744,31 @@ func registryCmd() *cobra.Command {
 				}
 				u.Table(headers, rows, nil)
 				return nil
-			},
+			}
+
+			// Default: fetch and display remote index.
+			ctx := context.Background()
+			entries, err := registry.FetchIndex(ctx, u)
+			if err != nil {
+				return err
+			}
+			if len(entries) == 0 {
+				u.Info("(no modules in registry)")
+				return nil
+			}
+			headers := []string{"NAME", "VERSION"}
+			var rows [][]string
+			for _, e := range entries {
+				rows = append(rows, []string{e.Name, e.Version})
+			}
+			u.Table(headers, rows, nil)
+			return nil
 		},
+	}
+	listCmd.Flags().Bool("cached", false, "Show locally cached modules instead of the remote index")
+
+	cmd.AddCommand(
+		listCmd,
 		&cobra.Command{
 			Use:   "clear",
 			Short: "Remove all cached registry modules",

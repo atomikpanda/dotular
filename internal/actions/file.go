@@ -169,7 +169,7 @@ func (a *FileAction) runPush(destDir, target string) error {
 
 func (a *FileAction) runPull(target string) error {
 	if _, err := os.Stat(target); os.IsNotExist(err) {
-		return fmt.Errorf("pull: system file does not exist: %s", target)
+		return fmt.Errorf("pull: system file does not exist: %s: %w", target, ErrSkipped)
 	}
 	if err := os.MkdirAll(filepath.Dir(a.Source), 0o755); err != nil {
 		return fmt.Errorf("create repo directory: %w", err)

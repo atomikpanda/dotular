@@ -1,0 +1,34 @@
+name: fastfetch
+version: "1.0.0"
+items:
+  - package: fastfetch
+    via: brew
+    skip_if: command -v fastfetch
+    verify: fastfetch --version
+
+  - package: fastfetch
+    via: pacman
+    skip_if: command -v fastfetch
+
+  - package: fastfetch
+    via: apt
+    skip_if: command -v fastfetch
+
+  - package: fastfetch
+    via: dnf
+    skip_if: command -v fastfetch
+
+  - package: Fastfetch-cli.Fastfetch
+    via: winget
+
+  - package: fastfetch
+    via: choco
+
+  - package: fastfetch
+    via: scoop
+
+  - file: config.jsonc
+    destination:
+      macos: ~/.config/fastfetch
+      linux: ~/.config/fastfetch
+      windows: "%APPDATA%\\fastfetch"
