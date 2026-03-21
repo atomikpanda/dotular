@@ -1,7 +1,11 @@
 modules:
+  - name: claude-code
+    version: "1.0.0"
   - name: fastfetch
     version: "1.0.0"
   - name: git
+    version: "1.0.0"
+  - name: google-chrome
     version: "1.0.0"
   - name: htop
     version: "1.0.0"

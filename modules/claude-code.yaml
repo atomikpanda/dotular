@@ -1,0 +1,44 @@
+name: claude-code
+version: "1.0.0"
+items:
+  - package: claude-code
+    via: brew-cask
+    skip_if: command -v claude
+    verify: claude --version
+
+  - package: Anthropic.ClaudeCode
+    via: winget
+
+  - script: https://claude.ai/install.sh
+    via: remote
+    skip_if: command -v claude
+
+  - file: settings.json
+    destination:
+      macos: ~/.claude
+      linux: ~/.claude
+      windows: "%USERPROFILE%\\.claude"
+
+  - file: settings.local.json
+    destination:
+      macos: ~/.claude
+      linux: ~/.claude
+      windows: "%USERPROFILE%\\.claude"
+
+  - file: CLAUDE.md
+    destination:
+      macos: ~/.claude
+      linux: ~/.claude
+      windows: "%USERPROFILE%\\.claude"
+
+  - directory: commands
+    destination:
+      macos: ~/.claude/commands
+      linux: ~/.claude/commands
+      windows: "%USERPROFILE%\\.claude\\commands"
+
+  - directory: skills
+    destination:
+      macos: ~/.claude/skills
+      linux: ~/.claude/skills
+      windows: "%USERPROFILE%\\.claude\\skills"

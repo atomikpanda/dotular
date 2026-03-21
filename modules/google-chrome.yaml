@@ -1,0 +1,21 @@
+name: google-chrome
+version: "1.0.0"
+items:
+  - package: google-chrome
+    via: brew-cask
+    skip_if: open -Ra "Google Chrome"
+    verify: /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --version
+
+  - package: google-chrome-stable
+    via: apt
+    skip_if: command -v google-chrome
+
+  - package: google-chrome-stable
+    via: dnf
+    skip_if: command -v google-chrome
+
+  - package: Google.Chrome
+    via: winget
+
+  - package: googlechrome
+    via: choco
