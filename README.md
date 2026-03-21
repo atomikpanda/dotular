@@ -2,6 +2,48 @@
 
 A modular, cross-platform dotfile manager. Define your entire system setup — packages, files, binaries, and scripts — in a single `dotular.yaml`, then apply it on any machine.
 
+## Why dotular?
+
+Most dotfile managers only manage **files**. You still need a separate bootstrap script to install packages, download binaries, configure OS settings, and glue everything together. That script inevitably becomes a fragile, untested mess of `if` statements for each platform.
+
+dotular replaces all of that with a single declarative YAML file.
+
+### How it compares
+
+| | **dotular** | **chezmoi** | **GNU Stow** | **yadm** | **mackup** |
+|---|---|---|---|---|---|
+| Manages files | Yes | Yes | Yes | Yes | Yes |
+| Installs packages | Yes — brew, apt, winget, and 10+ managers | No | No | No | No |
+| Downloads binaries | Yes — archives, extraction, versioning | No | No | No | No |
+| Runs scripts | Yes — local and remote, with skip/verify | Templates only | No | Bootstrap only | No |
+| OS settings | Yes — macOS `defaults`, extensible | No | No | No | No |
+| Cross-platform config | One file, per-OS paths and packages | Separate templates | Symlinks only | Git + encryption | macOS only |
+| Atomicity | Snapshot + rollback per module | No | No | No | No |
+| No templating language | Plain YAML — no Go templates to learn | Go `text/template` | N/A | Jinja2 (alt) | N/A |
+| Shareable modules | Registry with parameters and overrides | Community scripts | No | No | No |
+| Audit log | Built-in, append-only JSON | No | No | No | No |
+
+### The core idea
+
+A "module" in dotular groups everything a tool needs — the package install, its config files, post-install scripts, binary downloads, and OS settings — into one unit. Apply a single module to fully set up one tool. Apply all modules to bootstrap an entire machine.
+
+```yaml
+- name: Neovim
+  items:
+    - binary: nvim                          # download the binary
+      source:
+        macos: https://...nvim-macos.tar.gz
+        linux: https://...nvim-linux.tar.gz
+      install_to: ~/.local/bin
+    - directory: nvim                       # push config files
+      destination: ~/.config
+    - run: nvim --headless "+Lazy sync" +qa # install plugins
+```
+
+No bootstrap script. No platform `if`-statements. One file, any machine.
+
+---
+
 ## Features
 
 - **Modules** — group related items; apply one or all
