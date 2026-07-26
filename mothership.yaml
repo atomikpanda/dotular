@@ -1,0 +1,5 @@
+workspace: dotular
+repos:
+  dotular:
+    path: .
+    type: service
