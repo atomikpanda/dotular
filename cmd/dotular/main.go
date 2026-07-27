@@ -557,14 +557,19 @@ func verifyCmd() *cobra.Command {
 func encryptCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "encrypt <file>",
-		Short: "Encrypt a file with the configured age key (writes <file>.age)",
+		Short: "Encrypt a plaintext file with the configured age key (writes <file>.age)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			src := args[0]
+			// RepoPath is a no-op on a ".age" path, so the destination would be
+			// the source and the file would be re-encrypted over itself.
+			if strings.HasSuffix(src, ".age") {
+				return fmt.Errorf("%s is already encrypted; encrypt writes <file>.age and would overwrite it in place", src)
+			}
 			key, err := keyFromConfig()
 			if err != nil {
 				return err
 			}
-			src := args[0]
 			dst := ageutil.RepoPath(src)
 			u := ui.New(os.Stdout, os.Stderr)
 			u.Info(fmt.Sprintf("encrypting %s → %s", src, dst))
