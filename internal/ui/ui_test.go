@@ -126,23 +126,6 @@ func TestSkipHeader(t *testing.T) {
 	}
 }
 
-func TestItem(t *testing.T) {
-	old := saveColor()
-	defer func() { color.Enabled = old }()
-	color.Enabled = false
-
-	var out bytes.Buffer
-	u := New(&out, &bytes.Buffer{})
-	u.Item("install neovim")
-	got := out.String()
-	if !strings.Contains(got, "->") {
-		t.Errorf("Item output = %q, want to contain %q", got, "->")
-	}
-	if !strings.Contains(got, "install neovim") {
-		t.Errorf("Item output = %q, want to contain %q", got, "install neovim")
-	}
-}
-
 func TestItemResultSuccess(t *testing.T) {
 	old := saveColor()
 	defer func() { color.Enabled = old }()

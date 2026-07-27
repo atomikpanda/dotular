@@ -37,7 +37,6 @@ func seq(code, s string) string {
 
 func Bold(s string) string       { return seq("1", s) }
 func Dim(s string) string        { return seq("2", s) }
-func Red(s string) string        { return seq("31", s) }
 func Green(s string) string      { return seq("32", s) }
 func Yellow(s string) string     { return seq("33", s) }
 func Cyan(s string) string       { return seq("36", s) }

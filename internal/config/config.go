@@ -210,9 +210,12 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 			key := value.Content[i].Value
 			val := value.Content[i+1]
 			v := val.Value
-			// Preserve "~" when YAML interprets it as null.
-			if val.Tag == "!!null" && v == "~" {
-				v = "~"
+			// YAML reads "~" as null, but as a path it means the home
+			// directory, so keep it. Every other null spelling ("null",
+			// "Null", a bare key) means "unset" — take the empty string
+			// rather than the literal source text.
+			if val.Tag == "!!null" && v != "~" {
+				v = ""
 			}
 			switch key {
 			case "macos":

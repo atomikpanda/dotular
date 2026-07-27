@@ -10,9 +10,6 @@ func TestColorDisabled(t *testing.T) {
 	if got := Bold("hello"); got != "hello" {
 		t.Errorf("Bold() with Enabled=false = %q, want %q", got, "hello")
 	}
-	if got := Red("test"); got != "test" {
-		t.Errorf("Red() with Enabled=false = %q", got)
-	}
 	if got := Dim("dim"); got != "dim" {
 		t.Errorf("Dim() with Enabled=false = %q", got)
 	}
@@ -24,9 +21,6 @@ func TestColorEnabled(t *testing.T) {
 
 	if got := Bold("hello"); got != "\x1b[1mhello\x1b[0m" {
 		t.Errorf("Bold() = %q", got)
-	}
-	if got := Red("r"); got != "\x1b[31mr\x1b[0m" {
-		t.Errorf("Red() = %q", got)
 	}
 	if got := Green("g"); got != "\x1b[32mg\x1b[0m" {
 		t.Errorf("Green() = %q", got)

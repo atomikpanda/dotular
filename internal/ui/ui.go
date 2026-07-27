@@ -78,12 +78,6 @@ func (u *UI) SkipHeader(name, reason string) {
 	fmt.Fprintf(u.Out, "\n%s\n", color.Dim("==> "+name+"  [skip: "+reason+"]"))
 }
 
-// Item writes a pending item line to Out.
-func (u *UI) Item(desc string) {
-	s := u.symbols()
-	fmt.Fprintf(u.Out, "  %s %s\n", color.Dim(s.Arrow), desc)
-}
-
 // ItemResult writes a completed item line with duration and status to Out.
 func (u *UI) ItemResult(desc string, dur time.Duration, err error) {
 	s := u.symbols()

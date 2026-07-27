@@ -203,7 +203,7 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 		}
 
 		audit.Log(audit.Entry{
-			Command: "verify",
+			Command: r.Command,
 			Module:  mod.Name,
 			Item:    action.Describe(),
 			Outcome: outcome,

@@ -95,7 +95,12 @@ func TestParseRefCustomHost(t *testing.T) {
 	if ref.Trust != External {
 		t.Errorf("Trust = %v, want External", ref.Trust)
 	}
-	if ref.FetchURL != "https://custom.host/path/to/module@v2" {
+	// The version is recorded on the Ref but kept out of the fetch URL: no host
+	// serves "<path>@<version>" as a real path.
+	if ref.Version != "v2" {
+		t.Errorf("Version = %q, want %q", ref.Version, "v2")
+	}
+	if ref.FetchURL != "https://custom.host/path/to/module" {
 		t.Errorf("FetchURL = %q", ref.FetchURL)
 	}
 }

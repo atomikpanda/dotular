@@ -122,11 +122,10 @@ func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 		return trust, url
 
 	default:
-		// Fallback: treat as a direct HTTPS URL.
-		url := "https://" + host + "/" + path
-		if version != "" {
-			url += "@" + version
-		}
-		return External, url
+		// Fallback: treat as a direct HTTPS URL. The version is not appended —
+		// no host serves "<path>@<version>" as a fetchable URL — so an external
+		// ref is always fetched from its bare path. Ref.Version still records
+		// what was requested.
+		return External, "https://" + host + "/" + path
 	}
 }

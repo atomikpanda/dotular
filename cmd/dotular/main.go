@@ -341,22 +341,40 @@ func applyCmd() *cobra.Command {
 			}
 			r := newRunner(cfg)
 
-			if len(args) == 0 {
-				return r.ApplyAll(ctx)
-			}
-			for _, name := range args {
-				mod := cfg.Module(name)
-				if mod == nil {
-					return fmt.Errorf("module %q not found in config", name)
-				}
-				result := r.ApplyModule(ctx, *mod)
-				if result.Err != nil {
-					return result.Err
-				}
-			}
-			return nil
+			return applyNamedModules(ctx, r, cfg, args)
 		},
 	}
+}
+
+// selectModules resolves module names against the config, failing on the first
+// unknown name so that a typo never silently applies a subset of what was asked.
+func selectModules(cfg config.Config, names []string) ([]config.Module, error) {
+	mods := make([]config.Module, 0, len(names))
+	for _, name := range names {
+		mod := cfg.Module(name)
+		if mod == nil {
+			return nil, fmt.Errorf("module %q not found in config", name)
+		}
+		mods = append(mods, *mod)
+	}
+	return mods, nil
+}
+
+// applyNamedModules applies the named modules, or every module when none are named.
+func applyNamedModules(ctx context.Context, r *runner.Runner, cfg config.Config, names []string) error {
+	if len(names) == 0 {
+		return r.ApplyAll(ctx)
+	}
+	mods, err := selectModules(cfg, names)
+	if err != nil {
+		return err
+	}
+	for _, mod := range mods {
+		if result := r.ApplyModule(ctx, mod); result.Err != nil {
+			return result.Err
+		}
+	}
+	return nil
 }
 
 // --- push / pull / sync ------------------------------------------------------
@@ -378,20 +396,7 @@ func directionCmd(direction, short string) *cobra.Command {
 			r.Command = direction
 			r.DirectionOverride = direction
 
-			if len(args) == 0 {
-				return r.ApplyAll(ctx)
-			}
-			for _, name := range args {
-				mod := cfg.Module(name)
-				if mod == nil {
-					return fmt.Errorf("module %q not found in config", name)
-				}
-				result := r.ApplyModule(ctx, *mod)
-				if result.Err != nil {
-					return result.Err
-				}
-			}
-			return nil
+			return applyNamedModules(ctx, r, cfg, args)
 		},
 	}
 }
@@ -492,14 +497,17 @@ func verifyCmd() *cobra.Command {
 			var allPassed bool
 			if len(args) == 0 {
 				allPassed, err = r.VerifyAll(ctx)
+				if err != nil {
+					return err
+				}
 			} else {
+				mods, err := selectModules(cfg, args)
+				if err != nil {
+					return err
+				}
 				allPassed = true
-				for _, name := range args {
-					mod := cfg.Module(name)
-					if mod == nil {
-						return fmt.Errorf("module %q not found in config", name)
-					}
-					passed, verErr := r.VerifyModule(ctx, *mod)
+				for _, mod := range mods {
+					passed, verErr := r.VerifyModule(ctx, mod)
 					if verErr != nil {
 						return verErr
 					}
@@ -509,9 +517,6 @@ func verifyCmd() *cobra.Command {
 				}
 			}
 
-			if err != nil {
-				return err
-			}
 			if !allPassed {
 				u := ui.New(os.Stdout, os.Stderr)
 				u.Warn("some verify checks failed")
