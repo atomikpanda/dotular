@@ -19,6 +19,13 @@ type SettingAction struct {
 	Value  any
 }
 
+// SettingsSupported reports whether system settings can be applied on goos.
+// macOS uses `defaults` and Windows uses `reg`; no other platform has a
+// mechanism, so setting items are not applicable there.
+func SettingsSupported(goos string) bool {
+	return goos == "darwin" || goos == "windows"
+}
+
 func (a *SettingAction) Describe() string {
 	return fmt.Sprintf("set %s %s = %v", a.Domain, a.Key, a.Value)
 }
@@ -34,6 +41,7 @@ func (a *SettingAction) Run(ctx context.Context, dryRun bool) error {
 	case "windows":
 		return applyWindowsSetting(ctx, a.Domain, a.Key, a.Value)
 	default:
+		// Defensive: the runner skips setting items on unsupported platforms.
 		return fmt.Errorf("system settings are not supported on %s", runtime.GOOS)
 	}
 }

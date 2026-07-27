@@ -88,6 +88,25 @@ func TestWindowsRegistryArgs(t *testing.T) {
 	}
 }
 
+func TestSettingsSupported(t *testing.T) {
+	tests := []struct {
+		goos string
+		want bool
+	}{
+		{"darwin", true},
+		{"windows", true},
+		{"linux", false},
+		{"freebsd", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			if got := SettingsSupported(tt.goos); got != tt.want {
+				t.Errorf("SettingsSupported(%q) = %v, want %v", tt.goos, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSettingActionRunLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only test")
