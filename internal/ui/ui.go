@@ -148,6 +148,14 @@ func (u *UI) ModuleSummary(applied, skipped, failed int) {
 }
 
 // formatRow formats a row of values into fixed-width columns with optional color.
+//
+// Columns are measured in runes, which is a deliberate choice rather than an
+// oversight: it is not true display width. A CJK ideograph or emoji occupies two
+// terminal columns and a combining mark occupies none, so such content still
+// misaligns. Getting that right needs a wcwidth table (golang.org/x/text or
+// similar), which is not worth a new dependency in a three-dependency repo for
+// cosmetic alignment. Realistic content here is module names and paths — mostly
+// ASCII, occasionally accented Latin — which rune counting handles exactly.
 func formatRow(vals []string, widths []int, colorFns []func(string) string) string {
 	var b strings.Builder
 	for i, v := range vals {
@@ -158,9 +166,8 @@ func formatRow(vals []string, widths []int, colorFns []func(string) string) stri
 		if colorFns != nil && i < len(colorFns) && colorFns[i] != nil {
 			cell = colorFns[i](v)
 		}
-		// Pad on the raw value's rune count: not the colored length (escape
-		// sequences occupy no columns) and not the byte length (a multi-byte
-		// character occupies one column, not one per byte).
+		// Measure the raw value, not the colored cell: escape sequences occupy
+		// no columns.
 		pad := 0
 		if i < len(widths) {
 			pad = widths[i] - utf8.RuneCountInString(v)
