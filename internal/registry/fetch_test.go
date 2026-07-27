@@ -76,7 +76,7 @@ items:
   - package: neovim
     via: brew
 `)
-	mod, _, err := parseModule(data)
+	mod, err := parseModule(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ items:
 }
 
 func TestParseModuleInvalid(t *testing.T) {
-	_, _, err := parseModule([]byte("{{invalid"))
+	_, err := parseModule([]byte("{{invalid"))
 	if err == nil {
 		t.Error("expected error for invalid YAML")
 	}

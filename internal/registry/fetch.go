@@ -49,7 +49,8 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 					rawRef, entry.SHA256, sum,
 				)
 			}
-			return parseModule(data)
+			mod, err := parseModule(data)
+			return mod, ref.Trust, err
 		}
 		// Cache file missing despite lockfile entry — re-fetch below.
 	}
@@ -81,7 +82,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 		u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
 	}
 
-	mod, _, err := parseModule(data)
+	mod, err := parseModule(data)
 	return mod, ref.Trust, err
 }
 
@@ -109,12 +110,15 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-func parseModule(data []byte) (*RemoteModule, TrustLevel, error) {
+// parseModule decodes a module definition. Trust is a property of the reference,
+// not of the bytes, so it is Fetch's to report on both the cache and network
+// paths — deciding it here is what made every cache hit look external.
+func parseModule(data []byte) (*RemoteModule, error) {
 	var mod RemoteModule
 	if err := yaml.Unmarshal(data, &mod); err != nil {
-		return nil, External, fmt.Errorf("parse registry module: %w", err)
+		return nil, fmt.Errorf("parse registry module: %w", err)
 	}
-	return &mod, External, nil
+	return &mod, nil
 }
 
 func moduleCachePath(rawRef string) string {

@@ -192,6 +192,42 @@ func TestFetchCacheHitSkipsNetwork(t *testing.T) {
 	}
 }
 
+// The cache-hit path must report the ref's real trust level. Returning
+// parseModule's hardcoded External made official modules print an [external]
+// warning on the common path, which trains users to ignore the only gate there
+// is on running remote module definitions.
+func TestFetchCacheHitReportsRefTrust(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want TrustLevel
+	}{
+		{"github.com/atomikpanda/dotular/modules/wezterm@main", Official},
+		{"wezterm", Official},
+		{"github.com/someone/else/modules/wezterm@main", GitHub},
+		{"example.com/modules/wezterm", External},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			if err := writeCacheFile(moduleCachePath(tt.ref), []byte(testModuleYAML)); err != nil {
+				t.Fatal(err)
+			}
+			forbidNetwork(t)
+
+			lock := newTestLock(t)
+			lock.Registry[tt.ref] = LockEntry{SHA256: testModuleSum()}
+
+			_, trust, err := fetchForTest(t, tt.ref, lock, false)
+			if err != nil {
+				t.Fatalf("Fetch() error = %v", err)
+			}
+			if trust != tt.want {
+				t.Errorf("trust = %s, want %s", trust, tt.want)
+			}
+		})
+	}
+}
+
 func TestFetchCacheHitRejectsTamperedCache(t *testing.T) {
 	ref := "cache.example/tampered/module"
 	if err := writeCacheFile(moduleCachePath(ref), []byte("name: tampered\n")); err != nil {
