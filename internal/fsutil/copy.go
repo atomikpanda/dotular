@@ -60,14 +60,8 @@ func copyFile(src, dst string, preserveMode bool) error {
 		mode = info.Mode().Perm()
 	}
 
-	// OpenFile follows a symlink at dst, truncating its target instead of
-	// replacing the entry — which corrupts a file outside the managed tree, and
-	// rollback cannot recover it because the snapshot records the link rather
-	// than what it points at. Replace the entry, as CopySymlink already does.
-	if dstInfo, err := os.Lstat(dst); err == nil && dstInfo.Mode()&os.ModeSymlink != 0 {
-		if err := os.Remove(dst); err != nil {
-			return fmt.Errorf("remove destination symlink: %w", err)
-		}
+	if err := clearDestinationSymlink(dst); err != nil {
+		return err
 	}
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
@@ -148,6 +142,13 @@ func copyDir(src, dst string, preserveModes bool) error {
 		case info.Mode()&os.ModeSymlink != 0:
 			return CopySymlink(path, target)
 		case d.IsDir():
+			// MkdirAll succeeds on a path that is already a symlink to a
+			// directory, and every child written beneath it would then land
+			// outside the managed tree. WalkDir visits parents before children,
+			// so clearing each component here keeps the whole descent contained.
+			if err := clearDestinationSymlink(target); err != nil {
+				return err
+			}
 			if !preserveModes {
 				// MkdirAll leaves an existing directory's mode alone, which is
 				// exactly what we want here.
@@ -177,6 +178,21 @@ func copyDir(src, dst string, preserveModes bool) error {
 		if err := os.Chmod(dirs[i].path, dirs[i].mode); err != nil {
 			return fmt.Errorf("set directory mode: %w", err)
 		}
+	}
+	return nil
+}
+
+// clearDestinationSymlink removes a symlink standing at path so a subsequent
+// write lands on path itself instead of following the link out of the managed
+// tree. Rollback could not undo such an escape: the snapshot records the link,
+// not whatever it points at.
+func clearDestinationSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("remove destination symlink %s: %w", path, err)
 	}
 	return nil
 }

@@ -387,3 +387,70 @@ func TestCopyReplacesDestinationSymlinkInsteadOfWritingThrough(t *testing.T) {
 		})
 	}
 }
+
+// An existing destination subdirectory that is a symlink to an external
+// directory must be replaced, not descended into. MkdirAll succeeds on such a
+// path, so without this every file beneath it would be written outside the
+// managed tree — and rollback would restore the recorded symlink, not the
+// externally modified files.
+func TestCopyDirReplacesIntermediateDestinationSymlink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		copy func(src, dst string) error
+	}{
+		{"CopyDir", CopyDir},
+		{"CopyDirContents", CopyDirContents},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			outside := filepath.Join(dir, "outside")
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(outside, "f.txt")
+			if err := os.WriteFile(victim, []byte("outside data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			src := filepath.Join(dir, "src")
+			if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(src, "sub", "f.txt"), []byte("new data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			dst := filepath.Join(dir, "dst")
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// dst/sub is a symlink pointing outside the managed tree.
+			if err := os.Symlink(outside, filepath.Join(dst, "sub")); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tc.copy(src, dst); err != nil {
+				t.Fatal(err)
+			}
+
+			if got, err := os.ReadFile(victim); err != nil {
+				t.Fatal(err)
+			} else if string(got) != "outside data" {
+				t.Errorf("wrote outside the managed tree: %s = %q, want %q", victim, got, "outside data")
+			}
+			info, err := os.Lstat(filepath.Join(dst, "sub"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				t.Error("dst/sub is still a symlink; it should have been replaced by a real directory")
+			}
+			if got, err := os.ReadFile(filepath.Join(dst, "sub", "f.txt")); err != nil {
+				t.Fatal(err)
+			} else if string(got) != "new data" {
+				t.Errorf("dst/sub/f.txt = %q, want %q", got, "new data")
+			}
+		})
+	}
+}
