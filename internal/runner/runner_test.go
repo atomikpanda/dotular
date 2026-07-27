@@ -336,8 +336,6 @@ func TestApplyModuleDirectionSkipVerbosity(t *testing.T) {
 	}
 }
 
-// A skip decided while building the action leaves no action to describe, so the
-// audit entry has to name the item from its config.
 func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("audit.Log resolves its path from HOME only on Unix")
@@ -350,7 +348,7 @@ func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
 	r.Out = &buf
 	r.UI = ui.New(&buf, &bytes.Buffer{})
 
-	mod := config.Module{Name: "gate", Items: []config.Item{{Package: "git"}}}
+	mod := config.Module{Name: "gate", Items: []config.Item{{Package: "git", Via: "brew"}}}
 	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -369,8 +367,54 @@ func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
 	if e.Reason != "nothing to pull for a package item" {
 		t.Errorf("Reason = %q", e.Reason)
 	}
-	if e.Item != "package git" {
-		t.Errorf("Item = %q, want %q", e.Item, "package git")
+	// The action's own description, exactly as for every other audit entry.
+	if want := `install package "git" via brew`; e.Item != want {
+		t.Errorf("Item = %q, want %q", e.Item, want)
+	}
+}
+
+// Real modules list the same package once per manager (git via brew, apt, dnf,
+// winget, …), so most of them are platform-skipped on any given machine. Their
+// audit entries have to stay distinguishable.
+func TestApplyModuleSkipAuditDistinguishesSamePackage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	r := newTestRunner(config.Config{})
+	// Neither manager belongs to this OS, so both items skip while building —
+	// no installed-check runs and the outcome cannot depend on the test host.
+	r.OS = "windows"
+	var buf bytes.Buffer
+	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+
+	mod := config.Module{Name: "git", Items: []config.Item{
+		{Package: "git", Via: "brew"},
+		{Package: "git", Via: "apt"},
+	}}
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Skipped != 2 {
+		t.Fatalf("skipped = %d, want 2", result.Skipped)
+	}
+
+	entries, err := audit.Read("git", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d audit entries, want 2", len(entries))
+	}
+	if entries[0].Item == entries[1].Item {
+		t.Errorf("both skipped items logged as %q; entries must be distinguishable", entries[0].Item)
+	}
+	for _, e := range entries {
+		if e.Reason != "package not applicable on windows" {
+			t.Errorf("Reason = %q", e.Reason)
+		}
 	}
 }
 

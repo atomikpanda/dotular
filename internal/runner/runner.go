@@ -261,16 +261,9 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 	if skipReason != "" {
 		if r.Verbose {
-			r.UI.Skip(skipReason, item.Type())
+			r.UI.Skip(skipReason, action.Describe())
 		}
-		// action is nil here, so the audit entry names the item from its config.
-		audit.Log(audit.Entry{
-			Command: r.Command,
-			Module:  mod.Name,
-			Item:    item.Type() + " " + item.PrimaryValue(),
-			Outcome: "skipped",
-			Reason:  skipReason,
-		})
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: skipReason})
 		return outcomeSkipped, nil
 	}
 
@@ -394,8 +387,14 @@ func (r *Runner) fileDirection(item config.Item) string {
 }
 
 // buildAction turns a config item into an executable action. A non-empty
-// skipReason means the item is not applicable here and must not be run; the
-// returned action is then nil.
+// skipReason means the item must not be run; the action is still returned, so
+// callers can name the item with the action's own Describe rather than
+// reconstructing a description the action already owns. Only an unrecognised
+// item type yields a nil action, because there is nothing to build.
+//
+// Each case therefore builds the action before deciding whether to skip it. The
+// constructors are plain struct literals, so building one that is then discarded
+// costs nothing.
 func (r *Runner) buildAction(item config.Item, moduleName ...string) (act actions.Action, skipReason string, err error) {
 	// sourcePrefix prepends the module name directory to a repo-side path.
 	sourcePrefix := func(name string) string {
@@ -410,19 +409,16 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (act action
 
 	switch item.Type() {
 	case "package":
-		if r.skipManager(item.Via) {
-			return nil, notApplicable, nil
-		}
 		act = &actions.PackageAction{Package: item.Package, Manager: item.Via}
+		if r.skipManager(item.Via) {
+			return act, notApplicable, nil
+		}
 
 	case "script":
 		act = &actions.ScriptAction{Script: item.Script, Via: item.Via}
 
 	case "file":
 		dest := item.Destination.ForOS(r.OS)
-		if dest == "" {
-			return nil, notApplicable, nil
-		}
 		act = &actions.FileAction{
 			Source:      sourcePrefix(item.File),
 			Destination: dest,
@@ -432,12 +428,12 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (act action
 			Encrypted:   item.Encrypted,
 			AgeKey:      r.AgeKey,
 		}
+		if dest == "" {
+			return act, notApplicable, nil
+		}
 
 	case "directory":
 		dest := item.Destination.ForOS(r.OS)
-		if dest == "" {
-			return nil, notApplicable, nil
-		}
 		act = &actions.DirectoryAction{
 			Source:      sourcePrefix(item.Directory),
 			Destination: dest,
@@ -445,34 +441,37 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (act action
 			Link:        item.Link,
 			Permissions: item.Permissions,
 		}
+		if dest == "" {
+			return act, notApplicable, nil
+		}
 
 	case "binary":
-		sourceURL := item.Source.ForOS(r.OS)
-		if sourceURL == "" {
-			return nil, notApplicable, nil // no binary for this OS
-		}
 		installTo := item.InstallTo
 		if installTo == "" {
 			installTo = "~/.local/bin"
 		}
+		sourceURL := item.Source.ForOS(r.OS)
 		act = &actions.BinaryAction{
 			Name:      item.Binary,
 			Version:   item.Version,
 			SourceURL: sourceURL,
 			InstallTo: installTo,
 		}
+		if sourceURL == "" {
+			return act, notApplicable, nil // no binary for this OS
+		}
 
 	case "run":
 		act = &actions.RunAction{Command: item.Run, After: item.After}
 
 	case "setting":
-		if !actions.SettingsSupported(r.OS) {
-			return nil, notApplicable, nil // no settings mechanism on this OS
-		}
 		act = &actions.SettingAction{
 			Domain: item.Setting,
 			Key:    item.Key,
 			Value:  item.Value,
+		}
+		if !actions.SettingsSupported(r.OS) {
+			return act, notApplicable, nil // no settings mechanism on this OS
 		}
 
 	default:
@@ -487,7 +486,7 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (act action
 	// binary and setting.
 	if r.DirectionOverride == "pull" || r.DirectionOverride == "sync" {
 		if _, ok := act.(actions.DirectionAware); !ok {
-			return nil, "nothing to " + r.DirectionOverride + " for a " + item.Type() + " item", nil
+			return act, "nothing to " + r.DirectionOverride + " for a " + item.Type() + " item", nil
 		}
 	}
 	return act, "", nil
