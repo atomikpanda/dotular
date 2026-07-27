@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -101,18 +102,11 @@ func download(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	var buf []byte
-	tmp := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	return buf, nil
+	// io.ReadAll rather than a hand-rolled loop: a read error must abort. A
+	// truncated module is still valid YAML with fewer items, so returning the
+	// partial body would get corrupt content SHA-256'd into the lockfile as the
+	// authoritative pin.
+	return io.ReadAll(resp.Body)
 }
 
 func parseModule(data []byte) (*RemoteModule, TrustLevel, error) {

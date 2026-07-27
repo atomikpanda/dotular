@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -149,6 +150,26 @@ func TestFetchFromNetwork(t *testing.T) {
 				t.Errorf("lockfile checksum = %q, want %q", got, testModuleSum())
 			}
 		})
+	}
+}
+
+// A body that ends before its declared Content-Length must be an error. A
+// truncated module is still valid YAML — it simply has fewer items — so if the
+// read error is swallowed the partial content gets pinned in the lockfile as
+// authoritative and every later "verified" fetch agrees with the corruption.
+func TestFetchRejectsTruncatedBody(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(testModuleYAML)))
+		fmt.Fprint(w, testModuleYAML[:12])
+	})
+
+	lock := newTestLock(t)
+	_, _, err := fetchForTest(t, ref, lock, false)
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want an error for a body shorter than its Content-Length")
+	}
+	if len(lock.Registry) != 0 {
+		t.Errorf("lockfile pinned %d entries; a truncated download must never be pinned", len(lock.Registry))
 	}
 }
 
