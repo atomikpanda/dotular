@@ -13,7 +13,7 @@ go test -run TestLoad ./internal/config/  # Run a single test
 go vet ./...                  # Lint (only linter used)
 ```
 
-CI enforces 80% code coverage minimum (`go test -race -coverprofile=coverage.out -covermode=atomic ./...`).
+CI enforces a 76% total coverage floor (`go test -race -coverprofile=coverage.out -covermode=atomic ./...`). The floor is a ratchet: raise it as coverage improves, never lower it.
 
 ## Architecture
 
