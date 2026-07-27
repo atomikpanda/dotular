@@ -461,6 +461,9 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Ac
 		return &actions.RunAction{Command: item.Run, After: item.After}, false, nil
 
 	case "setting":
+		if !actions.SettingsSupported(r.OS) {
+			return nil, true, nil // no settings mechanism on this OS
+		}
 		return &actions.SettingAction{
 			Domain: item.Setting,
 			Key:    item.Key,
