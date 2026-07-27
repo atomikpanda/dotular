@@ -12,16 +12,19 @@ import (
 	"github.com/atomikpanda/dotular/internal/config"
 )
 
-// TestMain isolates $HOME for every test in this package. Commands that apply
-// items call audit.Log, which resolves its path from $HOME, so without this the
-// suite appends fixture rows to the developer's real audit history.
+// TestMain isolates the home directory for every test in this package. Commands
+// that apply items call audit.Log, which resolves its path from it, so without
+// this the suite appends fixture rows to the developer's real audit history.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "dotular-cmd-home")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		fmt.Fprintln(os.Stderr, "isolate home dir:", err)
 		os.Exit(1)
 	}
+	// os.UserHomeDir reads $HOME on Unix but %USERPROFILE% on Windows. Both
+	// must be redirected or the isolation silently does nothing on Windows.
 	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
@@ -487,6 +490,7 @@ modules: []
 func TestTagListCmdExecute(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	root := buildRoot()
 	root.SetArgs([]string{"tag", "list"})
@@ -498,6 +502,7 @@ func TestTagListCmdExecute(t *testing.T) {
 func TestTagAddCmdExecute(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	root := buildRoot()
 	root.SetArgs([]string{"tag", "add", "work"})

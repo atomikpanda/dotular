@@ -9,16 +9,19 @@ import (
 	"time"
 )
 
-// TestMain isolates $HOME for every test in this package. Log and Read resolve
-// their path from $HOME, so without this the suite appends fixture rows to the
-// developer's real ~/.local/share/dotular/history.log.
+// TestMain isolates the home directory for every test in this package. Log and
+// Read resolve their path from it, so without this the suite appends fixture
+// rows to the developer's real ~/.local/share/dotular/history.log.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "dotular-audit-home")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		fmt.Fprintln(os.Stderr, "isolate home dir:", err)
 		os.Exit(1)
 	}
+	// os.UserHomeDir reads $HOME on Unix but %USERPROFILE% on Windows. Both
+	// must be redirected or the isolation silently does nothing on Windows.
 	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
@@ -144,8 +147,10 @@ func TestReadNoLimit(t *testing.T) {
 }
 
 func TestReadMissingFile(t *testing.T) {
-	// Override HOME to a fresh temp dir to get a missing log file.
-	t.Setenv("HOME", t.TempDir())
+	// Override the home dir to a fresh temp dir to get a missing log file.
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	entries, err := Read("", 0)
 	if err != nil {

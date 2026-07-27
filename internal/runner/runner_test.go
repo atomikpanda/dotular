@@ -14,16 +14,19 @@ import (
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
-// TestMain isolates $HOME for every test in this package. Applying items calls
-// audit.Log, which resolves its path from $HOME, so without this the suite
-// appends fixture rows to the developer's real audit history.
+// TestMain isolates the home directory for every test in this package. Applying
+// items calls audit.Log, which resolves its path from it, so without this the
+// suite appends fixture rows to the developer's real audit history.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "dotular-runner-home")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		fmt.Fprintln(os.Stderr, "isolate home dir:", err)
 		os.Exit(1)
 	}
+	// os.UserHomeDir reads $HOME on Unix but %USERPROFILE% on Windows. Both
+	// must be redirected or the isolation silently does nothing on Windows.
 	os.Setenv("HOME", home)
+	os.Setenv("USERPROFILE", home)
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
