@@ -188,7 +188,10 @@ func (a *FileAction) runPush(destDir, target string) error {
 	if a.Encrypted {
 		return a.decryptTo(ageutil.RepoPath(a.Source), target)
 	}
-	return fsutil.CopyFile(a.Source, target)
+	// CopyContents, not CopyFile: the repo copy's mode came out of a git
+	// checkout, so propagating it would widen a restrictive destination.
+	// permissions: is the explicit control for the destination's mode.
+	return fsutil.CopyContents(a.Source, target)
 }
 
 func (a *FileAction) runPull(target string) error {
@@ -225,7 +228,7 @@ func (a *FileAction) runSync(target string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, target)
 		}
-		return fsutil.CopyFile(repoPath, target)
+		return fsutil.CopyContents(repoPath, target)
 
 	case !repoExists && sysExists:
 		if err := os.MkdirAll(filepath.Dir(a.Source), 0o755); err != nil {
@@ -290,7 +293,7 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, sysPath)
 		}
-		return fsutil.CopyFile(repoPath, sysPath)
+		return fsutil.CopyContents(repoPath, sysPath)
 	case "2":
 		fmt.Printf("    %s pulling system copy to repo\n", color.Dim("->"))
 		if a.Encrypted {

@@ -408,3 +408,56 @@ func TestDirectoryActionInvalidPermissions(t *testing.T) {
 		t.Error("expected an error for an unparseable permissions value")
 	}
 }
+
+// The same rule as for file items: a directory push must not carry the repo's
+// git-flattened modes onto a locked-down destination tree.
+func TestDirectoryActionRunPushDoesNotWidenExistingDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "ssh")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "config"), []byte("repo version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	destParent := filepath.Join(dir, "home")
+	target := filepath.Join(destParent, "ssh")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "config"), []byte("system version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(target, "config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// No Permissions set.
+	a := &DirectoryAction{Source: src, Destination: destParent + "/", Direction: "push"}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]os.FileMode{
+		target:                          0o700,
+		filepath.Join(target, "config"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o — push must not widen it", path, got, want)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(target, "config")); string(data) != "repo version" {
+		t.Errorf("push did not write the contents: %q", data)
+	}
+}

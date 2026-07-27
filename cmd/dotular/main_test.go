@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -735,4 +736,47 @@ func TestAddCmdRequiresArgs(t *testing.T) {
 // loadConfigFrom is a helper that loads config from a specific path.
 func loadConfigFrom(path string) (config.Config, error) {
 	return config.Load(path)
+}
+
+// Adding a directory must store symlinks as symlinks. Dereferencing them would
+// silently inline a target's contents, and a symlink to a *directory* used to
+// fail outright, because WalkDir does not descend into one.
+func TestAddCmdDirectoryPreservesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dotular.yaml")
+	os.WriteFile(cfgPath, []byte("modules: []\n"), 0o644)
+
+	srcDir := filepath.Join(dir, "mydir")
+	os.MkdirAll(filepath.Join(srcDir, "real"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("pointed at"), 0o644)
+	if err := os.Symlink("target.txt", filepath.Join(srcDir, "file-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(srcDir, "dir-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	root := buildRoot()
+	root.SetArgs([]string{"add", "--config", cfgPath, srcDir, "mymod"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	stored := filepath.Join(dir, "mymod", "mydir")
+	for name, want := range map[string]string{"file-link": "target.txt", "dir-link": "real"} {
+		got, err := os.Readlink(filepath.Join(stored, name))
+		if err != nil {
+			t.Errorf("%s was not stored as a symlink: %v", name, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s target = %q, want %q", name, got, want)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(stored, "target.txt")); err != nil || string(data) != "pointed at" {
+		t.Errorf("regular file alongside the links = %q, %v", data, err)
+	}
 }

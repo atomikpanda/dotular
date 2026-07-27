@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -719,5 +720,89 @@ func TestFileActionWritePaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A push must never widen a locked-down destination. Every repo-side file is
+// 0644 or 0755 after a git checkout, so propagating the source mode would turn
+// each apply into a permission-widening event for files like ~/.ssh/config.
+func TestFileActionRunPushDoesNotWidenExistingDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "config")
+	if err := os.WriteFile(src, []byte("repo version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destDir := filepath.Join(dir, "dest")
+	target := filepath.Join(destDir, "config")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("system version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// No Permissions set: the destination's own mode is the only mode there is.
+	a := &FileAction{Source: src, Destination: destDir + "/", Direction: "push"}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("push widened the destination: got %#o, want %#o", got, 0o600)
+	}
+	if data, _ := os.ReadFile(target); string(data) != "repo version" {
+		t.Errorf("push did not write the contents: %q", data)
+	}
+}
+
+func TestFileActionRunPushNewDestinationGetsDefaultMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "config")
+	if err := os.WriteFile(src, []byte("repo version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destDir := filepath.Join(dir, "dest")
+
+	a := &FileAction{Source: src, Destination: destDir + "/", Direction: "push"}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Compare against a file this process just created, so the assertion holds
+	// under any umask.
+	ref := filepath.Join(dir, "umask-reference")
+	f, err := os.Create(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	refInfo, err := os.Stat(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := refInfo.Mode().Perm() & 0o644
+
+	info, err := os.Stat(filepath.Join(destDir, "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Errorf("new destination mode = %#o, want %#o", got, want)
 	}
 }

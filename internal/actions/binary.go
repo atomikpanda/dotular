@@ -80,7 +80,7 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	default:
 		// Treat as a plain binary.
 		if err := os.Rename(tmpPath, destPath); err != nil {
-			if err := fsutil.CopyFile(tmpPath, destPath); err != nil {
+			if err := fsutil.CopyContents(tmpPath, destPath); err != nil {
 				return fmt.Errorf("install binary: %w", err)
 			}
 		}

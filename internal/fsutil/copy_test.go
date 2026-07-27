@@ -202,3 +202,136 @@ func TestCopyDirMissingSource(t *testing.T) {
 		t.Error("expected an error for a missing source")
 	}
 }
+
+// defaultCreateMode is the mode a freshly created file gets on this machine:
+// the default mode narrowed by the process umask. Asserting against it keeps the
+// "no mode propagation" tests independent of the umask the suite runs under.
+func defaultCreateMode(t *testing.T, dir string) os.FileMode {
+	t.Helper()
+	ref := filepath.Join(dir, "umask-reference")
+	f, err := os.Create(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(ref)
+	return perm(t, ref) & defaultFileMode
+}
+
+// The whole point of CopyContents: a restrictive destination must survive a
+// push from a repo copy that git left at 0644.
+func TestCopyContentsLeavesExistingDestinationMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	write(t, src, "repo copy", 0o644)
+	write(t, dst, "system copy", 0o600)
+
+	if err := CopyContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := perm(t, dst); got != 0o600 {
+		t.Errorf("mode = %#o, want %#o — CopyContents must not widen the destination", got, 0o600)
+	}
+	if data, _ := os.ReadFile(dst); string(data) != "repo copy" {
+		t.Errorf("contents = %q, want %q", data, "repo copy")
+	}
+}
+
+func TestCopyContentsNewDestinationGetsDefaultMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	write(t, src, "repo copy", 0o600)
+	dst := filepath.Join(dir, "dst")
+
+	if err := CopyContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	want := defaultCreateMode(t, dir)
+	if got := perm(t, dst); got != want {
+		t.Errorf("mode = %#o, want %#o — a created destination gets the default, not the source's mode", got, want)
+	}
+}
+
+func TestCopyContentsMissingSource(t *testing.T) {
+	dir := t.TempDir()
+	if err := CopyContents(filepath.Join(dir, "nope"), filepath.Join(dir, "dst")); err == nil {
+		t.Error("expected an error for a missing source")
+	}
+}
+
+func TestCopyDirContentsDoesNotPropagateModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+
+	// The repo side, as a git checkout would leave it: everything 0644/0755.
+	src := filepath.Join(dir, "src")
+	write(t, filepath.Join(src, "config"), "repo config", 0o644)
+	write(t, filepath.Join(src, "keys", "id"), "repo key", 0o644)
+	if err := os.Symlink("config", filepath.Join(src, "alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The system side, locked down by the user.
+	dst := filepath.Join(dir, "dst")
+	write(t, filepath.Join(dst, "config"), "system config", 0o600)
+	write(t, filepath.Join(dst, "keys", "id"), "system key", 0o600)
+	if err := os.Chmod(filepath.Join(dst, "keys"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CopyDirContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(dst, "config"):     0o600,
+		filepath.Join(dst, "keys"):       0o700,
+		filepath.Join(dst, "keys", "id"): 0o600,
+	} {
+		if got := perm(t, path); got != want {
+			t.Errorf("%s mode = %#o, want %#o — existing destinations keep their own modes", path, got, want)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(dst, "config")); string(data) != "repo config" {
+		t.Errorf("contents were not copied: %q", data)
+	}
+	// Symlinks are recreated regardless of which mode policy is in play.
+	if got, err := os.Readlink(filepath.Join(dst, "alias")); err != nil || got != "config" {
+		t.Errorf("alias = %q, %v; want a symlink to %q", got, err, "config")
+	}
+}
+
+func TestCopyDirContentsCreatesWithDefaultModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	write(t, filepath.Join(src, "sub", "f"), "data", 0o600)
+	if err := os.Chmod(filepath.Join(src, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	dst := filepath.Join(dir, "dst")
+	if err := CopyDirContents(src, dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := perm(t, filepath.Join(dst, "sub", "f")), defaultCreateMode(t, dir); got != want {
+		t.Errorf("created file mode = %#o, want %#o", got, want)
+	}
+	if got := perm(t, filepath.Join(dst, "sub")); got == 0o700 {
+		t.Errorf("created directory mode = %#o; the source's mode must not be propagated", got)
+	}
+}

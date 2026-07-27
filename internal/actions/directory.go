@@ -127,7 +127,7 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 		if !dirExists(target) {
 			return fmt.Errorf("pull: system directory does not exist: %s: %w", target, ErrSkipped)
 		}
-		return a.copyTree(target, a.Source)
+		return a.pullTree(target, a.Source)
 	case "sync":
 		repoExists := dirExists(a.Source)
 		sysExists := dirExists(target)
@@ -136,24 +136,34 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 			return fmt.Errorf("sync-dir: neither repo nor system directory exists (%s)", filepath.Base(a.Source))
 		case repoExists && !sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: system copy missing, pushing"))
-			return a.copyTree(a.Source, target)
+			return a.pushTree(a.Source, target)
 		case !repoExists && sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: repo copy missing, pulling"))
-			return a.copyTree(target, a.Source)
+			return a.pullTree(target, a.Source)
 		default:
 			// Both exist: push repo over system (per-file sync requires file items).
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: both exist, pushing repo -> system"))
-			return a.copyTree(a.Source, target)
+			return a.pushTree(a.Source, target)
 		}
 	default: // push
-		return a.copyTree(a.Source, target)
+		return a.pushTree(a.Source, target)
 	}
 }
 
 // --- helpers -----------------------------------------------------------------
 
-// copyTree copies src to dst and applies Permissions to every file it wrote.
-func (a *DirectoryAction) copyTree(src, dst string) error {
+// pushTree writes the repo tree out to the system. The repo's modes are not
+// propagated: they came out of a git checkout, so copying them would widen a
+// restrictive destination. Permissions is the explicit control instead.
+func (a *DirectoryAction) pushTree(src, dst string) error {
+	if err := fsutil.CopyDirContents(src, dst); err != nil {
+		return err
+	}
+	return a.applyPermissions(dst)
+}
+
+// pullTree reads a system tree into the repo, reproducing its modes.
+func (a *DirectoryAction) pullTree(src, dst string) error {
 	if err := fsutil.CopyDir(src, dst); err != nil {
 		return err
 	}

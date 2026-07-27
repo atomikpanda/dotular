@@ -1,7 +1,17 @@
-// Package fsutil holds the file and directory copy used everywhere dotular
-// writes to disk. Both copies preserve the source's permission bits and
-// recreate symlinks as symlinks, so a copy is a faithful copy — snapshot
-// rollback depends on that fidelity.
+// Package fsutil holds the file and directory copies used everywhere dotular
+// writes to disk. Symlinks are always recreated as symlinks rather than
+// dereferenced, but permission bits come in two flavours, because reproducing
+// the source's mode is right in some directions and wrong in others:
+//
+//   - CopyFile / CopyDir reproduce the source's modes exactly. Use them where
+//     the source's mode IS the intended mode: snapshot capture and restore
+//     (rollback fidelity depends on it) and reading the system into the repo.
+//   - CopyContents / CopyDirContents leave the destination's own modes alone and
+//     use the platform defaults for anything they create. Use them when writing
+//     the repo out to the system: git records only the exec bit, so a repo file's
+//     0644 is an artifact of checkout, not a statement of intent, and propagating
+//     it would silently widen a 0600 destination. The `permissions:` field is the
+//     explicit control for destination modes.
 package fsutil
 
 import (
@@ -12,9 +22,28 @@ import (
 	"path/filepath"
 )
 
-// CopyFile copies the contents of src to dst, preserving src's permission
-// bits. An existing dst is truncated.
+// Modes used for paths these helpers create when the source's modes are not
+// being propagated. They match what os.Create and os.MkdirAll have always
+// produced here, and are narrowed further by the process umask.
+const (
+	defaultFileMode os.FileMode = 0o644
+	defaultDirMode  os.FileMode = 0o755
+)
+
+// CopyFile copies the contents of src to dst, reproducing src's permission bits
+// on dst. An existing dst is truncated and re-moded.
 func CopyFile(src, dst string) error {
+	return copyFile(src, dst, true)
+}
+
+// CopyContents copies the contents of src to dst without touching dst's mode: an
+// existing dst keeps the permissions it already has, and a dst that has to be
+// created gets defaultFileMode.
+func CopyContents(src, dst string) error {
+	return copyFile(src, dst, false)
+}
+
+func copyFile(src, dst string, preserveMode bool) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open source: %w", err)
@@ -25,7 +54,11 @@ func CopyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("stat source: %w", err)
 	}
-	mode := info.Mode().Perm()
+
+	mode := defaultFileMode
+	if preserveMode {
+		mode = info.Mode().Perm()
+	}
 
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
@@ -36,10 +69,12 @@ func CopyFile(src, dst string) error {
 	if _, err := io.Copy(out, in); err != nil {
 		return fmt.Errorf("copy contents: %w", err)
 	}
-	// OpenFile's mode applies only when it creates dst, and is masked by the
-	// umask even then, so set the mode explicitly.
-	if err := out.Chmod(mode); err != nil {
-		return fmt.Errorf("set destination mode: %w", err)
+	if preserveMode {
+		// OpenFile's mode applies only when it creates dst, and is masked by the
+		// umask even then, so set the mode explicitly.
+		if err := out.Chmod(mode); err != nil {
+			return fmt.Errorf("set destination mode: %w", err)
+		}
 	}
 	// Close reports flush errors that io.Copy cannot see; dropping it would
 	// report a truncated copy as a success.
@@ -64,10 +99,20 @@ func CopySymlink(src, dst string) error {
 	return nil
 }
 
-// CopyDir recursively copies the src tree into dst, creating dst if needed.
-// File and directory modes are preserved and symlinks are recreated rather
-// than dereferenced.
+// CopyDir recursively copies the src tree into dst, creating dst if needed,
+// reproducing every file and directory mode from the source.
 func CopyDir(src, dst string) error {
+	return copyDir(src, dst, true)
+}
+
+// CopyDirContents recursively copies the src tree into dst without propagating
+// the source's modes: existing destinations keep their own permissions, and
+// anything created gets the platform defaults.
+func CopyDirContents(src, dst string) error {
+	return copyDir(src, dst, false)
+}
+
+func copyDir(src, dst string, preserveModes bool) error {
 	src = filepath.Clean(src)
 
 	type dirMode struct {
@@ -93,7 +138,15 @@ func CopyDir(src, dst string) error {
 		case info.Mode()&os.ModeSymlink != 0:
 			return CopySymlink(path, target)
 		case d.IsDir():
-			// Force owner access while copying, then restore the real mode
+			if !preserveModes {
+				// MkdirAll leaves an existing directory's mode alone, which is
+				// exactly what we want here.
+				if err := os.MkdirAll(target, defaultDirMode); err != nil {
+					return fmt.Errorf("create directory: %w", err)
+				}
+				return nil
+			}
+			// Force owner access while copying, then set the real mode
 			// afterwards: a source directory that denies the owner write or
 			// search would otherwise block copying its own contents.
 			if err := os.MkdirAll(target, info.Mode().Perm()|0o700); err != nil {
@@ -102,7 +155,7 @@ func CopyDir(src, dst string) error {
 			dirs = append(dirs, dirMode{target, info.Mode().Perm()})
 			return nil
 		default:
-			return CopyFile(path, target)
+			return copyFile(path, target, preserveModes)
 		}
 	})
 	if err != nil {
