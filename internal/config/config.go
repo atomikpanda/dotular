@@ -94,8 +94,12 @@ type Item struct {
 	Run   string `yaml:"run,omitempty"`
 	After string `yaml:"after,omitempty"`
 
-	// --- shared ---
-	Via    string `yaml:"via,omitempty"`
+	// Via is parsed on every item type but only read for two: the package
+	// manager for `package`, and "remote"/"local" for `script`. It is silently
+	// ignored on the other five.
+	Via string `yaml:"via,omitempty"`
+
+	// --- shared: honoured on every item type ---
 	SkipIf string `yaml:"skip_if,omitempty"`
 	Verify string `yaml:"verify,omitempty"`
 	Hooks  ItemHooks `yaml:"hooks,omitempty"`

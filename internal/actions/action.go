@@ -26,8 +26,12 @@ type Action interface {
 //     package is already installed. Guaranteed to be side-effect free.
 //   - FileAction (link): checks that the symlink at the destination already
 //     exists and resolves to the correct absolute source path.
-//   - FileAction (push/pull/sync), ScriptAction, SettingAction: do not
-//     implement Idempotent; use skip_if for custom idempotency guards.
+//   - DirectoryAction (link): same check against the destination directory
+//     symlink.
+//   - FileAction and DirectoryAction (push/pull/sync): implement the
+//     interface but always report false — only link items self-check.
+//   - ScriptAction, SettingAction, BinaryAction, RunAction: do not implement
+//     Idempotent at all; use skip_if for custom idempotency guards.
 type Idempotent interface {
 	// IsApplied returns true when the action's desired state is already in
 	// place and the action can safely be skipped.
