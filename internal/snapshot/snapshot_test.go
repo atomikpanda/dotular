@@ -3,6 +3,7 @@ package snapshot
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -154,5 +155,50 @@ func TestRecordDirectory(t *testing.T) {
 	}
 	if string(data) != "aaa" {
 		t.Errorf("restored file = %q", string(data))
+	}
+}
+
+// A recorded symlink must come back as a symlink pointing at the same target,
+// even if the apply replaced it with a regular file.
+func TestRecordSymlinkRestoresASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	os.WriteFile(target, []byte("pointed at"), 0o644)
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Discard()
+
+	if err := snap.Record(link); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the symlink with a regular file, as an apply would.
+	os.Remove(link)
+	os.WriteFile(link, []byte("not a link any more"), 0o644)
+
+	if err := snap.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("restored path is not a symlink: %v", err)
+	}
+	if got != target {
+		t.Errorf("link target = %q, want %q", got, target)
+	}
+	// Restoring must not have written through the link into its target.
+	if data, _ := os.ReadFile(target); string(data) != "pointed at" {
+		t.Errorf("symlink target was overwritten: %q", data)
 	}
 }
