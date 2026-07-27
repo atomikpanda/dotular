@@ -288,7 +288,7 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 				}
 			}
 			if len(modules) > 0 {
-				matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath)
+				matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath, actions.OSIsDir)
 				if len(matches) == 1 {
 					u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
 					return matches[0].ModuleName, nil
@@ -914,7 +914,7 @@ modules to add to your dotular.yaml.`,
 				return c.Run() == nil
 			}
 
-			results := scanner.ScanInstalled(modules, platform.Current(), expand, fileExists, pkgInstalled)
+			results := scanner.ScanInstalled(modules, platform.Current(), expand, fileExists, actions.OSIsDir, pkgInstalled)
 
 			// Filter to results that have at least one match.
 			var matched []scanner.ScanResult
