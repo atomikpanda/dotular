@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atomikpanda/dotular/internal/color"
 )
@@ -78,12 +79,6 @@ func (u *UI) SkipHeader(name, reason string) {
 	fmt.Fprintf(u.Out, "\n%s\n", color.Dim("==> "+name+"  [skip: "+reason+"]"))
 }
 
-// Item writes a pending item line to Out.
-func (u *UI) Item(desc string) {
-	s := u.symbols()
-	fmt.Fprintf(u.Out, "  %s %s\n", color.Dim(s.Arrow), desc)
-}
-
 // ItemResult writes a completed item line with duration and status to Out.
 func (u *UI) ItemResult(desc string, dur time.Duration, err error) {
 	s := u.symbols()
@@ -153,6 +148,14 @@ func (u *UI) ModuleSummary(applied, skipped, failed int) {
 }
 
 // formatRow formats a row of values into fixed-width columns with optional color.
+//
+// Columns are measured in runes, which is a deliberate choice rather than an
+// oversight: it is not true display width. A CJK ideograph or emoji occupies two
+// terminal columns and a combining mark occupies none, so such content still
+// misaligns. Getting that right needs a wcwidth table (golang.org/x/text or
+// similar), which is not worth a new dependency in a three-dependency repo for
+// cosmetic alignment. Realistic content here is module names and paths — mostly
+// ASCII, occasionally accented Latin — which rune counting handles exactly.
 func formatRow(vals []string, widths []int, colorFns []func(string) string) string {
 	var b strings.Builder
 	for i, v := range vals {
@@ -163,10 +166,11 @@ func formatRow(vals []string, widths []int, colorFns []func(string) string) stri
 		if colorFns != nil && i < len(colorFns) && colorFns[i] != nil {
 			cell = colorFns[i](v)
 		}
-		// Pad based on the raw value length, not the colored length.
+		// Measure the raw value, not the colored cell: escape sequences occupy
+		// no columns.
 		pad := 0
 		if i < len(widths) {
-			pad = widths[i] - len(v)
+			pad = widths[i] - utf8.RuneCountInString(v)
 		}
 		b.WriteString(cell)
 		for j := 0; j < pad; j++ {
@@ -184,14 +188,14 @@ func (u *UI) Table(headers []string, rows [][]string, colColors []func(string) s
 	// Compute column widths from headers and data.
 	widths := make([]int, len(headers))
 	for i, h := range headers {
-		if len(h) > widths[i] {
-			widths[i] = len(h)
+		if n := utf8.RuneCountInString(h); n > widths[i] {
+			widths[i] = n
 		}
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if i < len(widths) && len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if n := utf8.RuneCountInString(cell); i < len(widths) && n > widths[i] {
+				widths[i] = n
 			}
 		}
 	}

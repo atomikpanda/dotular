@@ -23,6 +23,11 @@ import (
 // verified against the recorded value; a mismatch is a fatal error.
 func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *ui.UI) (*RemoteModule, TrustLevel, error) {
 	ref := ParseRef(rawRef)
+	// Checked before the cache is consulted: an unhonourable version is a bad
+	// reference, not a stale download, so a warm cache must not mask it.
+	if err := ref.checkVersionSupported(); err != nil {
+		return nil, ref.Trust, err
+	}
 
 	cachePath := moduleCachePath(rawRef)
 	entry, inLock := lock.Registry[rawRef]

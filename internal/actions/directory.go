@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/fsutil"
@@ -36,9 +35,9 @@ type DirectoryAction struct {
 }
 
 // ResolvedTarget returns the fully expanded destination directory path.
-// If the destination's basename matches the source basename or has a file
-// extension, it is treated as the complete path. Otherwise the source basename
-// is appended. A trailing "/" always forces directory treatment (append basename).
+// The destination is treated as the complete path only when its basename
+// already matches the source basename; otherwise it is treated as the parent
+// directory and the source basename is appended.
 func (a *DirectoryAction) ResolvedTarget() string {
 	expanded := platform.ExpandPath(a.Destination)
 	base := filepath.Base(expanded)
@@ -46,10 +45,6 @@ func (a *DirectoryAction) ResolvedTarget() string {
 	// If the destination already ends with the source directory name, use as-is.
 	if base == srcBase {
 		return expanded
-	}
-	// If destination has a trailing slash, always treat as parent directory.
-	if strings.HasSuffix(a.Destination, "/") {
-		return filepath.Join(expanded, srcBase)
 	}
 	return filepath.Join(expanded, srcBase)
 }

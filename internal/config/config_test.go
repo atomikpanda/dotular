@@ -378,6 +378,21 @@ linux: /linux
 	}
 }
 
+// "~" is the one null-tagged scalar that means something as a path. Every other
+// spelling means "no value for this platform" and must not leak its source text
+// through as a literal path.
+func TestPlatformMapUnmarshalNullSpellingsAreEmpty(t *testing.T) {
+	for _, src := range []string{"macos: null", "macos: Null", "macos: NULL", "macos:"} {
+		var pm PlatformMap
+		if err := yaml.Unmarshal([]byte(src), &pm); err != nil {
+			t.Fatalf("%s: %v", src, err)
+		}
+		if pm.MacOS != "" {
+			t.Errorf("%s: MacOS = %q, want empty", src, pm.MacOS)
+		}
+	}
+}
+
 func TestLoadWithAge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dotular.yaml")

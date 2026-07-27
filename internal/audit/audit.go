@@ -13,7 +13,7 @@ import (
 // Entry records a single operation.
 type Entry struct {
 	Time    time.Time `json:"time"`
-	Command string    `json:"command"` // "apply" | "pull" | "sync" | "verify"
+	Command string    `json:"command"` // "apply" | "push" | "pull" | "sync" | "verify"
 	Module  string    `json:"module"`
 	Item    string    `json:"item"`
 	Outcome string    `json:"outcome"`          // "success" | "skipped" | "failure"

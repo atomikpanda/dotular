@@ -51,6 +51,7 @@ func applyMacOSSetting(ctx context.Context, domain, key string, value any) error
 	cmd := exec.CommandContext(ctx, "defaults", "write", domain, key, typeFlag, val)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
 	return cmd.Run()
 }
 
@@ -59,6 +60,7 @@ func applyWindowsSetting(ctx context.Context, regPath, key string, value any) er
 	cmd := exec.CommandContext(ctx, "reg", "add", regPath, "/v", key, "/t", regType, "/d", regVal, "/f")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
 	return cmd.Run()
 }
 

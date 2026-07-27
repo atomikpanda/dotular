@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atomikpanda/dotular/internal/color"
 )
@@ -123,23 +124,6 @@ func TestSkipHeader(t *testing.T) {
 	}
 	if !strings.Contains(got, "tag mismatch") {
 		t.Errorf("SkipHeader output = %q, want to contain %q", got, "tag mismatch")
-	}
-}
-
-func TestItem(t *testing.T) {
-	old := saveColor()
-	defer func() { color.Enabled = old }()
-	color.Enabled = false
-
-	var out bytes.Buffer
-	u := New(&out, &bytes.Buffer{})
-	u.Item("install neovim")
-	got := out.String()
-	if !strings.Contains(got, "->") {
-		t.Errorf("Item output = %q, want to contain %q", got, "->")
-	}
-	if !strings.Contains(got, "install neovim") {
-		t.Errorf("Item output = %q, want to contain %q", got, "install neovim")
 	}
 }
 
@@ -362,6 +346,41 @@ func TestTable(t *testing.T) {
 	// Both should start at the same column (ITEMS column)
 	if idx1 != idx2 {
 		t.Errorf("column alignment: '5' at %d, '12' at %d", idx1, idx2)
+	}
+}
+
+// A multi-byte cell value occupies one column per rune, not per byte. Sizing
+// the column by byte length made it too wide, over-padding the ASCII rows and
+// leaving the multi-byte row short, so nothing lined up.
+func TestTableAlignsMultiByteCells(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.Table(
+		[]string{"NAME", "TAGS"},
+		[][]string{{"café-thème", "dev"}, {"plain", "all"}},
+		nil,
+	)
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("got %d lines, want 4:\n%s", len(lines), out.String())
+	}
+	// Every line must be the same number of runes wide, and the TAGS column
+	// must start at the same rune offset in both data rows.
+	want := utf8.RuneCountInString(lines[0])
+	for i, l := range lines {
+		if n := utf8.RuneCountInString(l); n != want {
+			t.Errorf("line %d is %d runes wide, want %d: %q", i, n, want, l)
+		}
+	}
+	col := func(line, val string) int {
+		return utf8.RuneCountInString(line[:strings.Index(line, val)])
+	}
+	if a, b := col(lines[2], "dev"), col(lines[3], "all"); a != b {
+		t.Errorf("TAGS column starts at rune %d in row 1 but %d in row 2", a, b)
 	}
 }
 

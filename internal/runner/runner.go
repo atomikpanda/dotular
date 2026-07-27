@@ -203,7 +203,7 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 		}
 
 		audit.Log(audit.Entry{
-			Command: "verify",
+			Command: r.Command,
 			Module:  mod.Name,
 			Item:    action.Describe(),
 			Outcome: outcome,
@@ -507,12 +507,15 @@ func (r *Runner) runHook(ctx context.Context, cmd, scope, name, hookName string)
 	if cmd == "" {
 		return nil
 	}
+	// Both lines identify the hook the same way so dry-run and verbose output
+	// can be compared; only dry-run adds the command it would have run.
+	where := fmt.Sprintf("hook %s (%s %q)", hookName, scope, name)
 	if r.DryRun {
-		r.UI.DryRun(fmt.Sprintf("hook %s.%s: %s", hookName, scope, cmd))
+		r.UI.DryRun(fmt.Sprintf("%s: %s", where, cmd))
 		return nil
 	}
 	if r.Verbose {
-		r.UI.Info(fmt.Sprintf("  hook %s (%s %q)", hookName, scope, name))
+		r.UI.Info("  " + where)
 	}
 	if err := shell.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("hook %s failed on %s %q: %w", hookName, scope, name, err)

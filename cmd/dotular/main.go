@@ -223,11 +223,14 @@ managed store and records it in the config YAML.`,
 				return err
 			}
 
-			// Build the new item.
+			// Build the new item. Leave Direction unset at the default so the
+			// generated YAML does not restate it.
 			item := config.Item{
 				Destination: pmap,
-				Direction:   direction,
 				Link:        link,
+			}
+			if direction != config.DefaultDirection {
+				item.Direction = direction
 			}
 			if isDir {
 				item.Directory = baseName
@@ -264,7 +267,7 @@ managed store and records it in the config YAML.`,
 	}
 
 	cmd.Flags().BoolVar(&link, "link", false, "use symlink instead of copy at apply time")
-	cmd.Flags().StringVar(&direction, "direction", "push", "file direction: push, pull, or sync")
+	cmd.Flags().StringVar(&direction, "direction", config.DefaultDirection, "file direction: push, pull, or sync")
 	return cmd
 }
 
@@ -341,22 +344,40 @@ func applyCmd() *cobra.Command {
 			}
 			r := newRunner(cfg)
 
-			if len(args) == 0 {
-				return r.ApplyAll(ctx)
-			}
-			for _, name := range args {
-				mod := cfg.Module(name)
-				if mod == nil {
-					return fmt.Errorf("module %q not found in config", name)
-				}
-				result := r.ApplyModule(ctx, *mod)
-				if result.Err != nil {
-					return result.Err
-				}
-			}
-			return nil
+			return applyNamedModules(ctx, r, cfg, args)
 		},
 	}
+}
+
+// selectModules resolves module names against the config, failing on the first
+// unknown name so that a typo never silently applies a subset of what was asked.
+func selectModules(cfg config.Config, names []string) ([]config.Module, error) {
+	mods := make([]config.Module, 0, len(names))
+	for _, name := range names {
+		mod := cfg.Module(name)
+		if mod == nil {
+			return nil, fmt.Errorf("module %q not found in config", name)
+		}
+		mods = append(mods, *mod)
+	}
+	return mods, nil
+}
+
+// applyNamedModules applies the named modules, or every module when none are named.
+func applyNamedModules(ctx context.Context, r *runner.Runner, cfg config.Config, names []string) error {
+	if len(names) == 0 {
+		return r.ApplyAll(ctx)
+	}
+	mods, err := selectModules(cfg, names)
+	if err != nil {
+		return err
+	}
+	for _, mod := range mods {
+		if result := r.ApplyModule(ctx, mod); result.Err != nil {
+			return result.Err
+		}
+	}
+	return nil
 }
 
 // --- push / pull / sync ------------------------------------------------------
@@ -378,20 +399,7 @@ func directionCmd(direction, short string) *cobra.Command {
 			r.Command = direction
 			r.DirectionOverride = direction
 
-			if len(args) == 0 {
-				return r.ApplyAll(ctx)
-			}
-			for _, name := range args {
-				mod := cfg.Module(name)
-				if mod == nil {
-					return fmt.Errorf("module %q not found in config", name)
-				}
-				result := r.ApplyModule(ctx, *mod)
-				if result.Err != nil {
-					return result.Err
-				}
-			}
-			return nil
+			return applyNamedModules(ctx, r, cfg, args)
 		},
 	}
 }
@@ -492,14 +500,17 @@ func verifyCmd() *cobra.Command {
 			var allPassed bool
 			if len(args) == 0 {
 				allPassed, err = r.VerifyAll(ctx)
+				if err != nil {
+					return err
+				}
 			} else {
+				mods, err := selectModules(cfg, args)
+				if err != nil {
+					return err
+				}
 				allPassed = true
-				for _, name := range args {
-					mod := cfg.Module(name)
-					if mod == nil {
-						return fmt.Errorf("module %q not found in config", name)
-					}
-					passed, verErr := r.VerifyModule(ctx, *mod)
+				for _, mod := range mods {
+					passed, verErr := r.VerifyModule(ctx, mod)
 					if verErr != nil {
 						return verErr
 					}
@@ -509,9 +520,6 @@ func verifyCmd() *cobra.Command {
 				}
 			}
 
-			if err != nil {
-				return err
-			}
 			if !allPassed {
 				u := ui.New(os.Stdout, os.Stderr)
 				u.Warn("some verify checks failed")
@@ -559,10 +567,7 @@ func decryptCmd() *cobra.Command {
 				return err
 			}
 			src := args[0]
-			dst := src
-			if len(dst) > 4 && dst[len(dst)-4:] == ".age" {
-				dst = dst[:len(dst)-4]
-			}
+			dst := strings.TrimSuffix(src, ".age")
 			u := ui.New(os.Stdout, os.Stderr)
 			u.Info(fmt.Sprintf("decrypting %s → %s", src, dst))
 			return key.DecryptFile(src, dst)
@@ -700,16 +705,16 @@ func registryCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available registry modules",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cached, _ := cmd.Flags().GetBool("cached")
+			cached, err := cmd.Flags().GetBool("cached")
+			if err != nil {
+				return err
+			}
 			u := ui.New(os.Stdout, os.Stderr)
 
 			if cached {
-				_, err := loadConfig()
-				if err != nil {
-					return err
-				}
-				lockPath := registry.LockPath(configFile)
-				lock, err := registry.LoadLock(lockPath)
+				// Only the config path is needed to locate the lock file, so
+				// this lists the cache even when dotular.yaml is absent.
+				lock, err := registry.LoadLock(registry.LockPath(configFile))
 				if err != nil {
 					return err
 				}
@@ -759,7 +764,7 @@ func registryCmd() *cobra.Command {
 			return nil
 		},
 	}
-	listCmd.Flags().Bool("cached", false, "Show locally cached modules instead of the remote index")
+	listCmd.Flags().Bool("cached", false, "show locally cached modules instead of the remote index")
 
 	cmd.AddCommand(
 		listCmd,
