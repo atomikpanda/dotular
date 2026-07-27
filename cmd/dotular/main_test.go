@@ -732,58 +732,6 @@ func TestAddCmdRequiresArgs(t *testing.T) {
 	}
 }
 
-func TestCopyFileSimple(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src.txt")
-	dst := filepath.Join(dir, "dst.txt")
-	os.WriteFile(src, []byte("content"), 0o644)
-
-	if err := copyFileSimple(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(dst)
-	if string(data) != "content" {
-		t.Errorf("copied = %q", string(data))
-	}
-
-	// Verify permissions are preserved.
-	srcInfo, _ := os.Stat(src)
-	dstInfo, _ := os.Stat(dst)
-	if srcInfo.Mode().Perm() != dstInfo.Mode().Perm() {
-		t.Errorf("permissions: src=%o, dst=%o", srcInfo.Mode().Perm(), dstInfo.Mode().Perm())
-	}
-}
-
-func TestCopyDirRecursive(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	dst := filepath.Join(dir, "dst")
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("bbb"), 0o644)
-
-	if err := copyDirRecursive(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dst, "a.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "aaa" {
-		t.Errorf("a.txt = %q", string(data))
-	}
-
-	data, err = os.ReadFile(filepath.Join(dst, "sub", "b.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "bbb" {
-		t.Errorf("sub/b.txt = %q", string(data))
-	}
-}
-
 // loadConfigFrom is a helper that loads config from a specific path.
 func loadConfigFrom(path string) (config.Config, error) {
 	return config.Load(path)

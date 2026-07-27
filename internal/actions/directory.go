@@ -3,12 +3,12 @@ package actions
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -111,7 +111,7 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 		if !dirExists(target) {
 			return fmt.Errorf("pull: system directory does not exist: %s: %w", target, ErrSkipped)
 		}
-		return copyDir(target, a.Source)
+		return fsutil.CopyDir(target, a.Source)
 	case "sync":
 		repoExists := dirExists(a.Source)
 		sysExists := dirExists(target)
@@ -120,17 +120,17 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 			return fmt.Errorf("sync-dir: neither repo nor system directory exists (%s)", filepath.Base(a.Source))
 		case repoExists && !sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: system copy missing, pushing"))
-			return copyDir(a.Source, target)
+			return fsutil.CopyDir(a.Source, target)
 		case !repoExists && sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: repo copy missing, pulling"))
-			return copyDir(target, a.Source)
+			return fsutil.CopyDir(target, a.Source)
 		default:
 			// Both exist: push repo over system (per-file sync requires file items).
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: both exist, pushing repo -> system"))
-			return copyDir(a.Source, target)
+			return fsutil.CopyDir(a.Source, target)
 		}
 	default: // push
-		return copyDir(a.Source, target)
+		return fsutil.CopyDir(a.Source, target)
 	}
 }
 
@@ -151,25 +151,6 @@ func createDirSymlink(src, dst string) error {
 		}
 	}
 	return os.Symlink(abs, dst)
-}
-
-// copyDir recursively copies the src directory tree into dst (created if needed).
-func copyDir(src, dst string) error {
-	src = filepath.Clean(src)
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFilePath(path, target)
-	})
 }
 
 func dirExists(path string) bool {

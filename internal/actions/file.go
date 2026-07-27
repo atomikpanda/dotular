@@ -13,6 +13,7 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -168,7 +169,7 @@ func (a *FileAction) runPush(destDir, target string) error {
 	if a.Encrypted {
 		return a.decryptTo(ageutil.RepoPath(a.Source), target)
 	}
-	return copyFile(a.Source, target)
+	return fsutil.CopyFile(a.Source, target)
 }
 
 func (a *FileAction) runPull(target string) error {
@@ -181,7 +182,7 @@ func (a *FileAction) runPull(target string) error {
 	if a.Encrypted {
 		return a.encryptFrom(target, ageutil.RepoPath(a.Source))
 	}
-	return copyFile(target, a.Source)
+	return fsutil.CopyFile(target, a.Source)
 }
 
 func (a *FileAction) runSync(target string) error {
@@ -205,7 +206,7 @@ func (a *FileAction) runSync(target string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, target)
 		}
-		return copyFile(repoPath, target)
+		return fsutil.CopyFile(repoPath, target)
 
 	case !repoExists && sysExists:
 		if err := os.MkdirAll(filepath.Dir(a.Source), 0o755); err != nil {
@@ -215,7 +216,7 @@ func (a *FileAction) runSync(target string) error {
 		if a.Encrypted {
 			return a.encryptFrom(target, repoPath)
 		}
-		return copyFile(target, a.Source)
+		return fsutil.CopyFile(target, a.Source)
 
 	default:
 		// Both exist — compare (decrypt repo copy for comparison if encrypted).
@@ -270,13 +271,13 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, sysPath)
 		}
-		return copyFile(repoPath, sysPath)
+		return fsutil.CopyFile(repoPath, sysPath)
 	case "2":
 		fmt.Printf("    %s pulling system copy to repo\n", color.Dim("->"))
 		if a.Encrypted {
 			return a.encryptFrom(sysPath, repoPath)
 		}
-		return copyFile(sysPath, a.Source)
+		return fsutil.CopyFile(sysPath, a.Source)
 	default:
 		fmt.Printf("    %s\n", color.Dim("-> skipped"))
 		return nil
@@ -342,25 +343,6 @@ func createSymlink(src, dst string) error {
 		}
 	}
 	return os.Symlink(abs, dst)
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open source: %w", err)
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("create destination: %w", err)
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("copy contents: %w", err)
-	}
-	return out.Close()
 }
 
 func filesEqual(a, b string) (bool, error) {

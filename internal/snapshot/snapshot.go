@@ -4,11 +4,11 @@ package snapshot
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/atomikpanda/dotular/internal/fsutil"
 )
 
 // Snapshot holds copies of files that existed before an apply started, plus a
@@ -52,11 +52,11 @@ func (s *Snapshot) Record(path string) error {
 
 	tmpPath := filepath.Join(s.dir, strconv.Itoa(len(s.saved)))
 	if info.IsDir() {
-		if err := copyDir(path, tmpPath); err != nil {
+		if err := fsutil.CopyDir(path, tmpPath); err != nil {
 			return fmt.Errorf("snapshot %s: %w", path, err)
 		}
 	} else {
-		if err := copyFile(path, tmpPath); err != nil {
+		if err := fsutil.CopyFile(path, tmpPath); err != nil {
 			return fmt.Errorf("snapshot %s: %w", path, err)
 		}
 	}
@@ -78,9 +78,9 @@ func (s *Snapshot) Restore() error {
 		}
 		if info.IsDir() {
 			os.RemoveAll(dest)
-			err = copyDir(tmp, dest)
+			err = fsutil.CopyDir(tmp, dest)
 		} else {
-			err = copyFile(tmp, dest)
+			err = fsutil.CopyFile(tmp, dest)
 		}
 		if err != nil && first == nil {
 			first = fmt.Errorf("restore %s: %w", dest, err)
@@ -95,37 +95,4 @@ func (s *Snapshot) Restore() error {
 // Discard removes the temporary snapshot directory.
 func (s *Snapshot) Discard() error {
 	return os.RemoveAll(s.dir)
-}
-
-func copyDir(src, dst string) error {
-	src = filepath.Clean(src)
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }

@@ -100,22 +100,6 @@ func TestFileActionIsAppliedNotLink(t *testing.T) {
 	}
 }
 
-func TestCopyFile(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src.txt")
-	dst := filepath.Join(dir, "dst.txt")
-	os.WriteFile(src, []byte("hello"), 0o644)
-
-	if err := copyFile(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(dst)
-	if string(data) != "hello" {
-		t.Errorf("copied data = %q", string(data))
-	}
-}
-
 func TestFilesEqual(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.txt")

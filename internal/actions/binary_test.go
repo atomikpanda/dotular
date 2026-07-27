@@ -242,19 +242,3 @@ func TestBinaryActionRunDownloadError(t *testing.T) {
 		t.Error("expected error from failed download")
 	}
 }
-
-func TestCopyFilePath(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	dst := filepath.Join(dir, "dst")
-	os.WriteFile(src, []byte("hello"), 0o644)
-
-	if err := copyFilePath(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(dst)
-	if string(data) != "hello" {
-		t.Errorf("copied = %q", string(data))
-	}
-}

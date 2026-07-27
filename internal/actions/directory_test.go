@@ -72,36 +72,6 @@ func TestDirectoryActionIsAppliedNotLink(t *testing.T) {
 	}
 }
 
-func TestCopyDir(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	dst := filepath.Join(dir, "dst")
-
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("bbb"), 0o644)
-
-	if err := copyDir(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dst, "a.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "aaa" {
-		t.Errorf("a.txt = %q", string(data))
-	}
-
-	data, err = os.ReadFile(filepath.Join(dst, "sub", "b.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "bbb" {
-		t.Errorf("sub/b.txt = %q", string(data))
-	}
-}
-
 func TestDirExists(t *testing.T) {
 	dir := t.TempDir()
 	if !dirExists(dir) {
