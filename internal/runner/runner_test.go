@@ -210,6 +210,19 @@ func TestBuildActionSetting(t *testing.T) {
 	}
 }
 
+func TestBuildActionSettingSkipWrongOS(t *testing.T) {
+	r := newTestRunner(config.Config{})
+	r.OS = "linux"
+	item := config.Item{Setting: "com.apple.dock", Key: "autohide", Value: true}
+	_, skip, err := r.buildAction(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skip {
+		t.Error("setting should be skipped on linux")
+	}
+}
+
 func TestBuildActionUnknown(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{}
@@ -658,6 +671,39 @@ func TestApplyModuleSkipsOSMismatch(t *testing.T) {
 	}
 	if !containsStr(buf.String(), "skip") {
 		t.Error("expected skip output for apt on darwin")
+	}
+}
+
+func TestApplyModuleSkipsSettingOnUnsupportedOS(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	mod := config.Module{
+		Name: "cross-platform",
+		Items: []config.Item{
+			{Run: "true"},
+			{Setting: "com.apple.dock", Key: "autohide", Value: true},
+		},
+	}
+	r := newTestRunner(config.Config{})
+	r.OS = "linux"
+	r.DryRun = false
+	var buf bytes.Buffer
+	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatalf("module should not fail on an inapplicable setting: %v", result.Err)
+	}
+	if result.Failed != 0 {
+		t.Errorf("Failed = %d, want 0", result.Failed)
+	}
+	if result.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", result.Skipped)
+	}
+	if result.Applied != 1 {
+		t.Errorf("Applied = %d, want 1", result.Applied)
 	}
 }
 

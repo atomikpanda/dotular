@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -112,6 +113,37 @@ func TestEncryptCmdDef(t *testing.T) {
 	cmd := encryptCmd()
 	if cmd.Use != "encrypt <file>" {
 		t.Errorf("Use = %q", cmd.Use)
+	}
+}
+
+func TestEncryptCmdRejectsAgeInput(t *testing.T) {
+	// A usable key, so only the guard stands between the command and an
+	// in-place re-encryption of the source.
+	prev := configFile
+	defer func() { configFile = prev }()
+	configFile = writeTestConfig(t, "modules: []\n")
+	t.Setenv("DOTULAR_AGE_PASSPHRASE", "test-pass")
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "secret.env.age")
+	if err := os.WriteFile(src, []byte("ciphertext"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := encryptCmd()
+	err := cmd.RunE(cmd, []string{src})
+	if err == nil {
+		t.Fatal("expected error for an already-encrypted input")
+	}
+	if !strings.Contains(err.Error(), "already encrypted") {
+		t.Errorf("error should explain the rejection, got %v", err)
+	}
+	data, readErr := os.ReadFile(src)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "ciphertext" {
+		t.Error("source file should be left untouched")
 	}
 }
 

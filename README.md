@@ -13,12 +13,12 @@ dotular replaces all of that with a single declarative YAML file.
 | | **dotular** | **chezmoi** | **GNU Stow** | **yadm** | **mackup** |
 |---|---|---|---|---|---|
 | Manages files | Yes | Yes | Yes | Yes | Yes |
-| Installs packages | Yes — brew, apt, winget, and 10+ managers | No | No | No | No |
+| Installs packages | Yes — brew, apt, winget, and 11 more | No | No | No | No |
 | Downloads binaries | Yes — archives, extraction, versioning | No | No | No | No |
 | Runs scripts | Yes — local and remote, with skip/verify | Templates only | No | Bootstrap only | No |
-| OS settings | Yes — macOS `defaults`, extensible | No | No | No | No |
+| OS settings | Yes — macOS `defaults`, Windows registry | No | No | No | No |
 | Cross-platform config | One file, per-OS paths and packages | Separate templates | Symlinks only | Git + encryption | macOS only |
-| Atomicity | Snapshot + rollback per module | No | No | No | No |
+| Atomicity | Snapshot + rollback of file and directory items, per module | No | No | No | No |
 | No templating language | Plain YAML — no Go templates to learn | Go `text/template` | N/A | Jinja2 (alt) | N/A |
 | Shareable modules | Registry with parameters and overrides | Community scripts | No | No | No |
 | Audit log | Built-in, append-only JSON | No | No | No | No |
@@ -55,7 +55,7 @@ No bootstrap script. No platform `if`-statements. One file, any machine.
 - **Verification** — health-check commands per item (`verify:`)
 - **Encrypted secrets** — `age`-encrypted files, decrypted on apply
 - **File permissions** — enforce `chmod`-style permissions on pushed files
-- **Atomic applies** — snapshot files before each module; roll back on failure
+- **Atomic applies** — snapshot the destination of each `file` and `directory` item before its module runs; roll back on failure
 - **Machine tagging** — `only_tags`/`exclude_tags` per module
 - **Audit log** — append-only log of every action taken
 - **Registry** — reusable remote modules with parameters and overrides
@@ -65,7 +65,7 @@ No bootstrap script. No platform `if`-statements. One file, any machine.
 
 ## Installation
 
-Requires Go 1.22+.
+Requires Go 1.23+.
 
 ```sh
 git clone https://github.com/atomikpanda/dotular
@@ -84,6 +84,8 @@ go install github.com/atomikpanda/dotular/cmd/dotular@latest
 ## Quick start
 
 ```sh
+dotular init               # scan this machine, suggest registry modules to adopt
+dotular add ~/.zshrc shell # manage a file under the "shell" module
 dotular apply              # apply all modules
 dotular apply homebrew     # apply a single module
 dotular status             # dry-run with verbose output
@@ -115,30 +117,56 @@ modules:
       - ...
 ```
 
+### Config file formats
+
+Two on-disk formats are accepted:
+
+| Format | Shape | Global keys (`age:`) |
+|--------|-------|----------------------|
+| Mapping (current) | `modules:` key holding the module list | Yes |
+| Legacy | a bare top-level sequence of modules | No — there is nowhere to put them |
+
+Both parse identically into modules, so the legacy format keeps working. Only the
+mapping format can express `age:`, so an encrypted-secrets setup requires it.
+
+`dotular add` and `dotular init` rewrite the config file, and they always write
+the mapping format — a legacy file is silently migrated on the first write.
+The rewrite re-marshals the config from scratch, so **comments, key order, and
+formatting in the file are lost**. Commit before running either command.
+
 ### Item types
 
 #### `package` — install via package manager
 
 ```yaml
 - package: ripgrep
-  via: brew           # brew | brew-cask | apt | dnf | pacman | snap | winget | choco | scoop
+  via: brew           # see the table below for every accepted value
   skip_if: command -v rg
   verify: rg --version
 ```
 
-Supported package managers and their platforms:
+Supported package managers and the platform each one is bound to:
 
-| `via`      | Platform |
-|------------|----------|
-| `brew`     | macOS    |
-| `brew-cask`| macOS    |
-| `apt`      | Linux    |
-| `dnf`      | Linux    |
-| `pacman`   | Linux    |
-| `snap`     | Linux    |
-| `winget`   | Windows  |
-| `choco`    | Windows  |
-| `scoop`    | Windows  |
+| `via`       | Platform      | Install command |
+|-------------|---------------|-----------------|
+| `brew`      | macOS         | `brew install` |
+| `brew-cask` | macOS         | `brew install --cask` |
+| `mas`       | macOS         | `mas install` |
+| `apt`       | Linux         | `sudo apt-get install -y` |
+| `apt-get`   | Linux         | `sudo apt-get install -y` |
+| `dnf`       | Linux         | `sudo dnf install -y` |
+| `yum`       | Linux         | `sudo yum install -y` |
+| `pacman`    | Linux         | `sudo pacman -S --noconfirm` |
+| `snap`      | Linux         | `sudo snap install` |
+| `flatpak`   | any           | `flatpak install -y` |
+| `nix`       | any           | `nix-env -iA` |
+| `winget`    | Windows       | `winget install --id` |
+| `choco`     | Windows       | `choco install -y` |
+| `scoop`     | Windows       | `scoop install` |
+
+A package item whose `via` is bound to one platform is **skipped** on the others,
+so a single config can list the brew, apt, and winget spelling of the same tool.
+`flatpak` and `nix` are treated as cross-platform and are never skipped.
 
 Package items are **idempotent** — dotular checks whether the package is already installed before running the install command.
 
@@ -199,6 +227,8 @@ Package items are **idempotent** — dotular checks whether the package is alrea
 
 Downloads the archive (`.tar.gz`, `.tgz`, `.zip`, or plain binary), extracts the matching binary by name, and installs it with `chmod 755`.
 
+`install_to` is optional and defaults to `~/.local/bin`. An item is skipped when `source` has no entry for the current platform.
+
 #### `run` — inline shell command
 
 ```yaml
@@ -206,13 +236,23 @@ Downloads the archive (`.tar.gz`, `.tgz`, `.zip`, or plain binary), extracts the
   after: directory     # informational only — ordering follows declaration order
 ```
 
-#### `setting` — macOS `defaults write`
+#### `setting` — write an OS preference
 
 ```yaml
-- setting: com.apple.dock
+- setting: com.apple.dock       # macOS bundle ID, or a Windows registry path
   key: autohide
-  value: true           # bool | int | float | string
+  value: true                   # bool | int | float | string
 ```
+
+The command used depends on the platform the apply runs on:
+
+| Platform | Command | Value mapping |
+|----------|---------|---------------|
+| macOS    | `defaults write <setting> <key> …` | bool → `-bool`, int → `-int`, float → `-float`, string → `-string` |
+| Windows  | `reg add <setting> /v <key> …` | bool/int → `REG_DWORD`, float/string → `REG_SZ` |
+
+On Windows, `setting:` is the registry path (e.g. `HKCU\Control Panel\Desktop`)
+and booleans are written as `1`/`0`. `setting` items are not supported on Linux.
 
 ---
 
@@ -227,6 +267,41 @@ Downloads the archive (`.tar.gz`, `.tgz`, `.zip`, or plain binary), extracts the
 ---
 
 ## CLI reference
+
+### `init`
+
+```sh
+dotular init
+```
+
+Fetches the module registry, scans this machine for the packages and config files
+those modules manage, and lets you pick which ones to adopt. Selected modules are
+appended to the config as `from:` registry references. In a non-interactive shell
+the picker is skipped and only fully-matching modules are added.
+
+### `add`
+
+```sh
+dotular add ~/.config/nvim nvim
+dotular add ~/.zshrc shell --direction sync
+dotular add ~/.config/nvim/init.lua nvim --link
+dotular add ~/.zshrc
+```
+
+Copies a file or directory into the module's managed store (a directory named
+after the module, next to the config file) and records it as a `file:` or
+`directory:` item. The module is created if it does not exist. The item's
+`destination` is set to the source's parent directory, for the current platform
+only — add the other platforms' paths by hand.
+
+If the module name is omitted, dotular infers it from the registry or prompts.
+
+| Flag          | Description |
+|---------------|-------------|
+| `--link`      | Record `link: true`, so apply symlinks instead of copying (default `false`) |
+| `--direction` | Record `direction:` — `push`, `pull`, or `sync` (default `push`) |
+
+This command rewrites the config file — see [Config file formats](#config-file-formats).
 
 ### `apply`
 
@@ -280,6 +355,14 @@ dotular platform
 
 Print the detected OS (`darwin` / `linux` / `windows`).
 
+### `version`
+
+```sh
+dotular version
+```
+
+Print the version, commit, and build date stamped into the binary.
+
 ### `encrypt` / `decrypt`
 
 ```sh
@@ -306,15 +389,21 @@ dotular log --module homebrew
 dotular log --limit 20
 ```
 
-Show the audit log at `~/.local/share/dotular/history.log`.
+Show the audit log at `~/.local/share/dotular/history.log`. `--limit` defaults to
+the 50 most recent entries; `--module` filters by module name.
 
 ### `registry`
 
 ```sh
-dotular registry list    # show cached registry modules
-dotular registry clear   # remove all cached modules
-dotular registry update  # re-fetch all modules from the network
+dotular registry list           # fetch and print the remote module index
+dotular registry list --cached  # print the modules pinned in dotular.lock.yaml
+dotular registry clear          # remove all cached modules
+dotular registry update         # re-fetch all modules from the network
 ```
+
+`registry list` reaches the network by default and prints the name and version of
+every module in the official index. `--cached` needs no network: it reads
+`dotular.lock.yaml` and prints each pinned ref with its trust level and fetch time.
 
 ### Global flags
 
@@ -421,7 +510,9 @@ Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` or `
 
 ## Atomic applies
 
-By default, dotular snapshots any files it will modify before running each module. If any item fails, the snapshot is restored. Disable with `--no-atomic`.
+By default, dotular snapshots the destination of every `file` and `directory` item before running each module. If any item in the module fails, the snapshot is restored. Disable with `--no-atomic`.
+
+Only `file` and `directory` items are snapshotted. `package`, `script`, `binary`, `run`, and `setting` items are not covered — an installed package, an executed script, or a written OS setting is not undone by a rollback.
 
 ---
 
@@ -440,10 +531,15 @@ TIME                  COMMAND   MODULE               OUTCOME   ITEM
 ## Makefile
 
 ```sh
-make build        # build the binary
+make build        # build the binary to ./build/dotular
+make run ARGS=".."  # go run ./cmd/dotular with ARGS
 make tidy         # go mod tidy
+make index        # regenerate modules/index.yaml from modules/*.yaml
 make test-list    # run dotular list
 make test-status  # run dotular status
 make test-apply-dry  # run dotular apply --dry-run
 make clean        # remove binary
 ```
+
+Run `make index` after adding or bumping a module under `modules/` — CI checks
+that `modules/index.yaml` matches the module files.
