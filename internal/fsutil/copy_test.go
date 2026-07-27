@@ -335,3 +335,55 @@ func TestCopyDirContentsCreatesWithDefaultModes(t *testing.T) {
 		t.Errorf("created directory mode = %#o; the source's mode must not be propagated", got)
 	}
 }
+
+// A destination that is a symlink must be replaced, not written through. Writing
+// through it would corrupt a file outside the managed tree, and rollback could
+// not recover it because the snapshot records the symlink, not its target.
+func TestCopyReplacesDestinationSymlinkInsteadOfWritingThrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		copy func(src, dst string) error
+	}{
+		{"CopyFile", CopyFile},
+		{"CopyContents", CopyContents},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+
+			outside := filepath.Join(dir, "outside.txt")
+			if err := os.WriteFile(outside, []byte("outside data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			src := filepath.Join(dir, "src.txt")
+			if err := os.WriteFile(src, []byte("new data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dst := filepath.Join(dir, "dst.txt")
+			if err := os.Symlink(outside, dst); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := tc.copy(src, dst); err != nil {
+				t.Fatal(err)
+			}
+
+			if got, err := os.ReadFile(outside); err != nil {
+				t.Fatal(err)
+			} else if string(got) != "outside data" {
+				t.Errorf("wrote through the symlink: outside file = %q, want %q", got, "outside data")
+			}
+			info, err := os.Lstat(dst)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				t.Error("destination is still a symlink; it should have been replaced by a regular file")
+			}
+			if got, err := os.ReadFile(dst); err != nil {
+				t.Fatal(err)
+			} else if string(got) != "new data" {
+				t.Errorf("destination = %q, want %q", got, "new data")
+			}
+		})
+	}
+}

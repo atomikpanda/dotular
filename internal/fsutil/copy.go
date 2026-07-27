@@ -60,6 +60,16 @@ func copyFile(src, dst string, preserveMode bool) error {
 		mode = info.Mode().Perm()
 	}
 
+	// OpenFile follows a symlink at dst, truncating its target instead of
+	// replacing the entry — which corrupts a file outside the managed tree, and
+	// rollback cannot recover it because the snapshot records the link rather
+	// than what it points at. Replace the entry, as CopySymlink already does.
+	if dstInfo, err := os.Lstat(dst); err == nil && dstInfo.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(dst); err != nil {
+			return fmt.Errorf("remove destination symlink: %w", err)
+		}
+	}
+
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return fmt.Errorf("create destination: %w", err)
