@@ -2,11 +2,27 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+// TestMain isolates $HOME for every test in this package. Log and Read resolve
+// their path from $HOME, so without this the suite appends fixture rows to the
+// developer's real ~/.local/share/dotular/history.log.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "dotular-audit-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func TestEntryJSON(t *testing.T) {
 	e := Entry{
@@ -99,7 +115,7 @@ func TestLogAutoSetsTime(t *testing.T) {
 }
 
 func TestRead(t *testing.T) {
-	// Read from the actual log path. The test is mainly that it doesn't crash.
+	// Read from the isolated log path. The test is mainly that it doesn't crash.
 	entries, err := Read("", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -128,11 +144,8 @@ func TestReadNoLimit(t *testing.T) {
 }
 
 func TestReadMissingFile(t *testing.T) {
-	// Override HOME to a temp dir to get a missing log file.
-	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	// Override HOME to a fresh temp dir to get a missing log file.
+	t.Setenv("HOME", t.TempDir())
 
 	entries, err := Read("", 0)
 	if err != nil {

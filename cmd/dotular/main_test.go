@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,6 +11,21 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/config"
 )
+
+// TestMain isolates $HOME for every test in this package. Commands that apply
+// items call audit.Log, which resolves its path from $HOME, so without this the
+// suite appends fixture rows to the developer's real audit history.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "dotular-cmd-home")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "isolate HOME:", err)
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
 
 func writeTestConfig(t *testing.T, content string) string {
 	t.Helper()
