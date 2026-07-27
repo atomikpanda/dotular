@@ -34,6 +34,26 @@ type Idempotent interface {
 	IsApplied(ctx context.Context) (bool, error)
 }
 
+// DirectionAware is optionally implemented by actions that move data between the
+// repo and the machine, and can therefore say which way they move it.
+//
+// The runner uses it as the eligibility test for the pull and sync verbs: both
+// reconcile the repo against the machine, so an action that is not
+// DirectionAware has nothing to reconcile and is skipped rather than run.
+// Without it, `dotular pull` installed packages, executed scripts, downloaded
+// binaries and wrote system settings.
+//
+// This is deliberately not PathWriter, and the two must not be merged.
+// PathWriter answers "which paths may I overwrite", which is a different
+// question: BinaryAction overwrites its install target and so should implement
+// PathWriter for snapshot coverage — the moment it does, testing for PathWriter
+// here would silently make binary items pull-eligible again.
+type DirectionAware interface {
+	// EffectiveDirection returns the direction the action will actually operate
+	// in: "push", "pull", or "sync".
+	EffectiveDirection() string
+}
+
 // PathWriter is optionally implemented by actions that overwrite existing paths.
 // The runner snapshots those paths before running the action so a later failure
 // in the module can be rolled back. The action declares them rather than the

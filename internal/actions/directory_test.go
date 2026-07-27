@@ -318,6 +318,27 @@ func TestDirectoryActionResolvedDir(t *testing.T) {
 
 // WritePaths must name the side the direction actually writes, because that is
 // what the runner snapshots for rollback.
+func TestDirectoryActionEffectiveDirection(t *testing.T) {
+	tests := []struct {
+		name   string
+		action DirectoryAction
+		want   string
+	}{
+		{"push", DirectoryAction{Direction: "push"}, "push"},
+		{"pull", DirectoryAction{Direction: "pull"}, "pull"},
+		{"sync", DirectoryAction{Direction: "sync"}, "sync"},
+		{"unset", DirectoryAction{}, "push"},
+		{"link ignores direction", DirectoryAction{Direction: "pull", Link: true}, "push"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.action.EffectiveDirection(); got != tt.want {
+				t.Errorf("EffectiveDirection() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDirectoryActionWritePaths(t *testing.T) {
 	target := filepath.Join("/tmp", "tree")
 	tests := []struct {

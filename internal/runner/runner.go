@@ -185,8 +185,8 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 			continue
 		}
 
-		action, skip, buildErr := r.buildAction(item, mod.Name)
-		if buildErr != nil || skip {
+		action, skipReason, buildErr := r.buildAction(item, mod.Name)
+		if buildErr != nil || skipReason != "" {
 			continue
 		}
 
@@ -255,14 +255,15 @@ func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapsh
 }
 
 func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.Item, snap *snapshot.Snapshot) (itemOutcome, error) {
-	action, skip, err := r.buildAction(item, mod.Name)
+	action, skipReason, err := r.buildAction(item, mod.Name)
 	if err != nil {
 		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 	}
-	if skip {
+	if skipReason != "" {
 		if r.Verbose {
-			r.UI.Skip(item.Type()+" not applicable on "+r.OS, item.Type())
+			r.UI.Skip(skipReason, action.Describe())
 		}
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: skipReason})
 		return outcomeSkipped, nil
 	}
 
@@ -276,7 +277,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 			if r.Verbose {
 				r.UI.Skip("skip_if", action.Describe())
 			}
-			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: "skip_if"})
 			return outcomeSkipped, nil
 		}
 	}
@@ -291,7 +292,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 			if r.Verbose {
 				r.UI.Skip("already applied", action.Describe())
 			}
-			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: "already applied"})
 			return outcomeSkipped, nil
 		}
 	}
@@ -338,7 +339,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	if runErr != nil && errors.Is(runErr, actions.ErrSkipped) {
 		msg := strings.TrimSuffix(runErr.Error(), ": "+actions.ErrSkipped.Error())
 		r.UI.Skip(msg, action.Describe())
-		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: msg})
 		return outcomeSkipped, nil
 	}
 
@@ -385,7 +386,16 @@ func (r *Runner) fileDirection(item config.Item) string {
 	return item.EffectiveDirection()
 }
 
-func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Action, bool, error) {
+// buildAction turns a config item into an executable action. A non-empty
+// skipReason means the item must not be run; the action is still returned, so
+// callers can name the item with the action's own Describe rather than
+// reconstructing a description the action already owns. Only an unrecognised
+// item type yields a nil action, because there is nothing to build.
+//
+// Each case therefore builds the action before deciding whether to skip it. The
+// constructors are plain struct literals, so building one that is then discarded
+// costs nothing.
+func (r *Runner) buildAction(item config.Item, moduleName ...string) (act actions.Action, skipReason string, err error) {
 	// sourcePrefix prepends the module name directory to a repo-side path.
 	sourcePrefix := func(name string) string {
 		if len(moduleName) > 0 && moduleName[0] != "" {
@@ -393,22 +403,23 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Ac
 		}
 		return name
 	}
+	// notApplicable is the reason shared by every case the current platform has
+	// no way to carry out.
+	notApplicable := item.Type() + " not applicable on " + r.OS
+
 	switch item.Type() {
 	case "package":
+		act = &actions.PackageAction{Package: item.Package, Manager: item.Via}
 		if r.skipManager(item.Via) {
-			return nil, true, nil
+			return act, notApplicable, nil
 		}
-		return &actions.PackageAction{Package: item.Package, Manager: item.Via}, false, nil
 
 	case "script":
-		return &actions.ScriptAction{Script: item.Script, Via: item.Via}, false, nil
+		act = &actions.ScriptAction{Script: item.Script, Via: item.Via}
 
 	case "file":
 		dest := item.Destination.ForOS(r.OS)
-		if dest == "" {
-			return nil, true, nil
-		}
-		return &actions.FileAction{
+		act = &actions.FileAction{
 			Source:      sourcePrefix(item.File),
 			Destination: dest,
 			Direction:   r.fileDirection(item),
@@ -416,56 +427,69 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (actions.Ac
 			Permissions: item.Permissions,
 			Encrypted:   item.Encrypted,
 			AgeKey:      r.AgeKey,
-		}, false, nil
+		}
+		if dest == "" {
+			return act, notApplicable, nil
+		}
 
 	case "directory":
 		dest := item.Destination.ForOS(r.OS)
-		if dest == "" {
-			return nil, true, nil
-		}
-		return &actions.DirectoryAction{
+		act = &actions.DirectoryAction{
 			Source:      sourcePrefix(item.Directory),
 			Destination: dest,
 			Direction:   r.fileDirection(item),
 			Link:        item.Link,
 			Permissions: item.Permissions,
-		}, false, nil
+		}
+		if dest == "" {
+			return act, notApplicable, nil
+		}
 
 	case "binary":
-		sourceURL := item.Source.ForOS(r.OS)
-		if sourceURL == "" {
-			return nil, true, nil // no binary for this OS
-		}
 		installTo := item.InstallTo
 		if installTo == "" {
 			installTo = "~/.local/bin"
 		}
-		return &actions.BinaryAction{
+		sourceURL := item.Source.ForOS(r.OS)
+		act = &actions.BinaryAction{
 			Name:      item.Binary,
 			Version:   item.Version,
 			SourceURL: sourceURL,
 			InstallTo: installTo,
-		}, false, nil
+		}
+		if sourceURL == "" {
+			return act, notApplicable, nil // no binary for this OS
+		}
 
 	case "run":
-		if r.DirectionOverride == "pull" {
-			return nil, true, nil
-		}
-		return &actions.RunAction{Command: item.Run, After: item.After}, false, nil
+		act = &actions.RunAction{Command: item.Run, After: item.After}
 
 	case "setting":
-		if !actions.SettingsSupported(r.OS) {
-			return nil, true, nil // no settings mechanism on this OS
-		}
-		return &actions.SettingAction{
+		act = &actions.SettingAction{
 			Domain: item.Setting,
 			Key:    item.Key,
 			Value:  item.Value,
-		}, false, nil
+		}
+		if !actions.SettingsSupported(r.OS) {
+			return act, notApplicable, nil // no settings mechanism on this OS
+		}
 
 	default:
-		return nil, false, fmt.Errorf("item has no recognised type: %+v", item)
+		return nil, "", fmt.Errorf("item has no recognised type: %+v", item)
 	}
+
+	// pull and sync reconcile the repo against the machine, so only actions that
+	// move data between the two have anything to do. The rest are skipped rather
+	// than rejected: every real config mixes them with file items, so erroring
+	// would make pull unusable. Gated once here rather than per case — the guard
+	// this replaces covered "run" alone and silently missed package, script,
+	// binary and setting.
+	if r.DirectionOverride == "pull" || r.DirectionOverride == "sync" {
+		if _, ok := act.(actions.DirectionAware); !ok {
+			return act, "nothing to " + r.DirectionOverride + " for a " + item.Type() + " item", nil
+		}
+	}
+	return act, "", nil
 }
 
 // --- helpers -----------------------------------------------------------------

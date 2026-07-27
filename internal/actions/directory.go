@@ -59,6 +59,20 @@ func (a *DirectoryAction) ResolvedDir() string {
 	return filepath.Dir(a.ResolvedTarget())
 }
 
+// EffectiveDirection implements DirectionAware. It mirrors the branching used by
+// Run, WritePaths, and Describe: a link is a permanent push, and anything other
+// than pull or sync is a push.
+func (a *DirectoryAction) EffectiveDirection() string {
+	switch {
+	case a.Link:
+		return "push"
+	case a.Direction == "pull", a.Direction == "sync":
+		return a.Direction
+	default:
+		return "push"
+	}
+}
+
 // WritePaths implements PathWriter. Push and link write the system tree, pull
 // writes the repo tree, and sync may write either, so both sides are declared.
 func (a *DirectoryAction) WritePaths() []string {

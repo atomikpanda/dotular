@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
@@ -30,11 +31,11 @@ func newTestRunner(cfg config.Config) *Runner {
 func TestBuildActionPackage(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{Package: "git", Via: "brew"}
-	action, skip, err := r.buildAction(item, "mymod")
+	action, skipReason, err := r.buildAction(item, "mymod")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip {
+	if skipReason != "" {
 		t.Error("should not skip brew on darwin")
 	}
 	if action == nil {
@@ -49,11 +50,11 @@ func TestBuildActionPackageSkipWrongOS(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	r.OS = "linux"
 	item := config.Item{Package: "git", Via: "brew"}
-	_, skip, err := r.buildAction(item)
+	_, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !skip {
+	if skipReason == "" {
 		t.Error("should skip brew on linux")
 	}
 }
@@ -61,11 +62,11 @@ func TestBuildActionPackageSkipWrongOS(t *testing.T) {
 func TestBuildActionScript(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{Script: "setup.sh", Via: "local"}
-	action, skip, err := r.buildAction(item)
+	action, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip {
+	if skipReason != "" {
 		t.Error("should not skip script")
 	}
 	if action == nil {
@@ -79,11 +80,11 @@ func TestBuildActionFile(t *testing.T) {
 		File:        ".vimrc",
 		Destination: config.PlatformMap{MacOS: "~/", Windows: "", Linux: ""},
 	}
-	action, skip, err := r.buildAction(item, "editor")
+	action, skipReason, err := r.buildAction(item, "editor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip {
+	if skipReason != "" {
 		t.Error("should not skip file with darwin destination")
 	}
 	if action == nil {
@@ -97,8 +98,8 @@ func TestBuildActionFileNoDestination(t *testing.T) {
 		File:        ".vimrc",
 		Destination: config.PlatformMap{MacOS: "", Windows: `C:\`, Linux: ""},
 	}
-	_, skip, _ := r.buildAction(item)
-	if !skip {
+	_, skipReason, _ := r.buildAction(item)
+	if skipReason == "" {
 		t.Error("should skip file with empty darwin destination")
 	}
 }
@@ -109,11 +110,11 @@ func TestBuildActionDirectory(t *testing.T) {
 		Directory:   "nvim",
 		Destination: config.PlatformMap{MacOS: "~/.config/", Windows: "", Linux: ""},
 	}
-	action, skip, err := r.buildAction(item, "editor")
+	action, skipReason, err := r.buildAction(item, "editor")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip || action == nil {
+	if skipReason != "" || action == nil {
 		t.Error("should build directory action")
 	}
 }
@@ -124,8 +125,8 @@ func TestBuildActionDirectoryNoDestination(t *testing.T) {
 		Directory:   "nvim",
 		Destination: config.PlatformMap{},
 	}
-	_, skip, _ := r.buildAction(item)
-	if !skip {
+	_, skipReason, _ := r.buildAction(item)
+	if skipReason == "" {
 		t.Error("should skip directory with empty destination")
 	}
 }
@@ -137,11 +138,11 @@ func TestBuildActionBinary(t *testing.T) {
 		Version: "0.10.0",
 		Source:  config.PlatformMap{MacOS: "https://example.com/nvim.tar.gz"},
 	}
-	action, skip, err := r.buildAction(item)
+	action, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip || action == nil {
+	if skipReason != "" || action == nil {
 		t.Error("should build binary action")
 	}
 }
@@ -152,8 +153,8 @@ func TestBuildActionBinaryNoSource(t *testing.T) {
 		Binary: "nvim",
 		Source: config.PlatformMap{Linux: "https://example.com/nvim"},
 	}
-	_, skip, _ := r.buildAction(item)
-	if !skip {
+	_, skipReason, _ := r.buildAction(item)
+	if skipReason == "" {
 		t.Error("should skip binary with no darwin source")
 	}
 }
@@ -164,11 +165,11 @@ func TestBuildActionBinaryDefaultInstallTo(t *testing.T) {
 		Binary: "tool",
 		Source: config.PlatformMap{MacOS: "https://example.com/tool"},
 	}
-	action, skip, err := r.buildAction(item)
+	action, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip || action == nil {
+	if skipReason != "" || action == nil {
 		t.Error("should build binary action with default install_to")
 	}
 }
@@ -176,11 +177,11 @@ func TestBuildActionBinaryDefaultInstallTo(t *testing.T) {
 func TestBuildActionRun(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{Run: "echo hello", After: "package"}
-	action, skip, err := r.buildAction(item)
+	action, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip || action == nil {
+	if skipReason != "" || action == nil {
 		t.Error("should build run action")
 	}
 }
@@ -189,11 +190,11 @@ func TestBuildActionRunSkippedOnPull(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	r.DirectionOverride = "pull"
 	item := config.Item{Run: "echo hello"}
-	_, skip, err := r.buildAction(item)
+	_, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !skip {
+	if skipReason == "" {
 		t.Error("run action should be skipped on pull")
 	}
 }
@@ -201,11 +202,11 @@ func TestBuildActionRunSkippedOnPull(t *testing.T) {
 func TestBuildActionSetting(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	item := config.Item{Setting: "com.apple.dock", Key: "autohide", Value: true}
-	action, skip, err := r.buildAction(item)
+	action, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if skip || action == nil {
+	if skipReason != "" || action == nil {
 		t.Error("should build setting action")
 	}
 }
@@ -214,11 +215,11 @@ func TestBuildActionSettingSkipWrongOS(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	r.OS = "linux"
 	item := config.Item{Setting: "com.apple.dock", Key: "autohide", Value: true}
-	_, skip, err := r.buildAction(item)
+	_, skipReason, err := r.buildAction(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !skip {
+	if skipReason == "" {
 		t.Error("setting should be skipped on linux")
 	}
 }
@@ -248,6 +249,172 @@ func TestBuildActionSourcePrefix(t *testing.T) {
 	desc2 := action2.Describe()
 	if desc2 == "" {
 		t.Error("Describe() should not be empty")
+	}
+}
+
+// directionGateItems holds one item of every type: the five that only push state
+// onto the machine, then the two that move files between repo and machine.
+//
+// The package item omits via so that PackageAction.IsApplied has no check
+// command to run — the outcome must not depend on what the test host has
+// installed.
+var directionGateItems = []struct {
+	name         string
+	item         config.Item
+	fileOriented bool // has something to do under pull and sync
+}{
+	{"package", config.Item{Package: "git"}, false},
+	{"script", config.Item{Script: "install.sh", Via: "local"}, false},
+	{"binary", config.Item{Binary: "tool", Source: config.PlatformMap{MacOS: "https://example.com/tool"}}, false},
+	{"setting", config.Item{Setting: "com.apple.dock", Key: "autohide", Value: true}, false},
+	{"run", config.Item{Run: "echo hello"}, false},
+	{"file", config.Item{File: ".vimrc", Destination: config.PlatformMap{MacOS: "~/"}}, true},
+	{"directory", config.Item{Directory: "nvim", Destination: config.PlatformMap{MacOS: "~/.config/"}}, true},
+}
+
+// pull and sync must not install packages, execute scripts, download binaries or
+// write system settings; push must keep running all of them.
+func TestApplyModuleDirectionGate(t *testing.T) {
+	for _, override := range []string{"push", "pull", "sync"} {
+		for _, tt := range directionGateItems {
+			t.Run(override+"/"+tt.name, func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir()) // keep audit.Log out of the real home
+				r := newTestRunner(config.Config{})
+				r.Command = override
+				r.DirectionOverride = override
+				var buf bytes.Buffer
+				r.Out = &buf
+				r.UI = ui.New(&buf, &bytes.Buffer{})
+
+				mod := config.Module{Name: "gate", Items: []config.Item{tt.item}}
+				result := r.ApplyModule(context.Background(), mod)
+				if result.Err != nil {
+					t.Fatalf("unexpected error: %v", result.Err)
+				}
+
+				wantApplied, wantSkipped := 1, 0
+				if override != "push" && !tt.fileOriented {
+					wantApplied, wantSkipped = 0, 1
+				}
+				if result.Applied != wantApplied || result.Skipped != wantSkipped || result.Failed != 0 {
+					t.Errorf("applied/skipped/failed = %d/%d/%d, want %d/%d/0",
+						result.Applied, result.Skipped, result.Failed, wantApplied, wantSkipped)
+				}
+			})
+		}
+	}
+}
+
+func TestApplyModuleDirectionSkipVerbosity(t *testing.T) {
+	const reason = "nothing to pull for a package item"
+	tests := []struct {
+		name    string
+		verbose bool
+	}{
+		{"verbose", true},
+		{"quiet", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir()) // keep audit.Log out of the real home
+			r := newTestRunner(config.Config{})
+			r.Verbose = tt.verbose
+			r.Command = "pull"
+			r.DirectionOverride = "pull"
+			var buf bytes.Buffer
+			r.Out = &buf
+			r.UI = ui.New(&buf, &bytes.Buffer{})
+
+			mod := config.Module{Name: "gate", Items: []config.Item{{Package: "git"}}}
+			if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			if got := containsStr(buf.String(), reason); got != tt.verbose {
+				t.Errorf("reason in output = %v, want %v", got, tt.verbose)
+			}
+		})
+	}
+}
+
+func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	r := newTestRunner(config.Config{})
+	r.Command = "pull"
+	r.DirectionOverride = "pull"
+	var buf bytes.Buffer
+	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+
+	mod := config.Module{Name: "gate", Items: []config.Item{{Package: "git", Via: "brew"}}}
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	entries, err := audit.Read("gate", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want skipped", e.Outcome)
+	}
+	if e.Reason != "nothing to pull for a package item" {
+		t.Errorf("Reason = %q", e.Reason)
+	}
+	// The action's own description, exactly as for every other audit entry.
+	if want := `install package "git" via brew`; e.Item != want {
+		t.Errorf("Item = %q, want %q", e.Item, want)
+	}
+}
+
+// Real modules list the same package once per manager (git via brew, apt, dnf,
+// winget, …), so most of them are platform-skipped on any given machine. Their
+// audit entries have to stay distinguishable.
+func TestApplyModuleSkipAuditDistinguishesSamePackage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	r := newTestRunner(config.Config{})
+	// Neither manager belongs to this OS, so both items skip while building —
+	// no installed-check runs and the outcome cannot depend on the test host.
+	r.OS = "windows"
+	var buf bytes.Buffer
+	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+
+	mod := config.Module{Name: "git", Items: []config.Item{
+		{Package: "git", Via: "brew"},
+		{Package: "git", Via: "apt"},
+	}}
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Skipped != 2 {
+		t.Fatalf("skipped = %d, want 2", result.Skipped)
+	}
+
+	entries, err := audit.Read("git", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("got %d audit entries, want 2", len(entries))
+	}
+	if entries[0].Item == entries[1].Item {
+		t.Errorf("both skipped items logged as %q; entries must be distinguishable", entries[0].Item)
+	}
+	for _, e := range entries {
+		if e.Reason != "package not applicable on windows" {
+			t.Errorf("Reason = %q", e.Reason)
+		}
 	}
 }
 
