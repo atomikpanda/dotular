@@ -6,7 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/atomikpanda/dotular/internal/testutil"
 )
+
+// Log and Read resolve their path from the home directory, so without this the
+// suite appends fixture rows to the developer's real history.log.
+func TestMain(m *testing.M) {
+	os.Exit(testutil.IsolateHome(m))
+}
 
 func TestEntryJSON(t *testing.T) {
 	e := Entry{
@@ -99,7 +107,7 @@ func TestLogAutoSetsTime(t *testing.T) {
 }
 
 func TestRead(t *testing.T) {
-	// Read from the actual log path. The test is mainly that it doesn't crash.
+	// Read from the isolated log path. The test is mainly that it doesn't crash.
 	entries, err := Read("", 10)
 	if err != nil {
 		t.Fatal(err)
@@ -128,11 +136,8 @@ func TestReadNoLimit(t *testing.T) {
 }
 
 func TestReadMissingFile(t *testing.T) {
-	// Override HOME to a temp dir to get a missing log file.
-	dir := t.TempDir()
-	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	// A fresh home, not the package-wide one, so the log file is missing.
+	testutil.SetHome(t, t.TempDir())
 
 	entries, err := Read("", 0)
 	if err != nil {

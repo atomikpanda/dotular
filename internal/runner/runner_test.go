@@ -10,8 +10,15 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/testutil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
+
+// Applying items calls audit.Log, which resolves its path from the home
+// directory, so without this the suite writes to the developer's real one.
+func TestMain(m *testing.M) {
+	os.Exit(testutil.IsolateHome(m))
+}
 
 func newTestRunner(cfg config.Config) *Runner {
 	var buf bytes.Buffer

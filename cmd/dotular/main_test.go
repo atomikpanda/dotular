@@ -9,7 +9,14 @@ import (
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/testutil"
 )
+
+// Commands that apply items write the audit log, and the tag commands write
+// machine.yaml, both under the home directory — isolate it from the real one.
+func TestMain(m *testing.M) {
+	os.Exit(testutil.IsolateHome(m))
+}
 
 func writeTestConfig(t *testing.T, content string) string {
 	t.Helper()
@@ -470,7 +477,7 @@ modules: []
 
 func TestTagListCmdExecute(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	root := buildRoot()
 	root.SetArgs([]string{"tag", "list"})
@@ -481,7 +488,7 @@ func TestTagListCmdExecute(t *testing.T) {
 
 func TestTagAddCmdExecute(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	root := buildRoot()
 	root.SetArgs([]string{"tag", "add", "work"})
