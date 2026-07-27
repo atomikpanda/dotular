@@ -323,6 +323,8 @@ dotular sync [module...]
 
 Override the `direction` on all file and directory items for the run. Link items (`link: true`) are never overridden.
 
+`pull` and `sync` reconcile files only: `package`, `script`, `binary`, `run`, and `setting` items are skipped for the run (listed with `--verbose`, recorded in the audit log). `push` behaves like `apply` and runs them.
+
 ### `verify`
 
 ```sh

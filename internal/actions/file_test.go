@@ -695,6 +695,27 @@ func TestFileActionPermissionsStatusNonexistent(t *testing.T) {
 
 // WritePaths must name the side the direction actually writes, because that is
 // what the runner snapshots for rollback.
+func TestFileActionEffectiveDirection(t *testing.T) {
+	tests := []struct {
+		name   string
+		action FileAction
+		want   string
+	}{
+		{"push", FileAction{Direction: "push"}, "push"},
+		{"pull", FileAction{Direction: "pull"}, "pull"},
+		{"sync", FileAction{Direction: "sync"}, "sync"},
+		{"unset", FileAction{}, "push"},
+		{"link ignores direction", FileAction{Direction: "pull", Link: true}, "push"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.action.EffectiveDirection(); got != tt.want {
+				t.Errorf("EffectiveDirection() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFileActionWritePaths(t *testing.T) {
 	target := filepath.Join("/tmp", "conf")
 	tests := []struct {
