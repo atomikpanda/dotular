@@ -43,21 +43,10 @@ type FileAction struct {
 	AgeKey      *ageutil.Key // required when Encrypted is true
 }
 
-// resolvedTarget returns the fully expanded destination file path.
-// If the destination has a file extension (e.g. ~/.wezterm.lua), it is treated
-// as a complete file path. Otherwise it is treated as a directory and the
-// source basename is appended. A trailing "/" always forces directory treatment.
+// ResolvedTarget returns the fully expanded destination file path.
+// See ResolveFileTarget for the resolution rules; the scanner shares it.
 func (a *FileAction) ResolvedTarget() string {
-	expanded := platform.ExpandPath(a.Destination)
-	base := filepath.Base(expanded)
-	// If the path is an existing directory, always append the source basename.
-	if info, err := os.Stat(expanded); err == nil && info.IsDir() {
-		return filepath.Join(expanded, filepath.Base(a.Source))
-	}
-	if !strings.HasSuffix(a.Destination, "/") && filepath.Ext(base) != "" {
-		return expanded
-	}
-	return filepath.Join(expanded, filepath.Base(a.Source))
+	return ResolveFileTarget(a.Destination, filepath.Base(a.Source), platform.ExpandPath, OSIsDir)
 }
 
 // resolvedDir returns the parent directory of the resolved target.

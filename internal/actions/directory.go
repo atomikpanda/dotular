@@ -35,18 +35,9 @@ type DirectoryAction struct {
 }
 
 // ResolvedTarget returns the fully expanded destination directory path.
-// The destination is treated as the complete path only when its basename
-// already matches the source basename; otherwise it is treated as the parent
-// directory and the source basename is appended.
+// See ResolveDirectoryTarget for the resolution rules; the scanner shares it.
 func (a *DirectoryAction) ResolvedTarget() string {
-	expanded := platform.ExpandPath(a.Destination)
-	base := filepath.Base(expanded)
-	srcBase := filepath.Base(a.Source)
-	// If the destination already ends with the source directory name, use as-is.
-	if base == srcBase {
-		return expanded
-	}
-	return filepath.Join(expanded, srcBase)
+	return ResolveDirectoryTarget(a.Destination, filepath.Base(a.Source), platform.ExpandPath)
 }
 
 // ResolvedDir returns the parent directory of the resolved target.
