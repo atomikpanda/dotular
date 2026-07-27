@@ -19,6 +19,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/runner"
@@ -193,11 +194,11 @@ managed store and records it in the config YAML.`,
 
 			// Copy the file or directory into the store.
 			if isDir {
-				if err := copyDirRecursive(absSrc, dest); err != nil {
+				if err := fsutil.CopyDir(absSrc, dest); err != nil {
 					return fmt.Errorf("copy directory: %w", err)
 				}
 			} else {
-				if err := copyFileSimple(absSrc, dest); err != nil {
+				if err := fsutil.CopyFile(absSrc, dest); err != nil {
 					return fmt.Errorf("copy file: %w", err)
 				}
 			}
@@ -320,37 +321,6 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 		return "", fmt.Errorf("module name cannot be empty")
 	}
 	return name, nil
-}
-
-// copyFileSimple copies a single file from src to dst.
-func copyFileSimple(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(dst, data, info.Mode().Perm())
-}
-
-// copyDirRecursive copies a directory tree from src to dst.
-func copyDirRecursive(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFileSimple(path, target)
-	})
 }
 
 // --- apply -------------------------------------------------------------------

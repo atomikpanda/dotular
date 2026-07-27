@@ -153,11 +153,6 @@ func TestRollbackPreservesModesInsideDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-only")
 	}
-	// Observed: got 0664, want 0600. snapshot.Restore removes the tree
-	// (snapshot.go:80) and re-copies it with copyDir, which creates files via
-	// os.Create and hardcodes 0o755 for directories (snapshot.go:112,124), so
-	// every mode in a restored tree is reset. Un-skip when #6 is fixed.
-	t.Skip("blocked on #6: snapshot.copyDir does not preserve modes")
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "rb", "tree", "f"), "repo version", 0o644)
 	destTree := filepath.Join(dir, "dest", "tree")
@@ -188,13 +183,6 @@ func TestRollbackRestoresFileReplacedBySymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-only")
 	}
-	// Observed two failures: the destination is still a symlink after rollback,
-	// and — worse — restoring through that symlink overwrote the repo-side
-	// source with the destination's saved contents ("original system version").
-	// Record uses os.Stat, which follows the link (snapshot.go:44), and Restore
-	// uses os.Create on the path (snapshot.go:83,124), which writes through it.
-	// Un-skip when #6 is fixed.
-	t.Skip("blocked on #6: rollback writes through a symlink into the repo source")
 	dir := t.TempDir()
 	source := filepath.Join(dir, "rb", "conf")
 	write(t, source, "repo version", 0o644)
@@ -236,11 +224,6 @@ func TestRollbackRestoresRepoSideOnPull(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-only")
 	}
-	// Observed: the repo-side file is left holding "system version". The runner
-	// records ResolvedTarget() — the system path — regardless of direction
-	// (runner.go:313), while runPull writes a.Source (file.go:184), so the
-	// snapshot protects the one file pull never touches. Un-skip when #5 is fixed.
-	t.Skip("blocked on #5: snapshot records the system path even for pull")
 	dir := t.TempDir()
 	source := filepath.Join(dir, "rb", "conf")
 	write(t, source, "repo original", 0o644)

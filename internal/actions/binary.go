@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -79,7 +80,7 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	default:
 		// Treat as a plain binary.
 		if err := os.Rename(tmpPath, destPath); err != nil {
-			if err := copyFilePath(tmpPath, destPath); err != nil {
+			if err := fsutil.CopyContents(tmpPath, destPath); err != nil {
 				return fmt.Errorf("install binary: %w", err)
 			}
 		}
@@ -172,20 +173,5 @@ func writeBinary(r io.Reader, destPath string) error {
 	}
 	defer out.Close()
 	_, err = io.Copy(out, r)
-	return err
-}
-
-func copyFilePath(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
 	return err
 }

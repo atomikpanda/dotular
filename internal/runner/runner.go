@@ -308,20 +308,13 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		}
 	}
 
-	// --- snapshot destination before modification ---
-	if snap != nil && itemType == "file" {
-		if fa, ok := action.(*actions.FileAction); ok {
-			destPath := fa.ResolvedTarget()
-			if err := snap.Record(destPath); err != nil {
-				return outcomeFailed, fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
-			}
-		}
-	}
-	if snap != nil && itemType == "directory" {
-		if da, ok := action.(*actions.DirectoryAction); ok {
-			destPath := da.ResolvedTarget()
-			if err := snap.Record(destPath); err != nil {
-				return outcomeFailed, fmt.Errorf("module %q: snapshot %s: %w", mod.Name, destPath, err)
+	// --- snapshot the paths the action will write, before it writes them ---
+	if snap != nil {
+		if w, ok := action.(actions.PathWriter); ok {
+			for _, path := range w.WritePaths() {
+				if err := snap.Record(path); err != nil {
+					return outcomeFailed, fmt.Errorf("module %q: snapshot %s: %w", mod.Name, path, err)
+				}
 			}
 		}
 	}

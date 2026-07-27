@@ -4,11 +4,11 @@ package snapshot
 
 import (
 	"fmt"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/atomikpanda/dotular/internal/fsutil"
 )
 
 // Snapshot holds copies of files that existed before an apply started, plus a
@@ -41,7 +41,9 @@ func (s *Snapshot) Record(path string) error {
 		}
 	}
 
-	info, err := os.Stat(path)
+	// Lstat, not Stat: a symlink must be saved as a symlink, not as a copy of
+	// whatever it points at.
+	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		s.created = append(s.created, path)
 		return nil
@@ -51,14 +53,16 @@ func (s *Snapshot) Record(path string) error {
 	}
 
 	tmpPath := filepath.Join(s.dir, strconv.Itoa(len(s.saved)))
-	if info.IsDir() {
-		if err := copyDir(path, tmpPath); err != nil {
-			return fmt.Errorf("snapshot %s: %w", path, err)
-		}
-	} else {
-		if err := copyFile(path, tmpPath); err != nil {
-			return fmt.Errorf("snapshot %s: %w", path, err)
-		}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		err = fsutil.CopySymlink(path, tmpPath)
+	case info.IsDir():
+		err = fsutil.CopyDir(path, tmpPath)
+	default:
+		err = fsutil.CopyFile(path, tmpPath)
+	}
+	if err != nil {
+		return fmt.Errorf("snapshot %s: %w", path, err)
 	}
 	s.saved[path] = tmpPath
 	return nil
@@ -69,18 +73,22 @@ func (s *Snapshot) Record(path string) error {
 func (s *Snapshot) Restore() error {
 	var first error
 	for dest, tmp := range s.saved {
-		info, err := os.Stat(tmp)
+		// Lstat: a saved symlink must be identified as one rather than followed.
+		info, err := os.Lstat(tmp)
 		if err != nil {
 			if first == nil {
 				first = fmt.Errorf("restore %s: %w", dest, err)
 			}
 			continue
 		}
-		if info.IsDir() {
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			err = fsutil.CopySymlink(tmp, dest)
+		case info.IsDir():
 			os.RemoveAll(dest)
-			err = copyDir(tmp, dest)
-		} else {
-			err = copyFile(tmp, dest)
+			err = fsutil.CopyDir(tmp, dest)
+		default:
+			err = restoreFile(tmp, dest)
 		}
 		if err != nil && first == nil {
 			first = fmt.Errorf("restore %s: %w", dest, err)
@@ -92,40 +100,20 @@ func (s *Snapshot) Restore() error {
 	return first
 }
 
+// restoreFile writes a saved regular file back to dest. If the apply replaced
+// dest with a symlink (a link item does exactly that), the link is removed
+// first: writing through it would overwrite its target — typically the repo-side
+// copy the link points at — instead of restoring dest.
+func restoreFile(tmp, dest string) error {
+	if info, err := os.Lstat(dest); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		if err := os.Remove(dest); err != nil {
+			return fmt.Errorf("remove symlink at destination: %w", err)
+		}
+	}
+	return fsutil.CopyFile(tmp, dest)
+}
+
 // Discard removes the temporary snapshot directory.
 func (s *Snapshot) Discard() error {
 	return os.RemoveAll(s.dir)
-}
-
-func copyDir(src, dst string) error {
-	src = filepath.Clean(src)
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFile(path, target)
-	})
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }

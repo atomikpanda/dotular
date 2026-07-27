@@ -33,3 +33,13 @@ type Idempotent interface {
 	// place and the action can safely be skipped.
 	IsApplied(ctx context.Context) (bool, error)
 }
+
+// PathWriter is optionally implemented by actions that overwrite existing paths.
+// The runner snapshots those paths before running the action so a later failure
+// in the module can be rolled back. The action declares them rather than the
+// runner guessing, because which side of a file or directory item gets written
+// depends on its direction.
+type PathWriter interface {
+	// WritePaths returns every path Run may create or overwrite.
+	WritePaths() []string
+}

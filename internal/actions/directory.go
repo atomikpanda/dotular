@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -56,6 +57,21 @@ func (a *DirectoryAction) ResolvedTarget() string {
 // ResolvedDir returns the parent directory of the resolved target.
 func (a *DirectoryAction) ResolvedDir() string {
 	return filepath.Dir(a.ResolvedTarget())
+}
+
+// WritePaths implements PathWriter. Push and link write the system tree, pull
+// writes the repo tree, and sync may write either, so both sides are declared.
+func (a *DirectoryAction) WritePaths() []string {
+	switch {
+	case a.Link:
+		return []string{a.ResolvedTarget()}
+	case a.Direction == "pull":
+		return []string{a.Source}
+	case a.Direction == "sync":
+		return []string{a.ResolvedTarget(), a.Source}
+	default:
+		return []string{a.ResolvedTarget()}
+	}
 }
 
 func (a *DirectoryAction) Describe() string {
@@ -111,7 +127,7 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 		if !dirExists(target) {
 			return fmt.Errorf("pull: system directory does not exist: %s: %w", target, ErrSkipped)
 		}
-		return copyDir(target, a.Source)
+		return a.pullTree(target, a.Source)
 	case "sync":
 		repoExists := dirExists(a.Source)
 		sysExists := dirExists(target)
@@ -120,21 +136,58 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 			return fmt.Errorf("sync-dir: neither repo nor system directory exists (%s)", filepath.Base(a.Source))
 		case repoExists && !sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: system copy missing, pushing"))
-			return copyDir(a.Source, target)
+			return a.pushTree(a.Source, target)
 		case !repoExists && sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: repo copy missing, pulling"))
-			return copyDir(target, a.Source)
+			return a.pullTree(target, a.Source)
 		default:
 			// Both exist: push repo over system (per-file sync requires file items).
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: both exist, pushing repo -> system"))
-			return copyDir(a.Source, target)
+			return a.pushTree(a.Source, target)
 		}
 	default: // push
-		return copyDir(a.Source, target)
+		return a.pushTree(a.Source, target)
 	}
 }
 
 // --- helpers -----------------------------------------------------------------
+
+// pushTree writes the repo tree out to the system. The repo's modes are not
+// propagated: they came out of a git checkout, so copying them would widen a
+// restrictive destination. Permissions is the explicit control instead.
+func (a *DirectoryAction) pushTree(src, dst string) error {
+	if err := fsutil.CopyDirContents(src, dst); err != nil {
+		return err
+	}
+	return a.applyPermissions(dst)
+}
+
+// pullTree reads a system tree into the repo, reproducing its modes.
+func (a *DirectoryAction) pullTree(src, dst string) error {
+	if err := fsutil.CopyDir(src, dst); err != nil {
+		return err
+	}
+	return a.applyPermissions(dst)
+}
+
+// applyPermissions enforces Permissions on every regular file in the tree just
+// written, matching the file-item semantics the field is documented to share.
+// Directories keep their copied modes and symlinks are left alone, since chmod
+// would follow them to a file outside the tree.
+func (a *DirectoryAction) applyPermissions(root string) error {
+	if a.Permissions == "" {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return enforcePermissions(path, a.Permissions)
+	})
+}
 
 func createDirSymlink(src, dst string) error {
 	abs, err := filepath.Abs(src)
@@ -151,25 +204,6 @@ func createDirSymlink(src, dst string) error {
 		}
 	}
 	return os.Symlink(abs, dst)
-}
-
-// copyDir recursively copies the src directory tree into dst (created if needed).
-func copyDir(src, dst string) error {
-	src = filepath.Clean(src)
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		return copyFilePath(path, target)
-	})
 }
 
 func dirExists(path string) bool {
