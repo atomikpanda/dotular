@@ -5,7 +5,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/atomikpanda/dotular/internal/testutil"
 )
+
+// Save, Add and EnsureInitialised write machine.yaml under the home directory,
+// so without this the suite overwrites the developer's real machine tags.
+func TestMain(m *testing.M) {
+	os.Exit(testutil.IsolateHome(m))
+}
 
 func TestMatches(t *testing.T) {
 	tests := []struct {
@@ -58,9 +66,9 @@ func TestConfigPath(t *testing.T) {
 }
 
 func TestSaveAndLoad(t *testing.T) {
-	// Create temp dir and override ConfigPath by manipulating HOME.
+	// Override ConfigPath by pointing the home directory at a temp dir.
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	cfg := &MachineConfig{Tags: []string{"darwin", "amd64", "work"}}
 	if err := Save(cfg); err != nil {
@@ -81,7 +89,7 @@ func TestSaveAndLoad(t *testing.T) {
 
 func TestLoadMissing(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	cfg, err := Load()
 	if err != nil {
@@ -94,7 +102,7 @@ func TestLoadMissing(t *testing.T) {
 
 func TestEnsureInitialised(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	if err := EnsureInitialised(); err != nil {
 		t.Fatal(err)
@@ -113,7 +121,7 @@ func TestEnsureInitialised(t *testing.T) {
 
 func TestAdd(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	testutil.SetHome(t, dir)
 
 	// Start with a config.
 	Save(&MachineConfig{Tags: []string{"darwin"}})

@@ -3,7 +3,6 @@ package runner
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,25 +10,14 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/testutil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
-// TestMain isolates the home directory for every test in this package. Applying
-// items calls audit.Log, which resolves its path from it, so without this the
-// suite appends fixture rows to the developer's real audit history.
+// Applying items calls audit.Log, which resolves its path from the home
+// directory, so without this the suite writes to the developer's real one.
 func TestMain(m *testing.M) {
-	home, err := os.MkdirTemp("", "dotular-runner-home")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "isolate home dir:", err)
-		os.Exit(1)
-	}
-	// os.UserHomeDir reads $HOME on Unix but %USERPROFILE% on Windows. Both
-	// must be redirected or the isolation silently does nothing on Windows.
-	os.Setenv("HOME", home)
-	os.Setenv("USERPROFILE", home)
-	code := m.Run()
-	os.RemoveAll(home)
-	os.Exit(code)
+	os.Exit(testutil.IsolateHome(m))
 }
 
 func newTestRunner(cfg config.Config) *Runner {
