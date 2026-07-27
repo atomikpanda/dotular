@@ -16,6 +16,12 @@ import (
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
+// httpClient performs every registry download. It is a variable so that tests
+// can point the fetch path at an httptest server: Ref.FetchURL is derived from
+// the ref, so swapping the client is the only seam that does not require faking
+// a hostname.
+var httpClient = http.DefaultClient
+
 // Fetch retrieves a remote module by its reference string, using the cache
 // when available. When noCache is true the network is always consulted.
 //
@@ -85,7 +91,7 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "dotular/1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
