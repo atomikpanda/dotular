@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
@@ -332,6 +333,44 @@ func TestApplyModuleDirectionSkipVerbosity(t *testing.T) {
 				t.Errorf("reason in output = %v, want %v", got, tt.verbose)
 			}
 		})
+	}
+}
+
+// A skip decided while building the action leaves no action to describe, so the
+// audit entry has to name the item from its config.
+func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	r := newTestRunner(config.Config{})
+	r.Command = "pull"
+	r.DirectionOverride = "pull"
+	var buf bytes.Buffer
+	r.Out = &buf
+	r.UI = ui.New(&buf, &bytes.Buffer{})
+
+	mod := config.Module{Name: "gate", Items: []config.Item{{Package: "git"}}}
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+
+	entries, err := audit.Read("gate", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Outcome != "skipped" {
+		t.Errorf("Outcome = %q, want skipped", e.Outcome)
+	}
+	if e.Reason != "nothing to pull for a package item" {
+		t.Errorf("Reason = %q", e.Reason)
+	}
+	if e.Item != "package git" {
+		t.Errorf("Item = %q, want %q", e.Item, "package git")
 	}
 }
 

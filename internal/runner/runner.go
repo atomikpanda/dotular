@@ -263,6 +263,14 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		if r.Verbose {
 			r.UI.Skip(skipReason, item.Type())
 		}
+		// action is nil here, so the audit entry names the item from its config.
+		audit.Log(audit.Entry{
+			Command: r.Command,
+			Module:  mod.Name,
+			Item:    item.Type() + " " + item.PrimaryValue(),
+			Outcome: "skipped",
+			Reason:  skipReason,
+		})
 		return outcomeSkipped, nil
 	}
 
@@ -276,7 +284,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 			if r.Verbose {
 				r.UI.Skip("skip_if", action.Describe())
 			}
-			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: "skip_if"})
 			return outcomeSkipped, nil
 		}
 	}
@@ -291,7 +299,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 			if r.Verbose {
 				r.UI.Skip("already applied", action.Describe())
 			}
-			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+			audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: "already applied"})
 			return outcomeSkipped, nil
 		}
 	}
@@ -338,7 +346,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	if runErr != nil && errors.Is(runErr, actions.ErrSkipped) {
 		msg := strings.TrimSuffix(runErr.Error(), ": "+actions.ErrSkipped.Error())
 		r.UI.Skip(msg, action.Describe())
-		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped"})
+		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: msg})
 		return outcomeSkipped, nil
 	}
 

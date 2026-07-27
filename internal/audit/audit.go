@@ -16,7 +16,8 @@ type Entry struct {
 	Command string    `json:"command"` // "apply" | "pull" | "sync" | "verify"
 	Module  string    `json:"module"`
 	Item    string    `json:"item"`
-	Outcome string    `json:"outcome"` // "success" | "skipped" | "failure"
+	Outcome string    `json:"outcome"`          // "success" | "skipped" | "failure"
+	Reason  string    `json:"reason,omitempty"` // why, when Outcome is "skipped"
 	Error   string    `json:"error,omitempty"`
 }
 
