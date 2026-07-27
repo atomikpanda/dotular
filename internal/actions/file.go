@@ -176,7 +176,7 @@ func (a *FileAction) Run(ctx context.Context, dryRun bool) error {
 		return err
 	}
 
-	return a.enforcePermissions(target)
+	return enforcePermissions(target, a.Permissions)
 }
 
 // --- direction implementations -----------------------------------------------
@@ -305,13 +305,16 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 
 // --- permissions -------------------------------------------------------------
 
-func (a *FileAction) enforcePermissions(target string) error {
-	if a.Permissions == "" {
+// enforcePermissions sets target's mode to permissions (a Unix octal string).
+// An empty permissions is a no-op. Shared with DirectoryAction, which applies it
+// to every file it writes.
+func enforcePermissions(target, permissions string) error {
+	if permissions == "" {
 		return nil
 	}
-	mode, err := parseMode(a.Permissions)
+	mode, err := parseMode(permissions)
 	if err != nil {
-		return fmt.Errorf("invalid permissions %q: %w", a.Permissions, err)
+		return fmt.Errorf("invalid permissions %q: %w", permissions, err)
 	}
 	info, err := os.Stat(target)
 	if err != nil {
@@ -319,7 +322,7 @@ func (a *FileAction) enforcePermissions(target string) error {
 	}
 	if info.Mode().Perm() != mode {
 		if err := os.Chmod(target, mode); err != nil {
-			return fmt.Errorf("chmod %s to %s: %w", target, a.Permissions, err)
+			return fmt.Errorf("chmod %s to %s: %w", target, permissions, err)
 		}
 	}
 	return nil

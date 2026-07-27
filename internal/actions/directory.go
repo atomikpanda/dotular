@@ -3,6 +3,7 @@ package actions
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,7 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 		if !dirExists(target) {
 			return fmt.Errorf("pull: system directory does not exist: %s: %w", target, ErrSkipped)
 		}
-		return fsutil.CopyDir(target, a.Source)
+		return a.copyTree(target, a.Source)
 	case "sync":
 		repoExists := dirExists(a.Source)
 		sysExists := dirExists(target)
@@ -135,21 +136,48 @@ func (a *DirectoryAction) Run(ctx context.Context, dryRun bool) error {
 			return fmt.Errorf("sync-dir: neither repo nor system directory exists (%s)", filepath.Base(a.Source))
 		case repoExists && !sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: system copy missing, pushing"))
-			return fsutil.CopyDir(a.Source, target)
+			return a.copyTree(a.Source, target)
 		case !repoExists && sysExists:
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: repo copy missing, pulling"))
-			return fsutil.CopyDir(target, a.Source)
+			return a.copyTree(target, a.Source)
 		default:
 			// Both exist: push repo over system (per-file sync requires file items).
 			fmt.Printf("    %s\n", color.Cyan("sync-dir: both exist, pushing repo -> system"))
-			return fsutil.CopyDir(a.Source, target)
+			return a.copyTree(a.Source, target)
 		}
 	default: // push
-		return fsutil.CopyDir(a.Source, target)
+		return a.copyTree(a.Source, target)
 	}
 }
 
 // --- helpers -----------------------------------------------------------------
+
+// copyTree copies src to dst and applies Permissions to every file it wrote.
+func (a *DirectoryAction) copyTree(src, dst string) error {
+	if err := fsutil.CopyDir(src, dst); err != nil {
+		return err
+	}
+	return a.applyPermissions(dst)
+}
+
+// applyPermissions enforces Permissions on every regular file in the tree just
+// written, matching the file-item semantics the field is documented to share.
+// Directories keep their copied modes and symlinks are left alone, since chmod
+// would follow them to a file outside the tree.
+func (a *DirectoryAction) applyPermissions(root string) error {
+	if a.Permissions == "" {
+		return nil
+	}
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return enforcePermissions(path, a.Permissions)
+	})
+}
 
 func createDirSymlink(src, dst string) error {
 	abs, err := filepath.Abs(src)

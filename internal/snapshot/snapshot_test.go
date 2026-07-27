@@ -202,3 +202,51 @@ func TestRecordSymlinkRestoresASymlink(t *testing.T) {
 		t.Errorf("symlink target was overwritten: %q", data)
 	}
 }
+
+// If the apply replaced the recorded file with a symlink (what a link item
+// does), restoring must remove the link rather than write through it into the
+// repo-side file it points at.
+func TestRestoreDoesNotWriteThroughASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "repo-copy")
+	os.WriteFile(repo, []byte("repo version"), 0o644)
+	dest := filepath.Join(dir, "system-copy")
+	os.WriteFile(dest, []byte("system version"), 0o644)
+
+	snap, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Discard()
+
+	if err := snap.Record(dest); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the destination with a symlink into the repo, as a link item does.
+	os.Remove(dest)
+	if err := os.Symlink(repo, dest); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := snap.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("restore left a symlink where a regular file had been")
+	}
+	if data, _ := os.ReadFile(dest); string(data) != "system version" {
+		t.Errorf("destination = %q, want %q", data, "system version")
+	}
+	if data, _ := os.ReadFile(repo); string(data) != "repo version" {
+		t.Errorf("restore wrote through the symlink into the repo copy: %q", data)
+	}
+}

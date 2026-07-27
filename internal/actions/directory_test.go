@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -341,5 +342,69 @@ func TestDirectoryActionWritePaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// permissions: on a directory item must reach every file the copy writes —
+// the bundled skill recommends "0600" for directories of credentials.
+func TestDirectoryActionAppliesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "token"), []byte("t"), 0o644)
+	os.WriteFile(filepath.Join(src, "sub", "nested"), []byte("n"), 0o666)
+
+	destParent := filepath.Join(dir, "system")
+	a := &DirectoryAction{
+		Source:      src,
+		Destination: destParent + "/",
+		Direction:   "push",
+		Permissions: "0600",
+	}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(destParent, "creds")
+	for _, rel := range []string{"token", filepath.Join("sub", "nested")} {
+		info, err := os.Stat(filepath.Join(target, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %#o, want %#o", rel, got, 0o600)
+		}
+	}
+	// The directory itself is not a file; its copied mode stands.
+	info, err := os.Stat(filepath.Join(target, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("sub dir mode = %#o, want %#o", got, 0o755)
+	}
+}
+
+func TestDirectoryActionInvalidPermissions(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "f"), []byte("f"), 0o644)
+
+	a := &DirectoryAction{
+		Source:      src,
+		Destination: filepath.Join(dir, "system") + "/",
+		Direction:   "push",
+		Permissions: "not-octal",
+	}
+	if err := a.Run(context.Background(), false); err == nil {
+		t.Error("expected an error for an unparseable permissions value")
 	}
 }
