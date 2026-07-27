@@ -8,9 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/atomikpanda/dotular/internal/color"
 )
+
+// remoteScriptClient fetches remote scripts. http.DefaultClient has no timeout,
+// so an unresponsive server would hang the run indefinitely.
+var remoteScriptClient = &http.Client{Timeout: 60 * time.Second}
 
 // ScriptAction runs a shell script, either from a local path or a remote URL.
 type ScriptAction struct {
@@ -42,11 +47,16 @@ func runRemoteScript(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := remoteScriptClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+
+	// Without this an error page (404/500 HTML) would be executed as a script.
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
 
 	script, err := io.ReadAll(resp.Body)
 	if err != nil {

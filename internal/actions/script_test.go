@@ -2,11 +2,13 @@ package actions
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +54,31 @@ func TestScriptActionRunRemote(t *testing.T) {
 	a := &ScriptAction{Script: srv.URL + "/install.sh", Via: "remote"}
 	if err := a.Run(context.Background(), false); err != nil {
 		t.Errorf("remote script error: %v", err)
+	}
+}
+
+func TestScriptActionRunRemoteNon200(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "executed")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, "#!/bin/bash\ntouch %s\n", marker)
+	}))
+	defer srv.Close()
+
+	a := &ScriptAction{Script: srv.URL + "/install.sh", Via: "remote"}
+	err := a.Run(context.Background(), false)
+	if err == nil {
+		t.Fatal("expected error for non-200 response")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should mention the status code, got %v", err)
+	}
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Error("error-page body was executed")
 	}
 }
 
