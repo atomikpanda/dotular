@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,45 @@ func TestParseRefCustomHost(t *testing.T) {
 	}
 	if ref.FetchURL != "https://custom.host/path/to/module" {
 		t.Errorf("FetchURL = %q", ref.FetchURL)
+	}
+}
+
+// An external host is fetched from a bare path, so a requested version cannot be
+// honoured. That must fail loudly rather than quietly serving whatever the
+// unversioned path returns.
+func TestExternalRefRejectsExplicitVersion(t *testing.T) {
+	ref := ParseRef("custom.host/path/to/module@v2")
+	err := ref.checkVersionSupported()
+	if err == nil {
+		t.Fatal("checkVersionSupported() = nil, want an error for a versioned external ref")
+	}
+	for _, want := range []string{"custom.host/path/to/module@v2", "v2", "not supported"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+func TestExternalRefWithoutVersionIsAllowed(t *testing.T) {
+	ref := ParseRef("custom.host/path/to/module")
+	if ref.Trust != External {
+		t.Fatalf("Trust = %v, want External", ref.Trust)
+	}
+	if err := ref.checkVersionSupported(); err != nil {
+		t.Errorf("checkVersionSupported() = %v, want nil", err)
+	}
+	if ref.FetchURL != "https://custom.host/path/to/module" {
+		t.Errorf("FetchURL = %q, want the bare path", ref.FetchURL)
+	}
+}
+
+// GitHub refs encode the version as the git ref in the URL, so they stay valid.
+func TestGitHubRefWithVersionIsAllowed(t *testing.T) {
+	ref := ParseRef("github.com/user/repo@v1")
+	if err := ref.checkVersionSupported(); err != nil {
+		t.Errorf("checkVersionSupported() = %v, want nil", err)
+	}
+	if !strings.Contains(ref.FetchURL, "/v1/") {
+		t.Errorf("FetchURL = %q, want the version in the path", ref.FetchURL)
 	}
 }

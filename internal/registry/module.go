@@ -3,6 +3,7 @@
 package registry
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -122,10 +123,32 @@ func resolveTrustAndURL(host, path, version string) (TrustLevel, string) {
 		return trust, url
 
 	default:
-		// Fallback: treat as a direct HTTPS URL. The version is not appended —
-		// no host serves "<path>@<version>" as a fetchable URL — so an external
-		// ref is always fetched from its bare path. Ref.Version still records
-		// what was requested.
+		// Fallback: treat as a direct HTTPS URL. The version is deliberately
+		// not appended — no host serves "<path>@<version>" as a fetchable path.
+		// A version on an external ref is therefore unhonourable, and Fetch
+		// rejects it rather than silently serving unversioned content; see
+		// Ref.checkVersionSupported.
 		return External, "https://" + host + "/" + path
 	}
+}
+
+// checkVersionSupported rejects a ref whose requested version cannot be acted
+// on. Only GitHub refs encode the version in the fetch URL (as the git ref); an
+// external host is fetched from a bare path, so honouring "@v2" is impossible.
+// Failing here keeps the boundary loud: silently serving whatever that path
+// returns today would ignore a version the user asked for explicitly.
+//
+// This is about version *selection*, not integrity — once a ref is in the
+// lockfile its content is pinned by SHA-256 either way. Note that
+// RemoteModule.Version is still never read, so version handling is nominal for
+// GitHub refs too; that is pre-existing and tracked separately.
+func (r Ref) checkVersionSupported() error {
+	if r.Trust == External && r.Version != "" {
+		return fmt.Errorf(
+			"registry: %s requests version %q, but version selection is not supported for external hosts "+
+				"(only github.com refs encode a version); drop the %q suffix or host the module on GitHub",
+			r.Raw, r.Version, "@"+r.Version,
+		)
+	}
+	return nil
 }
