@@ -13,6 +13,7 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/ageutil"
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -62,6 +63,25 @@ func (a *FileAction) ResolvedTarget() string {
 // resolvedDir returns the parent directory of the resolved target.
 func (a *FileAction) ResolvedDir() string {
 	return filepath.Dir(a.ResolvedTarget())
+}
+
+// WritePaths implements PathWriter. Push and link write the system target, pull
+// writes the repo copy, and sync may write either, so both sides are declared.
+func (a *FileAction) WritePaths() []string {
+	repo := a.Source
+	if a.Encrypted {
+		repo = ageutil.RepoPath(a.Source)
+	}
+	switch {
+	case a.Link:
+		return []string{a.ResolvedTarget()}
+	case a.Direction == "pull":
+		return []string{repo}
+	case a.Direction == "sync":
+		return []string{a.ResolvedTarget(), repo}
+	default:
+		return []string{a.ResolvedTarget()}
+	}
 }
 
 func (a *FileAction) Describe() string {
@@ -156,7 +176,7 @@ func (a *FileAction) Run(ctx context.Context, dryRun bool) error {
 		return err
 	}
 
-	return a.enforcePermissions(target)
+	return enforcePermissions(target, a.Permissions)
 }
 
 // --- direction implementations -----------------------------------------------
@@ -168,7 +188,10 @@ func (a *FileAction) runPush(destDir, target string) error {
 	if a.Encrypted {
 		return a.decryptTo(ageutil.RepoPath(a.Source), target)
 	}
-	return copyFile(a.Source, target)
+	// CopyContents, not CopyFile: the repo copy's mode came out of a git
+	// checkout, so propagating it would widen a restrictive destination.
+	// permissions: is the explicit control for the destination's mode.
+	return fsutil.CopyContents(a.Source, target)
 }
 
 func (a *FileAction) runPull(target string) error {
@@ -181,7 +204,7 @@ func (a *FileAction) runPull(target string) error {
 	if a.Encrypted {
 		return a.encryptFrom(target, ageutil.RepoPath(a.Source))
 	}
-	return copyFile(target, a.Source)
+	return fsutil.CopyFile(target, a.Source)
 }
 
 func (a *FileAction) runSync(target string) error {
@@ -205,7 +228,7 @@ func (a *FileAction) runSync(target string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, target)
 		}
-		return copyFile(repoPath, target)
+		return fsutil.CopyContents(repoPath, target)
 
 	case !repoExists && sysExists:
 		if err := os.MkdirAll(filepath.Dir(a.Source), 0o755); err != nil {
@@ -215,7 +238,7 @@ func (a *FileAction) runSync(target string) error {
 		if a.Encrypted {
 			return a.encryptFrom(target, repoPath)
 		}
-		return copyFile(target, a.Source)
+		return fsutil.CopyFile(target, a.Source)
 
 	default:
 		// Both exist — compare (decrypt repo copy for comparison if encrypted).
@@ -270,13 +293,13 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 		if a.Encrypted {
 			return a.decryptTo(repoPath, sysPath)
 		}
-		return copyFile(repoPath, sysPath)
+		return fsutil.CopyContents(repoPath, sysPath)
 	case "2":
 		fmt.Printf("    %s pulling system copy to repo\n", color.Dim("->"))
 		if a.Encrypted {
 			return a.encryptFrom(sysPath, repoPath)
 		}
-		return copyFile(sysPath, a.Source)
+		return fsutil.CopyFile(sysPath, a.Source)
 	default:
 		fmt.Printf("    %s\n", color.Dim("-> skipped"))
 		return nil
@@ -285,13 +308,16 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 
 // --- permissions -------------------------------------------------------------
 
-func (a *FileAction) enforcePermissions(target string) error {
-	if a.Permissions == "" {
+// enforcePermissions sets target's mode to permissions (a Unix octal string).
+// An empty permissions is a no-op. Shared with DirectoryAction, which applies it
+// to every file it writes.
+func enforcePermissions(target, permissions string) error {
+	if permissions == "" {
 		return nil
 	}
-	mode, err := parseMode(a.Permissions)
+	mode, err := parseMode(permissions)
 	if err != nil {
-		return fmt.Errorf("invalid permissions %q: %w", a.Permissions, err)
+		return fmt.Errorf("invalid permissions %q: %w", permissions, err)
 	}
 	info, err := os.Stat(target)
 	if err != nil {
@@ -299,7 +325,7 @@ func (a *FileAction) enforcePermissions(target string) error {
 	}
 	if info.Mode().Perm() != mode {
 		if err := os.Chmod(target, mode); err != nil {
-			return fmt.Errorf("chmod %s to %s: %w", target, a.Permissions, err)
+			return fmt.Errorf("chmod %s to %s: %w", target, permissions, err)
 		}
 	}
 	return nil
@@ -342,25 +368,6 @@ func createSymlink(src, dst string) error {
 		}
 	}
 	return os.Symlink(abs, dst)
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open source: %w", err)
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("create destination: %w", err)
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("copy contents: %w", err)
-	}
-	return out.Close()
 }
 
 func filesEqual(a, b string) (bool, error) {

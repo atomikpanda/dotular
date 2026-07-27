@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -732,59 +733,50 @@ func TestAddCmdRequiresArgs(t *testing.T) {
 	}
 }
 
-func TestCopyFileSimple(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src.txt")
-	dst := filepath.Join(dir, "dst.txt")
-	os.WriteFile(src, []byte("content"), 0o644)
-
-	if err := copyFileSimple(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, _ := os.ReadFile(dst)
-	if string(data) != "content" {
-		t.Errorf("copied = %q", string(data))
-	}
-
-	// Verify permissions are preserved.
-	srcInfo, _ := os.Stat(src)
-	dstInfo, _ := os.Stat(dst)
-	if srcInfo.Mode().Perm() != dstInfo.Mode().Perm() {
-		t.Errorf("permissions: src=%o, dst=%o", srcInfo.Mode().Perm(), dstInfo.Mode().Perm())
-	}
-}
-
-func TestCopyDirRecursive(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	dst := filepath.Join(dir, "dst")
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("bbb"), 0o644)
-
-	if err := copyDirRecursive(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dst, "a.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "aaa" {
-		t.Errorf("a.txt = %q", string(data))
-	}
-
-	data, err = os.ReadFile(filepath.Join(dst, "sub", "b.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "bbb" {
-		t.Errorf("sub/b.txt = %q", string(data))
-	}
-}
-
 // loadConfigFrom is a helper that loads config from a specific path.
 func loadConfigFrom(path string) (config.Config, error) {
 	return config.Load(path)
+}
+
+// Adding a directory must store symlinks as symlinks. Dereferencing them would
+// silently inline a target's contents, and a symlink to a *directory* used to
+// fail outright, because WalkDir does not descend into one.
+func TestAddCmdDirectoryPreservesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dotular.yaml")
+	os.WriteFile(cfgPath, []byte("modules: []\n"), 0o644)
+
+	srcDir := filepath.Join(dir, "mydir")
+	os.MkdirAll(filepath.Join(srcDir, "real"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("pointed at"), 0o644)
+	if err := os.Symlink("target.txt", filepath.Join(srcDir, "file-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(srcDir, "dir-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	root := buildRoot()
+	root.SetArgs([]string{"add", "--config", cfgPath, srcDir, "mymod"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+
+	stored := filepath.Join(dir, "mymod", "mydir")
+	for name, want := range map[string]string{"file-link": "target.txt", "dir-link": "real"} {
+		got, err := os.Readlink(filepath.Join(stored, name))
+		if err != nil {
+			t.Errorf("%s was not stored as a symlink: %v", name, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("%s target = %q, want %q", name, got, want)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(stored, "target.txt")); err != nil || string(data) != "pointed at" {
+		t.Errorf("regular file alongside the links = %q, %v", data, err)
+	}
 }

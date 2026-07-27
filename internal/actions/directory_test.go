@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -69,36 +70,6 @@ func TestDirectoryActionIsAppliedNotLink(t *testing.T) {
 	applied, _ := a.IsApplied(context.Background())
 	if applied {
 		t.Error("expected IsApplied=false for non-link")
-	}
-}
-
-func TestCopyDir(t *testing.T) {
-	dir := t.TempDir()
-	src := filepath.Join(dir, "src")
-	dst := filepath.Join(dir, "dst")
-
-	os.MkdirAll(filepath.Join(src, "sub"), 0o755)
-	os.WriteFile(filepath.Join(src, "a.txt"), []byte("aaa"), 0o644)
-	os.WriteFile(filepath.Join(src, "sub", "b.txt"), []byte("bbb"), 0o644)
-
-	if err := copyDir(src, dst); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dst, "a.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "aaa" {
-		t.Errorf("a.txt = %q", string(data))
-	}
-
-	data, err = os.ReadFile(filepath.Join(dst, "sub", "b.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != "bbb" {
-		t.Errorf("sub/b.txt = %q", string(data))
 	}
 }
 
@@ -342,5 +313,151 @@ func TestDirectoryActionResolvedDir(t *testing.T) {
 	got := a.ResolvedDir()
 	if got != "/home/user/.config" {
 		t.Errorf("ResolvedDir() = %q", got)
+	}
+}
+
+// WritePaths must name the side the direction actually writes, because that is
+// what the runner snapshots for rollback.
+func TestDirectoryActionWritePaths(t *testing.T) {
+	target := filepath.Join("/tmp", "tree")
+	tests := []struct {
+		name   string
+		action DirectoryAction
+		want   []string
+	}{
+		{"push", DirectoryAction{Source: "m/tree", Destination: "/tmp/", Direction: "push"}, []string{target}},
+		{"pull", DirectoryAction{Source: "m/tree", Destination: "/tmp/", Direction: "pull"}, []string{"m/tree"}},
+		{"sync", DirectoryAction{Source: "m/tree", Destination: "/tmp/", Direction: "sync"}, []string{target, "m/tree"}},
+		{"link", DirectoryAction{Source: "m/tree", Destination: "/tmp/", Direction: "pull", Link: true}, []string{target}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.action.WritePaths()
+			if len(got) != len(tt.want) {
+				t.Fatalf("WritePaths() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("WritePaths()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// permissions: on a directory item must reach every file the copy writes —
+// the bundled skill recommends "0600" for directories of credentials.
+func TestDirectoryActionAppliesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "creds")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "token"), []byte("t"), 0o644)
+	os.WriteFile(filepath.Join(src, "sub", "nested"), []byte("n"), 0o666)
+
+	destParent := filepath.Join(dir, "system")
+	a := &DirectoryAction{
+		Source:      src,
+		Destination: destParent + "/",
+		Direction:   "push",
+		Permissions: "0600",
+	}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(destParent, "creds")
+	for _, rel := range []string{"token", filepath.Join("sub", "nested")} {
+		info, err := os.Stat(filepath.Join(target, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s mode = %#o, want %#o", rel, got, 0o600)
+		}
+	}
+	// The directory itself is not a file; its copied mode stands.
+	info, err := os.Stat(filepath.Join(target, "sub"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Errorf("sub dir mode = %#o, want %#o", got, 0o755)
+	}
+}
+
+func TestDirectoryActionInvalidPermissions(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "f"), []byte("f"), 0o644)
+
+	a := &DirectoryAction{
+		Source:      src,
+		Destination: filepath.Join(dir, "system") + "/",
+		Direction:   "push",
+		Permissions: "not-octal",
+	}
+	if err := a.Run(context.Background(), false); err == nil {
+		t.Error("expected an error for an unparseable permissions value")
+	}
+}
+
+// The same rule as for file items: a directory push must not carry the repo's
+// git-flattened modes onto a locked-down destination tree.
+func TestDirectoryActionRunPushDoesNotWidenExistingDestination(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "ssh")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "config"), []byte("repo version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	destParent := filepath.Join(dir, "home")
+	target := filepath.Join(destParent, "ssh")
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "config"), []byte("system version"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(target, "config"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// No Permissions set.
+	a := &DirectoryAction{Source: src, Destination: destParent + "/", Direction: "push"}
+	if err := a.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+
+	for path, want := range map[string]os.FileMode{
+		target:                          0o700,
+		filepath.Join(target, "config"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("%s mode = %#o, want %#o — push must not widen it", path, got, want)
+		}
+	}
+	if data, _ := os.ReadFile(filepath.Join(target, "config")); string(data) != "repo version" {
+		t.Errorf("push did not write the contents: %q", data)
 	}
 }
