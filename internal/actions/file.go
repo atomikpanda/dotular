@@ -65,6 +65,25 @@ func (a *FileAction) ResolvedDir() string {
 	return filepath.Dir(a.ResolvedTarget())
 }
 
+// WritePaths implements PathWriter. Push and link write the system target, pull
+// writes the repo copy, and sync may write either, so both sides are declared.
+func (a *FileAction) WritePaths() []string {
+	repo := a.Source
+	if a.Encrypted {
+		repo = ageutil.RepoPath(a.Source)
+	}
+	switch {
+	case a.Link:
+		return []string{a.ResolvedTarget()}
+	case a.Direction == "pull":
+		return []string{repo}
+	case a.Direction == "sync":
+		return []string{a.ResolvedTarget(), repo}
+	default:
+		return []string{a.ResolvedTarget()}
+	}
+}
+
 func (a *FileAction) Describe() string {
 	dest := a.ResolvedTarget()
 	enc := ""

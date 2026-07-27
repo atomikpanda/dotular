@@ -224,11 +224,6 @@ func TestRollbackRestoresRepoSideOnPull(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-only")
 	}
-	// Observed: the repo-side file is left holding "system version". The runner
-	// records ResolvedTarget() — the system path — regardless of direction
-	// (runner.go:313), while runPull writes a.Source (file.go:184), so the
-	// snapshot protects the one file pull never touches. Un-skip when #5 is fixed.
-	t.Skip("blocked on #5: snapshot records the system path even for pull")
 	dir := t.TempDir()
 	source := filepath.Join(dir, "rb", "conf")
 	write(t, source, "repo original", 0o644)

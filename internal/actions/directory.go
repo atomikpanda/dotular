@@ -58,6 +58,21 @@ func (a *DirectoryAction) ResolvedDir() string {
 	return filepath.Dir(a.ResolvedTarget())
 }
 
+// WritePaths implements PathWriter. Push and link write the system tree, pull
+// writes the repo tree, and sync may write either, so both sides are declared.
+func (a *DirectoryAction) WritePaths() []string {
+	switch {
+	case a.Link:
+		return []string{a.ResolvedTarget()}
+	case a.Direction == "pull":
+		return []string{a.Source}
+	case a.Direction == "sync":
+		return []string{a.ResolvedTarget(), a.Source}
+	default:
+		return []string{a.ResolvedTarget()}
+	}
+}
+
 func (a *DirectoryAction) Describe() string {
 	dest := a.ResolvedTarget()
 	if a.Link {

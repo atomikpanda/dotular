@@ -691,3 +691,33 @@ func TestFileActionPermissionsStatusNonexistent(t *testing.T) {
 		t.Error("expected empty status for nonexistent file")
 	}
 }
+
+// WritePaths must name the side the direction actually writes, because that is
+// what the runner snapshots for rollback.
+func TestFileActionWritePaths(t *testing.T) {
+	target := filepath.Join("/tmp", "conf")
+	tests := []struct {
+		name   string
+		action FileAction
+		want   []string
+	}{
+		{"push", FileAction{Source: "m/conf", Destination: "/tmp/", Direction: "push"}, []string{target}},
+		{"pull", FileAction{Source: "m/conf", Destination: "/tmp/", Direction: "pull"}, []string{"m/conf"}},
+		{"sync", FileAction{Source: "m/conf", Destination: "/tmp/", Direction: "sync"}, []string{target, "m/conf"}},
+		{"link", FileAction{Source: "m/conf", Destination: "/tmp/", Direction: "pull", Link: true}, []string{target}},
+		{"encrypted pull", FileAction{Source: "m/conf", Destination: "/tmp/", Direction: "pull", Encrypted: true}, []string{"m/conf.age"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.action.WritePaths()
+			if len(got) != len(tt.want) {
+				t.Fatalf("WritePaths() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("WritePaths()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
