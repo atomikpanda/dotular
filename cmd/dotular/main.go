@@ -223,11 +223,14 @@ managed store and records it in the config YAML.`,
 				return err
 			}
 
-			// Build the new item.
+			// Build the new item. Leave Direction unset at the default so the
+			// generated YAML does not restate it.
 			item := config.Item{
 				Destination: pmap,
-				Direction:   direction,
 				Link:        link,
+			}
+			if direction != config.DefaultDirection {
+				item.Direction = direction
 			}
 			if isDir {
 				item.Directory = baseName
@@ -264,7 +267,7 @@ managed store and records it in the config YAML.`,
 	}
 
 	cmd.Flags().BoolVar(&link, "link", false, "use symlink instead of copy at apply time")
-	cmd.Flags().StringVar(&direction, "direction", "push", "file direction: push, pull, or sync")
+	cmd.Flags().StringVar(&direction, "direction", config.DefaultDirection, "file direction: push, pull, or sync")
 	return cmd
 }
 
@@ -564,10 +567,7 @@ func decryptCmd() *cobra.Command {
 				return err
 			}
 			src := args[0]
-			dst := src
-			if len(dst) > 4 && dst[len(dst)-4:] == ".age" {
-				dst = dst[:len(dst)-4]
-			}
+			dst := strings.TrimSuffix(src, ".age")
 			u := ui.New(os.Stdout, os.Stderr)
 			u.Info(fmt.Sprintf("decrypting %s → %s", src, dst))
 			return key.DecryptFile(src, dst)
@@ -705,16 +705,16 @@ func registryCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List available registry modules",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cached, _ := cmd.Flags().GetBool("cached")
+			cached, err := cmd.Flags().GetBool("cached")
+			if err != nil {
+				return err
+			}
 			u := ui.New(os.Stdout, os.Stderr)
 
 			if cached {
-				_, err := loadConfig()
-				if err != nil {
-					return err
-				}
-				lockPath := registry.LockPath(configFile)
-				lock, err := registry.LoadLock(lockPath)
+				// Only the config path is needed to locate the lock file, so
+				// this lists the cache even when dotular.yaml is absent.
+				lock, err := registry.LoadLock(registry.LockPath(configFile))
 				if err != nil {
 					return err
 				}
@@ -764,7 +764,7 @@ func registryCmd() *cobra.Command {
 			return nil
 		},
 	}
-	listCmd.Flags().Bool("cached", false, "Show locally cached modules instead of the remote index")
+	listCmd.Flags().Bool("cached", false, "show locally cached modules instead of the remote index")
 
 	cmd.AddCommand(
 		listCmd,

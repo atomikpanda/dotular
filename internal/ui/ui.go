@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/atomikpanda/dotular/internal/color"
 )
@@ -157,10 +158,12 @@ func formatRow(vals []string, widths []int, colorFns []func(string) string) stri
 		if colorFns != nil && i < len(colorFns) && colorFns[i] != nil {
 			cell = colorFns[i](v)
 		}
-		// Pad based on the raw value length, not the colored length.
+		// Pad on the raw value's rune count: not the colored length (escape
+		// sequences occupy no columns) and not the byte length (a multi-byte
+		// character occupies one column, not one per byte).
 		pad := 0
 		if i < len(widths) {
-			pad = widths[i] - len(v)
+			pad = widths[i] - utf8.RuneCountInString(v)
 		}
 		b.WriteString(cell)
 		for j := 0; j < pad; j++ {
@@ -178,14 +181,14 @@ func (u *UI) Table(headers []string, rows [][]string, colColors []func(string) s
 	// Compute column widths from headers and data.
 	widths := make([]int, len(headers))
 	for i, h := range headers {
-		if len(h) > widths[i] {
-			widths[i] = len(h)
+		if n := utf8.RuneCountInString(h); n > widths[i] {
+			widths[i] = n
 		}
 	}
 	for _, row := range rows {
 		for i, cell := range row {
-			if i < len(widths) && len(cell) > widths[i] {
-				widths[i] = len(cell)
+			if n := utf8.RuneCountInString(cell); i < len(widths) && n > widths[i] {
+				widths[i] = n
 			}
 		}
 	}

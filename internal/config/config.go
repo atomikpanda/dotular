@@ -13,7 +13,7 @@ import (
 //   - Legacy (sequence): a bare list of modules (no global settings).
 type Config struct {
 	Age     *AgeConfig `yaml:"age,omitempty"`
-	Modules []Module   `yaml:"modules"`
+	Modules []Module   `yaml:"modules,omitempty"`
 }
 
 // AgeConfig holds age encryption credentials for encrypted file items.
@@ -158,14 +158,18 @@ func (i Item) PrimaryValue() string {
 	}
 }
 
+// DefaultDirection is the file/directory transfer direction assumed when an
+// item does not set one.
+const DefaultDirection = "push"
+
 // EffectiveDirection returns the file/directory transfer direction, defaulting
-// to "push".
+// to DefaultDirection.
 func (i Item) EffectiveDirection() string {
 	switch i.Direction {
 	case "pull", "sync":
 		return i.Direction
 	default:
-		return "push"
+		return DefaultDirection
 	}
 }
 
@@ -232,7 +236,11 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("destination/source must be a string or macos/windows/linux mapping")
+		// The field name is not reachable from here, and naming both
+		// "destination/source" misreports whichever one is actually malformed.
+		// yaml.v3 adds no position to errors from a custom unmarshaler, so
+		// point at the offending node directly instead.
+		return fmt.Errorf("line %d: must be a string or a macos/windows/linux mapping", value.Line)
 	}
 }
 
@@ -278,10 +286,25 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("parse config (legacy format): %w", err)
 		}
 	default:
-		return Config{}, fmt.Errorf("config root must be a mapping or sequence, got kind %d", doc.Kind)
+		return Config{}, fmt.Errorf("config root must be a mapping with a \"modules\" key, or a bare sequence of modules; got %s", nodeKindName(doc.Kind))
 	}
 
 	return cfg, nil
+}
+
+// nodeKindName names the yaml.Kind values that can reach Load's default arm,
+// so a malformed config reports "a scalar" rather than a raw kind integer.
+// Mapping and sequence roots are handled before the arm that calls this, and
+// an empty document is rejected earlier.
+func nodeKindName(k yaml.Kind) string {
+	switch k {
+	case yaml.ScalarNode:
+		return "a scalar"
+	case yaml.AliasNode:
+		return "an alias"
+	default:
+		return fmt.Sprintf("kind %d", k)
+	}
 }
 
 // Module returns the named module, or nil if not found.
