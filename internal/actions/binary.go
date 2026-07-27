@@ -14,6 +14,7 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/fsutil"
+	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/platform"
 )
 
@@ -98,7 +99,7 @@ func downloadTo(ctx context.Context, url string, dst *os.File) error {
 	}
 	req.Header.Set("User-Agent", "dotular/1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httputil.Client.Do(req)
 	if err != nil {
 		return err
 	}

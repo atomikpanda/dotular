@@ -3,19 +3,14 @@ package actions
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
-	"time"
 
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/httputil"
 )
-
-// remoteScriptClient fetches remote scripts. http.DefaultClient has no timeout,
-// so an unresponsive server would hang the run indefinitely.
-var remoteScriptClient = &http.Client{Timeout: 60 * time.Second}
 
 // ScriptAction runs a shell script, either from a local path or a remote URL.
 type ScriptAction struct {
@@ -47,7 +42,7 @@ func runRemoteScript(ctx context.Context, url string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := remoteScriptClient.Do(req)
+	resp, err := httputil.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -58,7 +53,7 @@ func runRemoteScript(ctx context.Context, url string) error {
 		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	script, err := io.ReadAll(resp.Body)
+	script, err := httputil.ReadBody(resp.Body)
 	if err != nil {
 		return err
 	}

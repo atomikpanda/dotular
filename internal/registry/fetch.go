@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
@@ -21,7 +21,7 @@ import (
 // can point the fetch path at an httptest server: Ref.FetchURL is derived from
 // the ref, so swapping the client is the only seam that does not require faking
 // a hostname.
-var httpClient = http.DefaultClient
+var httpClient = httputil.Client
 
 // Fetch retrieves a remote module by its reference string, using the cache
 // when available. When noCache is true the network is always consulted.
@@ -103,11 +103,10 @@ func download(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	// io.ReadAll rather than a hand-rolled loop: a read error must abort. A
-	// truncated module is still valid YAML with fewer items, so returning the
-	// partial body would get corrupt content SHA-256'd into the lockfile as the
-	// authoritative pin.
-	return io.ReadAll(resp.Body)
+	// A read error must abort: a truncated module is still valid YAML with fewer
+	// items, so returning the partial body would get corrupt content SHA-256'd
+	// into the lockfile as the authoritative pin.
+	return httputil.ReadBody(resp.Body)
 }
 
 // parseModule decodes a module definition. Trust is a property of the reference,
