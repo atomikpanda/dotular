@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
@@ -64,9 +67,9 @@ func newTestLock(t *testing.T) *LockFile {
 	return lock
 }
 
-func fetchForTest(t *testing.T, ref string, lock *LockFile, noCache bool) (*RemoteModule, TrustLevel, error) {
+func fetchForTest(t *testing.T, ref string, lock *LockFile, opts FetchOptions) (*RemoteModule, TrustLevel, error) {
 	t.Helper()
-	return Fetch(context.Background(), ref, lock, noCache, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+	return Fetch(context.Background(), ref, lock, opts, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 }
 
 // TestFetchFromNetwork covers the integrity gate on the network path: the
@@ -79,7 +82,7 @@ func TestFetchFromNetwork(t *testing.T) {
 		name     string
 		handler  http.HandlerFunc
 		lockSum  string // "" means no existing lockfile entry
-		noCache  bool
+		opts     FetchOptions
 		wantErr  string
 		wantName string
 	}{
@@ -106,13 +109,19 @@ func TestFetchFromNetwork(t *testing.T) {
 			wantErr: "HTTP 404",
 		},
 		{
-			// Current --no-cache behaviour, deliberately documented rather than
-			// changed: verification is skipped and the entry is re-pinned. See
-			// issue #11 for whether that is the policy we want.
-			name:     "--no-cache skips verification and re-pins",
+			// --no-cache bypasses the disk cache, not the integrity check: the
+			// pin still decides whether the fetched bytes are acceptable.
+			name:    "--no-cache still verifies against the pin",
+			handler: ok,
+			lockSum: "0000000000000000000000000000000000000000000000000000000000000000",
+			opts:    FetchOptions{NoCache: true},
+			wantErr: "checksum mismatch",
+		},
+		{
+			name:     "an explicit re-pin accepts the new checksum",
 			handler:  ok,
 			lockSum:  "0000000000000000000000000000000000000000000000000000000000000000",
-			noCache:  true,
+			opts:     FetchOptions{NoCache: true, Repin: true},
 			wantName: "test-mod",
 		},
 	}
@@ -125,7 +134,7 @@ func TestFetchFromNetwork(t *testing.T) {
 				lock.Registry[ref] = LockEntry{SHA256: tt.lockSum}
 			}
 
-			mod, _, err := fetchForTest(t, ref, lock, tt.noCache)
+			mod, _, err := fetchForTest(t, ref, lock, tt.opts)
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -164,7 +173,7 @@ func TestFetchRejectsTruncatedBody(t *testing.T) {
 	})
 
 	lock := newTestLock(t)
-	_, _, err := fetchForTest(t, ref, lock, false)
+	_, _, err := fetchForTest(t, ref, lock, FetchOptions{})
 	if err == nil {
 		t.Fatal("Fetch() = nil error, want an error for a body shorter than its Content-Length")
 	}
@@ -183,7 +192,7 @@ func TestFetchCacheHitSkipsNetwork(t *testing.T) {
 	lock := newTestLock(t)
 	lock.Registry[ref] = LockEntry{SHA256: testModuleSum()}
 
-	mod, _, err := fetchForTest(t, ref, lock, false)
+	mod, _, err := fetchForTest(t, ref, lock, FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
@@ -217,7 +226,7 @@ func TestFetchCacheHitReportsRefTrust(t *testing.T) {
 			lock := newTestLock(t)
 			lock.Registry[tt.ref] = LockEntry{SHA256: testModuleSum()}
 
-			_, trust, err := fetchForTest(t, tt.ref, lock, false)
+			_, trust, err := fetchForTest(t, tt.ref, lock, FetchOptions{})
 			if err != nil {
 				t.Fatalf("Fetch() error = %v", err)
 			}
@@ -238,7 +247,7 @@ func TestFetchCacheHitRejectsTamperedCache(t *testing.T) {
 	lock := newTestLock(t)
 	lock.Registry[ref] = LockEntry{SHA256: testModuleSum()}
 
-	_, _, err := fetchForTest(t, ref, lock, false)
+	_, _, err := fetchForTest(t, ref, lock, FetchOptions{})
 	if err == nil {
 		t.Fatal("Fetch() = nil error, want a checksum mismatch for a tampered cache file")
 	}
@@ -257,7 +266,7 @@ func TestFetchIgnoresCacheWithoutLockEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mod, _, err := fetchForTest(t, ref, newTestLock(t), false)
+	mod, _, err := fetchForTest(t, ref, newTestLock(t), FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
@@ -277,11 +286,133 @@ func TestFetchRefetchesWhenCacheFileMissing(t *testing.T) {
 	lock := newTestLock(t)
 	lock.Registry[ref] = LockEntry{SHA256: testModuleSum()}
 
-	mod, _, err := fetchForTest(t, ref, lock, false)
+	mod, _, err := fetchForTest(t, ref, lock, FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch() error = %v", err)
 	}
 	if mod.Name != "test-mod" {
 		t.Errorf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+}
+
+// The pin records what was approved, so content that disagrees with it must
+// leave the entry exactly as it was — URL and timestamp included, not just the
+// checksum.
+func TestFetchRefusesDriftAndLeavesPinInPlace(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	pinned := LockEntry{
+		SHA256:    "0000000000000000000000000000000000000000000000000000000000000000",
+		FetchedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		URL:       "https://" + ref,
+	}
+	lock := newTestLock(t)
+	lock.Registry[ref] = pinned
+
+	_, _, err := fetchForTest(t, ref, lock, FetchOptions{NoCache: true})
+
+	var mismatch *ChecksumMismatch
+	if !errors.As(err, &mismatch) {
+		t.Fatalf("Fetch() error = %v, want a *ChecksumMismatch", err)
+	}
+	if mismatch.Got != testModuleSum() {
+		t.Errorf("mismatch.Got = %q, want the fetched content's sum %q", mismatch.Got, testModuleSum())
+	}
+	if !strings.Contains(err.Error(), "dotular registry update") {
+		t.Errorf("error = %q, want it to name the command that reviews and moves the pin", err)
+	}
+	if got := lock.Registry[ref]; got != pinned {
+		t.Errorf("pin moved to %+v, want it left at %+v", got, pinned)
+	}
+}
+
+const stalePin = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// driftedSetup serves the test module and writes a lockfile pinning ref to a
+// checksum it does not have, i.e. the state after an upstream commit.
+func driftedSetup(t *testing.T) (cfg config.Config, ref, lockPath string) {
+	t.Helper()
+	ref = serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	cfg = config.Config{Modules: []config.Module{{Name: "drifted", From: ref}}}
+	lockPath = filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {
+			SHA256:    stalePin,
+			FetchedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+			URL:       "https://" + ref,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	return cfg, ref, lockPath
+}
+
+// Moving the pin is registry update's job — upstream is a mutable branch, so a
+// changed checksum is routine — but it has to say what it moved.
+func TestUpdatePinsReportsAndWritesDrift(t *testing.T) {
+	cfg, ref, lockPath := driftedSetup(t)
+
+	var stdout bytes.Buffer
+	u := ui.New(&stdout, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+		t.Fatalf("UpdatePins() error = %v", err)
+	}
+
+	report := stdout.String()
+	for _, want := range []string{ref, shortSum(stalePin), shortSum(testModuleSum())} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report = %q, want it to contain %q", report, want)
+		}
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Registry[ref].SHA256; got != testModuleSum() {
+		t.Errorf("pin = %q, want it moved to %q", got, testModuleSum())
+	}
+}
+
+// --check is the CI mode: report the drift, write nothing at all, fail.
+func TestUpdatePinsCheckOnlyReportsWithoutWriting(t *testing.T) {
+	cfg, ref, lockPath := driftedSetup(t)
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr bytes.Buffer
+	u := ui.New(&bytes.Buffer{}, &stderr)
+	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err == nil {
+		t.Fatal("UpdatePins(check) = nil error, want a non-zero exit for a drifted ref")
+	}
+	if !strings.Contains(stderr.String(), ref) {
+		t.Errorf("drift report = %q, want it to name %s", stderr.String(), ref)
+	}
+
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("--check wrote to the lockfile:\nbefore: %s\nafter:  %s", before, after)
+	}
+}
+
+func TestUpdatePinsCheckOnlyPassesWithoutDrift(t *testing.T) {
+	cfg, ref, lockPath := driftedSetup(t)
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {SHA256: testModuleSum(), FetchedAt: time.Now().UTC(), URL: "https://" + ref},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err != nil {
+		t.Fatalf("UpdatePins(check) error = %v, want success when every ref matches its pin", err)
 	}
 }

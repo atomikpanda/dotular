@@ -340,7 +340,7 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 		if lockErr == nil {
 			var modules []registry.RemoteModule
 			for _, entry := range entries {
-				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
 				if fetchErr == nil {
 					modules = append(modules, *mod)
 				}
@@ -826,8 +826,32 @@ func registryCmd() *cobra.Command {
 	}
 	listCmd.Flags().Bool("cached", false, "show locally cached modules instead of the remote index")
 
+	updateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "Re-fetch registry modules, report what changed, and move the pins",
+		Long: `Re-fetches every registry module referenced in the config, reports each
+ref's pinned and newly fetched checksum, and writes the new pins.
+
+With --check nothing is written: drifted refs are reported and the command
+exits non-zero, so CI can fail on a lockfile that no longer matches upstream.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			checkOnly, err := cmd.Flags().GetBool("check")
+			if err != nil {
+				return err
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			u := ui.New(os.Stdout, os.Stderr)
+			return registry.UpdatePins(context.Background(), cfg, registry.LockPath(configFile), checkOnly, u)
+		},
+	}
+	updateCmd.Flags().Bool("check", false, "report drift and exit non-zero without writing any pins")
+
 	cmd.AddCommand(
 		listCmd,
+		updateCmd,
 		&cobra.Command{
 			Use:   "clear",
 			Short: "Remove all cached registry modules",
@@ -837,25 +861,6 @@ func registryCmd() *cobra.Command {
 				}
 				u := ui.New(os.Stdout, os.Stderr)
 				u.Success("registry cache cleared")
-				return nil
-			},
-		},
-		&cobra.Command{
-			Use:   "update",
-			Short: "Re-fetch all registry modules referenced in the config",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-				// Force re-fetch by passing noCache=true.
-				cfg, err := loadConfig()
-				if err != nil {
-					return err
-				}
-				u := ui.New(os.Stdout, os.Stderr)
-				_, err = registry.Resolve(ctx, cfg, configFile, true, u)
-				if err != nil {
-					return err
-				}
-				u.Success("registry modules updated")
 				return nil
 			},
 		},
@@ -941,7 +946,7 @@ modules to add to your dotular.yaml.`,
 
 			var modules []registry.RemoteModule
 			for _, entry := range entries {
-				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
 				if fetchErr != nil {
 					u.Warn(fmt.Sprintf("skipping %s: %v", entry.Name, fetchErr))
 					continue

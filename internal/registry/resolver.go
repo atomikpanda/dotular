@@ -31,7 +31,9 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 			continue
 		}
 
-		remote, trust, err := Fetch(ctx, mod.From, lock, noCache, u)
+		// Never Repin: applying a config must use what was approved, so an
+		// upstream change surfaces as an error rather than a silent adoption.
+		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{NoCache: noCache}, u)
 		if err != nil {
 			return config.Config{}, err
 		}

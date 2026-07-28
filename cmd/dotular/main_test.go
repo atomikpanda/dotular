@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
+
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/testutil"
 )
@@ -553,6 +555,26 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 	root.SetArgs([]string{"registry", "update", "--config", path})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --check is what CI hangs off, so the flag has to exist and default to off.
+func TestRegistryUpdateCheckFlag(t *testing.T) {
+	var update *cobra.Command
+	for _, sub := range registryCmd().Commands() {
+		if sub.Name() == "update" {
+			update = sub
+		}
+	}
+	if update == nil {
+		t.Fatal("registry has no update subcommand")
+	}
+	flag := update.Flags().Lookup("check")
+	if flag == nil {
+		t.Fatal("registry update has no --check flag")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--check default = %q, want %q", flag.DefValue, "false")
 	}
 }
 
