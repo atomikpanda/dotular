@@ -155,7 +155,10 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	sort.Strings(refs)
 
 	opts := FetchOptions{NoCache: true, Repin: !checkOnly}
-	drifted, written := 0, 0
+	drifted := 0
+	// Refs whose pin this run moved, which are exactly the refs whose cache file
+	// now holds bytes the persisted lockfile does not yet vouch for.
+	var repinned []string
 
 	// persist writes the pins accumulated so far, and runs on the way out of the
 	// failure path as well as the success path. Fetch has already written the
@@ -166,10 +169,23 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	// is already this tool's semantic (ApplyAll leaves earlier modules applied);
 	// an incoherent disk is not.
 	persist := func() error {
-		if checkOnly || written == 0 {
+		if checkOnly || len(repinned) == 0 {
 			return nil
 		}
 		if err := SaveLock(lockPath, lock); err != nil {
+			// The old pins stay on disk, so drop the cache files this run wrote
+			// to match them. Fetch treats a missing cache file as a re-fetch and
+			// verifies that against the pin it kept, which is correct behaviour;
+			// leaving the new bytes next to an old pin reads as tampering. Only
+			// the refs pinned here are removed — a ref reported "unchanged" has a
+			// cache that still agrees with its pin and is worth keeping.
+			for _, ref := range repinned {
+				if rmErr := os.Remove(moduleCachePath(ref)); rmErr != nil && !os.IsNotExist(rmErr) {
+					// Warned, not returned: the lockfile failure is the
+					// actionable one.
+					u.Warn(fmt.Sprintf("could not discard cached %s: %v", ref, rmErr))
+				}
+			}
 			return fmt.Errorf("save lockfile: %w", err)
 		}
 		return nil
@@ -197,10 +213,10 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 
 		switch newPin := lock.Registry[ref].SHA256; {
 		case pinned == "":
-			written++
+			repinned = append(repinned, ref)
 			u.Info(fmt.Sprintf("%-24s new pin %s", ref, shortSum(newPin)))
 		case newPin != pinned:
-			written++
+			repinned = append(repinned, ref)
 			u.Info(fmt.Sprintf("%-24s %s -> %s", ref, shortSum(pinned), shortSum(newPin)))
 		default:
 			u.Info(fmt.Sprintf("%-24s unchanged", ref))
@@ -221,7 +237,7 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	if err := persist(); err != nil {
 		return err
 	}
-	u.Success(fmt.Sprintf("updated %d pin(s) of %d registry module(s) checked", written, len(refs)))
+	u.Success(fmt.Sprintf("updated %d pin(s) of %d registry module(s) checked", len(repinned), len(refs)))
 	return nil
 }
 

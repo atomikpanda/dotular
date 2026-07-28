@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -530,5 +531,86 @@ func TestUpdatePinsKeepsCacheAndLockfileInStepOnFailure(t *testing.T) {
 	forbidNetwork(t)
 	if _, _, err := fetchForTest(t, okRef, lock, FetchOptions{}); err != nil {
 		t.Errorf("Fetch() after a partial update = %v, want the cache and the pin to agree", err)
+	}
+}
+
+const oldModuleYAML = "name: old-mod\nitems: []\n"
+
+func oldModuleSum() string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(oldModuleYAML)))
+}
+
+// If the lockfile cannot be saved, the old pins stay on disk, so the cache files
+// this run wrote have to go: Fetch treats a missing cache file as a re-fetch and
+// verifies it against the pin it kept, whereas new bytes beside an old pin read
+// as tampering. A ref reported "unchanged" keeps its cache — it still agrees.
+func TestUpdatePinsDiscardsItsCacheWritesWhenTheLockfileCannotBeSaved(t *testing.T) {
+	// Upstream serves the new module during the update, then the old one again,
+	// which is what a reverted bad deploy looks like — and is what lets the
+	// recovery fetch be checked for success rather than merely a different error.
+	var reverted atomic.Bool
+	base := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "drifted.yaml") && reverted.Load() {
+			fmt.Fprint(w, oldModuleYAML)
+			return
+		}
+		fmt.Fprint(w, testModuleYAML)
+	})
+	host := strings.TrimSuffix(base, "/module.yaml")
+	driftedRef, unchangedRef := host+"/drifted.yaml", host+"/unchanged.yaml"
+
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "drifted", From: driftedRef},
+		{Name: "unchanged", From: unchangedRef},
+	}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		driftedRef:   {SHA256: oldModuleSum(), URL: "https://" + driftedRef},
+		unchangedRef: {SHA256: testModuleSum(), URL: "https://" + unchangedRef},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// SaveLock writes its temp file first, so a directory in that spot fails the
+	// write for any user — unlike a read-only parent, which root would ignore.
+	if err := os.Mkdir(lockPath+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	err := UpdatePins(context.Background(), cfg, lockPath, false, u)
+	if err == nil || !strings.Contains(err.Error(), "save lockfile") {
+		t.Fatalf("UpdatePins() error = %v, want the lockfile save failure", err)
+	}
+
+	if _, statErr := os.Stat(moduleCachePath(driftedRef)); !os.IsNotExist(statErr) {
+		t.Errorf("cache file for the re-pinned ref survived (stat = %v); it disagrees with the pin that was kept", statErr)
+	}
+	// The unchanged ref's cache was written against a pin that still stands.
+	kept, err := os.ReadFile(moduleCachePath(unchangedRef))
+	if err != nil {
+		t.Fatalf("cache file for the unchanged ref was discarded: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(kept)); got != testModuleSum() {
+		t.Errorf("kept cache hashes to %q, want its pin %q", got, testModuleSum())
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Registry[driftedRef].SHA256; got != oldModuleSum() {
+		t.Errorf("persisted pin = %q, want the old pin %q to have been kept", got, oldModuleSum())
+	}
+
+	// The real guard: recovery works. With the cache gone the next ordinary fetch
+	// goes to the network and verifies against the pin that was kept, instead of
+	// reporting dotular's own failed update as a tampered cache.
+	reverted.Store(true)
+	mod, _, err := fetchForTest(t, driftedRef, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() after a failed save = %v, want a clean re-fetch against the kept pin", err)
+	}
+	if mod.Name != "old-mod" {
+		t.Errorf("module name = %q, want the re-fetched %q", mod.Name, "old-mod")
 	}
 }
