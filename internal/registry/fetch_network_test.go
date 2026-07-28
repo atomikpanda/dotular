@@ -416,3 +416,119 @@ func TestUpdatePinsCheckOnlyPassesWithoutDrift(t *testing.T) {
 		t.Fatalf("UpdatePins(check) error = %v, want success when every ref matches its pin", err)
 	}
 }
+
+// --check must be inert on disk. The cache is the half that was silently
+// written: --check never reads it, so nothing else would notice.
+func TestUpdatePinsCheckOnlyLeavesCacheUntouched(t *testing.T) {
+	base := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	host := strings.TrimSuffix(base, "/module.yaml")
+	driftedRef, matchingRef := host+"/drifted.yaml", host+"/matching.yaml"
+
+	// Sentinel bytes rather than the real module: an overwrite with exactly what
+	// the server serves would be invisible to a byte comparison, and the
+	// matching ref is the one that was being rewritten. --check does not read
+	// the cache, so its contents are free to be nonsense.
+	cacheBefore := make(map[string][]byte, 2)
+	for _, ref := range []string{driftedRef, matchingRef} {
+		sentinel := []byte("name: sentinel " + ref + "\n")
+		if err := writeCacheFile(moduleCachePath(ref), sentinel); err != nil {
+			t.Fatal(err)
+		}
+		cacheBefore[ref] = sentinel
+	}
+
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "drifted", From: driftedRef},
+		{Name: "matching", From: matchingRef},
+	}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		driftedRef:  {SHA256: stalePin, URL: "https://" + driftedRef},
+		matchingRef: {SHA256: testModuleSum(), URL: "https://" + matchingRef},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err == nil {
+		t.Fatal("UpdatePins(check) = nil error, want a non-zero exit for the drifted ref")
+	}
+
+	for ref, want := range cacheBefore {
+		got, err := os.ReadFile(moduleCachePath(ref))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("--check rewrote the cache for %s:\nbefore: %s\nafter:  %s", ref, want, got)
+		}
+	}
+	lockAfter, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(lockBefore, lockAfter) {
+		t.Errorf("--check rewrote the lockfile:\nbefore: %s\nafter:  %s", lockBefore, lockAfter)
+	}
+}
+
+// A ref failing partway through must not leave the cache ahead of the lockfile:
+// the next apply would hash the new cached bytes against the old pin and report
+// dotular's own partial update as a tampered cache.
+func TestUpdatePinsKeepsCacheAndLockfileInStepOnFailure(t *testing.T) {
+	base := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "z-broken.yaml") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, testModuleYAML)
+	})
+	host := strings.TrimSuffix(base, "/module.yaml")
+	// Refs are fetched in sorted order, so the failure lands after a ref that
+	// has already been pinned and cached.
+	okRef, brokenRef := host+"/a-ok.yaml", host+"/z-broken.yaml"
+
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "ok", From: okRef},
+		{Name: "broken", From: brokenRef},
+	}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		okRef: {
+			SHA256:    stalePin,
+			FetchedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+			URL:       "https://" + okRef,
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err == nil {
+		t.Fatal("UpdatePins() = nil error, want the transport failure to propagate")
+	}
+
+	cached, err := os.ReadFile(moduleCachePath(okRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Registry[okRef].SHA256; got != fmt.Sprintf("%x", sha256.Sum256(cached)) {
+		t.Errorf("persisted pin = %q, want it to agree with the cached bytes", got)
+	}
+
+	// The regression guard: an ordinary cached fetch must not now cry tamper.
+	forbidNetwork(t)
+	if _, _, err := fetchForTest(t, okRef, lock, FetchOptions{}); err != nil {
+		t.Errorf("Fetch() after a partial update = %v, want the cache and the pin to agree", err)
+	}
+}

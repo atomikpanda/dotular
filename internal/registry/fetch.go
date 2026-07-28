@@ -110,18 +110,22 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 		}
 	}
 
-	// Update lockfile + write cache. A ref with no entry yet is a first pin,
-	// not a re-pin, so it needs no authorisation.
+	// Pin and cache together, under one condition. A ref with no entry yet is a
+	// first pin, not a re-pin, so it needs no authorisation. The cache is only
+	// ever read alongside a pin (see the guard above), so caching bytes we are
+	// not authorised to pin would at best be dead weight and at worst leave the
+	// two disagreeing — and --check, which authorises neither, must touch
+	// nothing at all.
 	if !inLock || opts.Repin {
 		lock.Registry[rawRef] = LockEntry{
 			SHA256:    sum,
 			FetchedAt: time.Now().UTC(),
 			URL:       ref.FetchURL,
 		}
-	}
-	if err := writeCacheFile(cachePath, data); err != nil {
-		// Non-fatal: we have the data in memory.
-		u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+		if err := writeCacheFile(cachePath, data); err != nil {
+			// Non-fatal: we have the data in memory.
+			u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+		}
 	}
 
 	mod, err := parseModule(data)
@@ -152,6 +156,25 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 
 	opts := FetchOptions{NoCache: true, Repin: !checkOnly}
 	drifted, written := 0, 0
+
+	// persist writes the pins accumulated so far, and runs on the way out of the
+	// failure path as well as the success path. Fetch has already written the
+	// cache file for every ref it pinned, so abandoning those pins would leave
+	// the cache holding new bytes that the lockfile still pins to the old
+	// checksum — the next apply would hash the cache, disagree with the pin, and
+	// report dotular's own partial update as a tampered cache. Partial progress
+	// is already this tool's semantic (ApplyAll leaves earlier modules applied);
+	// an incoherent disk is not.
+	persist := func() error {
+		if checkOnly || written == 0 {
+			return nil
+		}
+		if err := SaveLock(lockPath, lock); err != nil {
+			return fmt.Errorf("save lockfile: %w", err)
+		}
+		return nil
+	}
+
 	for _, ref := range refs {
 		pinned := lock.Registry[ref].SHA256
 
@@ -164,6 +187,11 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 			continue
 		}
 		if err != nil {
+			// The fetch failure is the more useful error to return, so a failure
+			// to persist is only reported.
+			if perr := persist(); perr != nil {
+				u.Warn(perr.Error())
+			}
 			return err
 		}
 
@@ -190,10 +218,8 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 		return nil
 	}
 
-	if written > 0 {
-		if err := SaveLock(lockPath, lock); err != nil {
-			return fmt.Errorf("save lockfile: %w", err)
-		}
+	if err := persist(); err != nil {
+		return err
 	}
 	u.Success(fmt.Sprintf("updated %d pin(s) of %d registry module(s) checked", written, len(refs)))
 	return nil
