@@ -74,21 +74,73 @@ func TestStreamClientCompletesSlowSteadyBody(t *testing.T) {
 	}
 }
 
-// A server that accepts the connection and then never answers must fail fast
-// rather than hang the run.
+// A server that goes quiet must fail fast whether it does so before sending
+// response headers or midway through the body. The body case is the one an
+// end-to-end timeout used to cover incidentally; bounding progress has to cover
+// it deliberately, or the CLI hangs forever with no signal handling to stop it.
 func TestStreamTransportFailsFastOnAStalledServer(t *testing.T) {
-	release := make(chan struct{})
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-release
-	}))
-	defer func() {
-		close(release)
-		srv.Close()
-	}()
+	const stall = 50 * time.Millisecond
+	// Generous next to stall, but far below any "hangs forever" regression, which
+	// would otherwise surface only as the whole package timing out.
+	const budget = 5 * time.Second
 
-	c := &http.Client{Transport: newStreamTransport(20 * time.Millisecond)}
-	if _, err := c.Get(srv.URL); err == nil {
-		t.Fatal("Get() = nil error, want a timeout from a server that never sends response headers")
+	tests := []struct {
+		name    string
+		handler func(w http.ResponseWriter, block <-chan struct{})
+		// Whether the failure must be ErrStalled specifically. Before headers,
+		// ResponseHeaderTimeout and the read deadline race and either is a correct
+		// answer; midway through the body only the read deadline can fire.
+		wantStalled bool
+	}{
+		{
+			name:    "silent before response headers",
+			handler: func(w http.ResponseWriter, block <-chan struct{}) { <-block },
+		},
+		{
+			name: "silent midway through the body",
+			handler: func(w http.ResponseWriter, block <-chan struct{}) {
+				fmt.Fprint(w, "the first few bytes")
+				w.(http.Flusher).Flush()
+				<-block
+			},
+			wantStalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			block := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tt.handler(w, block)
+			}))
+			t.Cleanup(func() {
+				close(block)
+				srv.Close()
+			})
+
+			c := &http.Client{Transport: newStreamTransport(stall)}
+			start := time.Now()
+
+			err := func() error {
+				resp, err := c.Get(srv.URL)
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+				_, err = io.Copy(io.Discard, resp.Body)
+				return err
+			}()
+
+			if err == nil {
+				t.Fatal("download succeeded; want a failure from a server that stopped sending")
+			}
+			if elapsed := time.Since(start); elapsed > budget {
+				t.Errorf("failed after %v, want under %v — a stall must not be allowed to run long", elapsed, budget)
+			}
+			if tt.wantStalled && !errors.Is(err, ErrStalled) {
+				t.Errorf("error = %v, want it to wrap ErrStalled so a caller can report a stall specifically", err)
+			}
+		})
 	}
 }
 
