@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -817,5 +821,122 @@ func TestAddCmdDirectoryPreservesSymlinks(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(stored, "target.txt")); err != nil || string(data) != "pointed at" {
 		t.Errorf("regular file alongside the links = %q, %v", data, err)
+	}
+}
+
+// --- exit codes --------------------------------------------------------------
+
+// A subcommand-only parent used to swallow an unknown subcommand and exit 0:
+// cobra short-circuits a non-runnable command to flag.ErrHelp before Args
+// validation runs, and ExecuteC maps ErrHelp to a nil error.
+func TestUnknownSubcommandIsUsageError(t *testing.T) {
+	for _, args := range [][]string{
+		{"tag", "bogus"},
+		{"registry", "bogus"},
+		{"bogus"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := buildRoot()
+			root.SetArgs(args)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			err := root.Execute()
+			if err == nil {
+				t.Fatalf("%v: expected an error, got nil (exit 0)", args)
+			}
+			if got := exitCode(err); got != exitUsage {
+				t.Errorf("exitCode(%v) = %d, want %d", err, got, exitUsage)
+			}
+		})
+	}
+}
+
+// A bare parent is not an error — it prints its help and succeeds.
+func TestParentWithNoSubcommandPrintsHelp(t *testing.T) {
+	for _, name := range []string{"tag", "registry"} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			root := buildRoot()
+			root.SetArgs([]string{name})
+			root.SetOut(&out)
+			root.SetErr(&out)
+			if err := root.Execute(); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if !strings.Contains(out.String(), "Available Commands:") {
+				t.Errorf("%s did not print help:\n%s", name, out.String())
+			}
+		})
+	}
+}
+
+func TestVerifyCmdReturnsErrorOnFailure(t *testing.T) {
+	path := writeTestConfig(t, `
+modules:
+  - name: test
+    items:
+      - run: echo hello
+        verify: "false"
+`)
+	root := buildRoot()
+	root.SetArgs([]string{"verify", "--config", path})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if !errors.Is(err, errVerifyFailed) {
+		t.Fatalf("err = %v, want errVerifyFailed", err)
+	}
+	// A failed check is a result, not a misuse: internal exit code.
+	if got := exitCode(err); got != exitFailure {
+		t.Errorf("exitCode = %d, want %d", got, exitFailure)
+	}
+}
+
+func TestExitCodeMapping(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"nil", nil, 0},
+		{"internal", errors.New("network unreachable"), exitFailure},
+		{"usage", usageErrorf("module %q not found", "nope"), exitUsage},
+		{"wrapped usage", fmt.Errorf("apply: %w", usageErrorf("bad flag")), exitUsage},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCode(tt.err); got != tt.want {
+				t.Errorf("exitCode = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// A typo'd module name is misuse, not an internal failure.
+func TestModuleNotFoundIsUsageError(t *testing.T) {
+	path := writeTestConfig(t, `
+modules:
+  - name: test
+    items: []
+`)
+	root := buildRoot()
+	root.SetArgs([]string{"apply", "--config", path, "nonexistent"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exitCode(%v) = %d, want %d", err, got, exitUsage)
+	}
+}
+
+// A bad flag value is misuse too, and cobra reports it before any RunE runs.
+func TestBadFlagValueIsUsageError(t *testing.T) {
+	root := buildRoot()
+	root.SetArgs([]string{"log", "--limit", "not-a-number"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exitCode(%v) = %d, want %d", err, got, exitUsage)
 	}
 }

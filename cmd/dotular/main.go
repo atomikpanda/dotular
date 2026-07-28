@@ -42,12 +42,64 @@ var (
 	noCache    bool
 )
 
+// Exit statuses. 2 is the conventional status for a caller who invoked the CLI
+// wrongly, so scripts can tell a typo from a genuine failure.
+const (
+	exitFailure = 1
+	exitUsage   = 2
+)
+
 func main() {
 	color.Init()
 	root := buildRoot()
 	if err := root.Execute(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCode(err))
 	}
+}
+
+// usageError marks a failure caused by how the command was invoked — an unknown
+// subcommand, a bad flag value, a module name that isn't in the config — rather
+// than by something going wrong while carrying the command out.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
+
+func usageErrorf(format string, args ...any) error {
+	return &usageError{err: fmt.Errorf(format, args...)}
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ue *usageError
+	if errors.As(err, &ue) {
+		return exitUsage
+	}
+	return exitFailure
+}
+
+// requireSubcommand makes a parent that only hosts subcommands reject an
+// unknown one. Cobra otherwise short-circuits a non-runnable command to
+// flag.ErrHelp before Args validation ever runs, and ExecuteC turns ErrHelp
+// into a nil error — so the bad argument is discarded and the process exits 0.
+// The RunE is reached only once Args has passed, i.e. with no subcommand named.
+func requireSubcommand(cmd *cobra.Command) *cobra.Command {
+	cmd.Args = func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+		msg := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+		if s := cmd.SuggestionsFor(args[0]); len(s) > 0 {
+			msg += fmt.Sprintf("\n\nDid you mean this?\n\t%s", strings.Join(s, "\n\t"))
+		}
+		return usageErrorf("%s", msg)
+	}
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		return cmd.Help()
+	}
+	return cmd
 }
 
 func buildRoot() *cobra.Command {
@@ -58,6 +110,12 @@ func buildRoot() *cobra.Command {
 and Linux using a single YAML file.`,
 		SilenceUsage: true,
 	}
+
+	// Inherited by every subcommand via Command.FlagErrorFunc, so a bad flag
+	// anywhere in the tree exits with the usage status.
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return &usageError{err: err}
+	})
 
 	root.PersistentFlags().StringVarP(&configFile, "config", "c", "dotular.yaml", "path to config file")
 	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "print actions without executing them")
@@ -84,7 +142,7 @@ and Linux using a single YAML file.`,
 		registryCmd(),
 	)
 
-	return root
+	return requireSubcommand(root)
 }
 
 // --- version -----------------------------------------------------------------
@@ -356,7 +414,7 @@ func selectModules(cfg config.Config, names []string) ([]config.Module, error) {
 	for _, name := range names {
 		mod := cfg.Module(name)
 		if mod == nil {
-			return nil, fmt.Errorf("module %q not found in config", name)
+			return nil, usageErrorf("module %q not found in config", name)
 		}
 		mods = append(mods, *mod)
 	}
@@ -482,6 +540,10 @@ func platformCmd() *cobra.Command {
 
 // --- verify ------------------------------------------------------------------
 
+// errVerifyFailed reports that the checks ran and some did not pass. Distinct
+// from any other error verify can return, which means a check could not be run.
+var errVerifyFailed = errors.New("some verify checks failed")
+
 func verifyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify [module...]",
@@ -521,9 +583,7 @@ func verifyCmd() *cobra.Command {
 			}
 
 			if !allPassed {
-				u := ui.New(os.Stdout, os.Stderr)
-				u.Warn("some verify checks failed")
-				os.Exit(1)
+				return errVerifyFailed
 			}
 			return nil
 		},
@@ -637,7 +697,7 @@ func tagCmd() *cobra.Command {
 			},
 		},
 	)
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 // --- log ---------------------------------------------------------------------
@@ -800,7 +860,7 @@ func registryCmd() *cobra.Command {
 			},
 		},
 	)
-	return cmd
+	return requireSubcommand(cmd)
 }
 
 // --- init --------------------------------------------------------------------
