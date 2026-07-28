@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -267,6 +268,12 @@ func TestBinaryActionRunDownloadError(t *testing.T) {
 	}
 	err := a.Run(context.Background(), false)
 	if err == nil {
-		t.Error("expected error from failed download")
+		t.Fatal("expected error from failed download")
+	}
+	// The download error is joined with the temp file's close error, so guard
+	// that the join still reports the download failure rather than hiding it
+	// behind a (usually nil) close error.
+	if !strings.Contains(err.Error(), "download "+a.SourceURL) {
+		t.Errorf("Run() error = %q, want it to name the failed download of %s", err, a.SourceURL)
 	}
 }

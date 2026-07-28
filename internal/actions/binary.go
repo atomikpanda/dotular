@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,10 +61,15 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	defer os.Remove(tmpPath)
 
 	if err := downloadTo(ctx, a.SourceURL, tmpFile); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("download %s: %w", a.SourceURL, err)
+		// The download error is the useful one, but a close failure alongside it
+		// says the partial bytes never landed either, so keep both.
+		return errors.Join(fmt.Errorf("download %s: %w", a.SourceURL, err), tmpFile.Close())
 	}
-	tmpFile.Close()
+	// Close reports flush errors that io.Copy cannot see; dropping it would
+	// install and chmod 0755 a short binary as though the download succeeded.
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("finish download %s: %w", a.SourceURL, err)
+	}
 
 	destPath := filepath.Join(destDir, a.Name)
 
@@ -177,6 +183,10 @@ func writeBinary(r io.Reader, destPath string) error {
 		return err
 	}
 	defer out.Close()
-	_, err = io.Copy(out, r)
-	return err
+	if _, err := io.Copy(out, r); err != nil {
+		return err
+	}
+	// Same reason as the download temp file: a flush failure here would extract a
+	// truncated binary and report success.
+	return out.Close()
 }
