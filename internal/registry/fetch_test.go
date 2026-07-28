@@ -6,7 +6,14 @@ import (
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/testutil"
 )
+
+// The registry cache lives under the home directory, so the whole suite needs a
+// home of its own or it would read and overwrite the developer's real cache.
+func TestMain(m *testing.M) {
+	os.Exit(testutil.IsolateHome(m))
+}
 
 func TestModuleCachePath(t *testing.T) {
 	got := moduleCachePath("github.com/atomikpanda/dotular/modules/neovim@main")
@@ -69,7 +76,7 @@ items:
   - package: neovim
     via: brew
 `)
-	mod, _, err := parseModule(data)
+	mod, err := parseModule(data)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +95,7 @@ items:
 }
 
 func TestParseModuleInvalid(t *testing.T) {
-	_, _, err := parseModule([]byte("{{invalid"))
+	_, err := parseModule([]byte("{{invalid"))
 	if err == nil {
 		t.Error("expected error for invalid YAML")
 	}

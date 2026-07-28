@@ -13,8 +13,15 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
+
+// httpClient performs every registry download. It is a variable so that tests
+// can point the fetch path at an httptest server: Ref.FetchURL is derived from
+// the ref, so swapping the client is the only seam that does not require faking
+// a hostname.
+var httpClient = httputil.Client
 
 // Fetch retrieves a remote module by its reference string, using the cache
 // when available. When noCache is true the network is always consulted.
@@ -42,7 +49,8 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 					rawRef, entry.SHA256, sum,
 				)
 			}
-			return parseModule(data)
+			mod, err := parseModule(data)
+			return mod, ref.Trust, err
 		}
 		// Cache file missing despite lockfile entry — re-fetch below.
 	}
@@ -74,7 +82,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 		u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
 	}
 
-	mod, _, err := parseModule(data)
+	mod, err := parseModule(data)
 	return mod, ref.Trust, err
 }
 
@@ -85,7 +93,7 @@ func download(ctx context.Context, url string) ([]byte, error) {
 	}
 	req.Header.Set("User-Agent", "dotular/1")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -95,26 +103,21 @@ func download(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
 	}
 
-	var buf []byte
-	tmp := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	return buf, nil
+	// A read error must abort: a truncated module is still valid YAML with fewer
+	// items, so returning the partial body would get corrupt content SHA-256'd
+	// into the lockfile as the authoritative pin.
+	return httputil.ReadBody(resp.Body)
 }
 
-func parseModule(data []byte) (*RemoteModule, TrustLevel, error) {
+// parseModule decodes a module definition. Trust is a property of the reference,
+// not of the bytes, so it is Fetch's to report on both the cache and network
+// paths — deciding it here is what made every cache hit look external.
+func parseModule(data []byte) (*RemoteModule, error) {
 	var mod RemoteModule
 	if err := yaml.Unmarshal(data, &mod); err != nil {
-		return nil, External, fmt.Errorf("parse registry module: %w", err)
+		return nil, fmt.Errorf("parse registry module: %w", err)
 	}
-	return &mod, External, nil
+	return &mod, nil
 }
 
 func moduleCachePath(rawRef string) string {
