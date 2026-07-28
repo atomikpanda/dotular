@@ -99,7 +99,10 @@ func downloadTo(ctx context.Context, url string, dst *os.File) error {
 	}
 	req.Header.Set("User-Agent", "dotular/1")
 
-	resp, err := httputil.Client.Do(req)
+	// StreamClient, not Client: a released binary can legitimately take longer
+	// than an end-to-end timeout allows, and io.Copy below reads the body inside
+	// that window.
+	resp, err := httputil.StreamClient.Do(req)
 	if err != nil {
 		return err
 	}

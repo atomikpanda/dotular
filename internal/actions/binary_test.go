@@ -5,10 +5,12 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -223,6 +225,32 @@ func TestBinaryActionRunZip(t *testing.T) {
 	data, _ := os.ReadFile(filepath.Join(installDir, "mybin"))
 	if string(data) != "zip-binary" {
 		t.Errorf("installed = %q", string(data))
+	}
+}
+
+// A body that ends before its declared Content-Length must fail the install
+// outright. Same class as a truncated registry module, one layer down: a short
+// binary is still an executable file, so installing it would leave a broken
+// tool that looks installed.
+func TestBinaryActionRunRejectsTruncatedDownload(t *testing.T) {
+	full := "#!/bin/sh\necho hello\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(full)))
+		fmt.Fprint(w, full[:6])
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	a := &BinaryAction{
+		Name:      "truncated",
+		SourceURL: srv.URL + "/truncated",
+		InstallTo: dir,
+	}
+	if err := a.Run(context.Background(), false); err == nil {
+		t.Fatal("Run() = nil error, want a failure for a body shorter than its Content-Length")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "truncated")); !os.IsNotExist(err) {
+		t.Errorf("os.Stat(install path) error = %v, want the path not to exist after a truncated download", err)
 	}
 }
 
