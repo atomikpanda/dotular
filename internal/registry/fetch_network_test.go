@@ -614,3 +614,51 @@ func TestUpdatePinsDiscardsItsCacheWritesWhenTheLockfileCannotBeSaved(t *testing
 		t.Errorf("module name = %q, want the re-fetched %q", mod.Name, "old-mod")
 	}
 }
+
+// A cache write that cannot complete must leave the previous entry alone: the
+// old bytes still hash to the pin, whereas a half-written file hashes to neither
+// and Fetch would report it as a tampered cache. This pins the mechanism — the
+// bytes go to a temp path and the target is only replaced by a rename. It does
+// not prove atomicity against a crash mid-write; that rests on os.Rename, which
+// a test cannot interrupt.
+func TestWriteCacheFileKeepsThePreviousEntryWhenTheWriteFails(t *testing.T) {
+	path := moduleCachePath("cache.example/atomic/kept")
+	if err := writeCacheFile(path, []byte(oldModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the temp file belongs fails the write for any user,
+	// including root.
+	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeCacheFile(path, []byte(testModuleYAML)); err == nil {
+		t.Fatal("writeCacheFile() = nil error, want the blocked temp write to fail")
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("previous cache entry is gone: %v", err)
+	}
+	if string(got) != oldModuleYAML {
+		t.Errorf("cache = %q, want the previous entry %q left intact", got, oldModuleYAML)
+	}
+}
+
+func TestWriteCacheFileLeavesNoTempFileBehind(t *testing.T) {
+	path := moduleCachePath("cache.example/atomic/clean")
+	if err := writeCacheFile(path, []byte(testModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("temp file left in the cache directory (stat = %v)", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != testModuleYAML {
+		t.Errorf("cache = %q, want %q", got, testModuleYAML)
+	}
+}

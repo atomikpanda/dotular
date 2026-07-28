@@ -292,11 +292,26 @@ func moduleCachePath(rawRef string) string {
 	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
 }
 
+// writeCacheFile writes a cache entry atomically, mirroring SaveLock. A cache
+// file is only ever meaningful next to the pin it hashes to, so a write that
+// could not complete must leave no trace: a torn file — ENOSPC, a kill mid-write
+// — would hash to neither the old pin nor the new one, and Fetch would report
+// dotular's own interrupted write as a tampered cache. The temp file has to live
+// in the target's directory, because a rename across filesystems is not atomic.
 func writeCacheFile(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // ClearCache removes the local registry cache directory.
