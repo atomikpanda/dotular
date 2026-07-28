@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/platform"
 	"github.com/atomikpanda/dotular/internal/registry"
@@ -19,19 +20,6 @@ type MatchResult struct {
 
 // ExpandFunc expands ~ and env vars in a path.
 type ExpandFunc func(string) string
-
-// resolveFileTarget returns the fully expanded target path for a file item.
-// Mirrors FileAction.ResolvedTarget() semantics: if the destination has a
-// file extension (and no trailing "/"), it is treated as a complete file path.
-// Otherwise the item's filename is appended.
-func resolveFileTarget(dest, fileName string, expand ExpandFunc) string {
-	expanded := filepath.Clean(expand(dest))
-	base := filepath.Base(expanded)
-	if !strings.HasSuffix(dest, "/") && filepath.Ext(base) != "" {
-		return expanded
-	}
-	return filepath.Join(expanded, fileName)
-}
 
 // ScanResult holds the match results for a single registry module.
 type ScanResult struct {
@@ -50,6 +38,11 @@ type MatchedItem struct {
 // FileExistsFunc checks if a path exists on the filesystem.
 type FileExistsFunc func(path string) bool
 
+// IsDirFunc reports whether a path is an existing directory. Kept separate from
+// FileExistsFunc because file destination resolution must distinguish a
+// directory from a plain file (see actions.ResolveFileTarget).
+type IsDirFunc func(path string) bool
+
 // PkgInstalledFunc checks if a package is installed via a given manager.
 type PkgInstalledFunc func(manager, pkg string) bool
 
@@ -61,6 +54,7 @@ func ScanInstalled(
 	goos string,
 	expand ExpandFunc,
 	fileExists FileExistsFunc,
+	isDir IsDirFunc,
 	pkgInstalled PkgInstalledFunc,
 ) []ScanResult {
 	var results []ScanResult
@@ -90,7 +84,7 @@ func ScanInstalled(
 					continue
 				}
 				total++
-				target := resolveFileTarget(dest, item.File, expand)
+				target := actions.ResolveFileTarget(dest, filepath.Base(item.File), expand, isDir)
 				if fileExists(target) {
 					matched = append(matched, MatchedItem{
 						Item:        item,
@@ -104,7 +98,7 @@ func ScanInstalled(
 					continue
 				}
 				total++
-				if fileExists(expand(dest)) {
+				if fileExists(actions.ResolveDirectoryTarget(dest, filepath.Base(item.Directory), expand)) {
 					matched = append(matched, MatchedItem{
 						Item:        item,
 						Description: "config exists",
@@ -142,7 +136,7 @@ func ScanInstalled(
 // MatchPath checks if a filesystem path matches any registry module's
 // file/directory destination for the given OS. Returns all matches.
 // Supports both exact match and prefix match (path is under a destination dir).
-func MatchPath(path string, modules []registry.RemoteModule, goos string, expand ExpandFunc) []MatchResult {
+func MatchPath(path string, modules []registry.RemoteModule, goos string, expand ExpandFunc, isDir IsDirFunc) []MatchResult {
 	var results []MatchResult
 	absPath := filepath.Clean(path)
 
@@ -157,7 +151,7 @@ func MatchPath(path string, modules []registry.RemoteModule, goos string, expand
 			}
 
 			if item.File != "" {
-				target := resolveFileTarget(dest, item.File, expand)
+				target := actions.ResolveFileTarget(dest, filepath.Base(item.File), expand, isDir)
 				if absPath == target {
 					results = append(results, MatchResult{
 						ModuleName: mod.Name,
@@ -168,10 +162,11 @@ func MatchPath(path string, modules []registry.RemoteModule, goos string, expand
 			}
 
 			// For directory items, match if the path equals or is under
-			// the destination directory.
+			// the managed directory (the destination with the source basename
+			// appended, matching what the runner writes).
 			if item.Directory != "" {
-				expandedDest := filepath.Clean(expand(dest))
-				if absPath == expandedDest || strings.HasPrefix(absPath, expandedDest+string(filepath.Separator)) {
+				target := actions.ResolveDirectoryTarget(dest, filepath.Base(item.Directory), expand)
+				if absPath == target || strings.HasPrefix(absPath, target+string(filepath.Separator)) {
 					results = append(results, MatchResult{
 						ModuleName: mod.Name,
 						ItemFile:   item.Directory,
