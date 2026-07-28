@@ -400,12 +400,22 @@ the 50 most recent entries; `--module` filters by module name.
 dotular registry list           # fetch and print the remote module index
 dotular registry list --cached  # print the modules pinned in dotular.lock.yaml
 dotular registry clear          # remove all cached modules
-dotular registry update         # re-fetch all modules from the network
+dotular registry update         # re-fetch, report what changed, and move the pins
+dotular registry update --check # report drift and exit non-zero, writing nothing
 ```
 
 `registry list` reaches the network by default and prints the name and version of
 every module in the official index. `--cached` needs no network: it reads
 `dotular.lock.yaml` and prints each pinned ref with its trust level and fetch time.
+
+`registry update` re-fetches every referenced module, prints each ref's pinned and
+newly fetched checksum, and writes the new pins — it is the only command that moves
+a pin. `--check` writes nothing and exits non-zero if any ref drifted from its pin,
+which is the mode to run in CI.
+
+Everywhere else — `apply`, `push`, `pull`, `sync`, `status`, `verify` — a module whose
+content no longer matches its pin is a hard error. That is what makes an apply
+reproducible; run `registry update` to review the change and adopt it.
 
 ### Global flags
 
@@ -415,7 +425,7 @@ every module in the official index. `--cached` needs no network: it reads
 | `--dry-run`   | Print actions without executing |
 | `--verbose`   | Show skipped items and extra output |
 | `--no-atomic` | Disable snapshot/rollback per module |
-| `--no-cache`  | Re-fetch registry modules from the network |
+| `--no-cache`  | Re-fetch registry modules from the network (pins are still verified) |
 
 ---
 
@@ -506,7 +516,7 @@ Bare names (e.g. `neovim`) expand to `github.com/atomikpanda/dotular/modules/neo
 
 ### Cache
 
-Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` or `dotular registry update` to re-fetch.
+Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` or `dotular registry update` to re-fetch. `--no-cache` bypasses the disk cache only, never the integrity check: a ref already in `dotular.lock.yaml` is always verified against its pin, and only `registry update` moves a pin.
 
 ---
 

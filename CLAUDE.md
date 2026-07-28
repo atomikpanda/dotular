@@ -54,7 +54,7 @@ All 16 top-level commands are registered in `newRootCmd` (`cmd/dotular/main.go`)
 - `dotular decrypt <file.age>` — write `<file>`
 - `dotular tag list|add <tag>` — machine tags in `~/.config/dotular/machine.yaml`
 - `dotular log` — print the audit log; `--module`, `--limit` (default 50)
-- `dotular registry list|clear|update` — remote index by default, `list --cached` reads `dotular.lock.yaml`
+- `dotular registry list|clear|update` — remote index by default, `list --cached` reads `dotular.lock.yaml`; `update` is the only command that moves a lockfile pin — it reports each ref's old and new checksum and writes, or with `--check` reports drift and exits non-zero without writing. Everywhere else a ref that no longer matches its pin is a hard error, and `--no-cache` bypasses the disk cache only, never the checksum verification
 
 Persistent flags: `--config`/`-c` (default `dotular.yaml`), `--dry-run`, `--verbose`/`-v`, `--no-atomic`, `--no-cache`.
 
