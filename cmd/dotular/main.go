@@ -540,6 +540,10 @@ func platformCmd() *cobra.Command {
 
 // --- verify ------------------------------------------------------------------
 
+// errVerifyFailed reports that the checks ran and some did not pass. Distinct
+// from any other error verify can return, which means a check could not be run.
+var errVerifyFailed = errors.New("some verify checks failed")
+
 func verifyCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify [module...]",
@@ -579,9 +583,7 @@ func verifyCmd() *cobra.Command {
 			}
 
 			if !allPassed {
-				u := ui.New(os.Stdout, os.Stderr)
-				u.Warn("some verify checks failed")
-				os.Exit(1)
+				return errVerifyFailed
 			}
 			return nil
 		},

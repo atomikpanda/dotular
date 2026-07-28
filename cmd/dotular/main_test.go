@@ -870,6 +870,28 @@ func TestParentWithNoSubcommandPrintsHelp(t *testing.T) {
 	}
 }
 
+func TestVerifyCmdReturnsErrorOnFailure(t *testing.T) {
+	path := writeTestConfig(t, `
+modules:
+  - name: test
+    items:
+      - run: echo hello
+        verify: "false"
+`)
+	root := buildRoot()
+	root.SetArgs([]string{"verify", "--config", path})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if !errors.Is(err, errVerifyFailed) {
+		t.Fatalf("err = %v, want errVerifyFailed", err)
+	}
+	// A failed check is a result, not a misuse: internal exit code.
+	if got := exitCode(err); got != exitFailure {
+		t.Errorf("exitCode = %d, want %d", got, exitFailure)
+	}
+}
+
 func TestExitCodeMapping(t *testing.T) {
 	tests := []struct {
 		name string
