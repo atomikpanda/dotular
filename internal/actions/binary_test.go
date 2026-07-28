@@ -3,9 +3,12 @@ package actions
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -122,6 +125,57 @@ func TestExtractFromZipNotFound(t *testing.T) {
 		t.Error("expected error for missing binary")
 	}
 }
+
+// A failed extraction must leave an already-installed binary exactly as it was.
+// Writing destPath in place would truncate it before the failure was known, so
+// the user would lose a working tool and get an error at the same time.
+func TestWriteBinaryFailureLeavesExistingBinaryIntact(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "mybinary")
+	original := []byte("original-working-binary\n")
+	if err := os.WriteFile(destPath, original, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A reader that yields some bytes then fails stands in for a corrupt archive
+	// entry (a gzip CRC mismatch reaches writeBinary exactly this way).
+	r := io.MultiReader(strings.NewReader("partial"), errReader{})
+	if err := writeBinary(r, destPath); err == nil {
+		t.Fatal("writeBinary() = nil error, want the read failure to be reported")
+	}
+
+	data, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(destPath) error = %v, want the original binary still in place", err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Errorf("destPath content = %q, want the original %q", data, original)
+	}
+	info, err := os.Stat(destPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Errorf("destPath mode = %v, want the original 0755", info.Mode().Perm())
+	}
+
+	// The temp file must not be left behind next to the target.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("install dir contains %v, want only the original binary", names)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("archive entry read failed") }
 
 func TestBinaryActionRunPlainBinary(t *testing.T) {
 	dir := t.TempDir()

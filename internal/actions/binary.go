@@ -177,16 +177,31 @@ func extractFromZip(archivePath, binaryName, destPath string) error {
 	return fmt.Errorf("binary %q not found in zip", binaryName)
 }
 
+// writeBinary streams r into destPath by writing a temp file and renaming it
+// into place, like the plain-binary path in Run does. Creating destPath directly
+// would truncate it before the first byte arrives, so any failure mid-stream
+// would leave a working binary replaced by a corrupt one that keeps its
+// executable mode — reporting failure while making things worse. An atomic
+// replace leaves the original untouched instead.
+//
+// The caller chmods destPath afterwards; the temp file's 0600 is deliberate
+// until then, so a half-written binary is never executable.
 func writeBinary(r io.Reader, destPath string) error {
-	out, err := os.Create(destPath)
+	// Same directory as the target: a cross-filesystem rename is not atomic.
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+"-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	if _, err := io.Copy(out, r); err != nil {
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+
+	if _, err := io.Copy(tmp, r); err != nil {
+		return errors.Join(err, tmp.Close())
+	}
+	// Close reports flush errors that io.Copy cannot see; dropping it would
+	// extract a truncated binary and report success.
+	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// Same reason as the download temp file: a flush failure here would extract a
-	// truncated binary and report success.
-	return out.Close()
+	return os.Rename(tmpPath, destPath)
 }
