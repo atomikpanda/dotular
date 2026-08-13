@@ -700,6 +700,82 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsSerializesConcurrentWriters(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	firstRequest := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondRequest := make(chan struct{})
+	var calls atomic.Int32
+
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			close(firstRequest)
+			<-releaseFirst
+			fmt.Fprint(w, oldModuleYAML)
+		case 2:
+			close(secondRequest)
+			fmt.Fprint(w, testModuleYAML)
+		default:
+			t.Error("unexpected extra registry request")
+		}
+	})
+	cfg := config.Config{Modules: []config.Module{{Name: "mutable", From: ref}}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {SHA256: stalePin, URL: "https://" + ref},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(moduleCachePath(ref)) })
+
+	errs := make(chan error, 2)
+	startUpdate := func() {
+		go func() {
+			errs <- UpdatePins(
+				context.Background(),
+				cfg,
+				lockPath,
+				false,
+				ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+			)
+		}()
+	}
+	startUpdate()
+	<-firstRequest
+	startUpdate()
+
+	const blockedUpdateWindow = 250 * time.Millisecond
+	select {
+	case <-secondRequest:
+		close(releaseFirst)
+		t.Fatal("second update reached the network while the first update still held the writer lock")
+	case <-time.After(blockedUpdateWindow):
+	}
+	close(releaseFirst)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("UpdatePins() = %v", err)
+		}
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := os.ReadFile(moduleCachePath(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheSum := fmt.Sprintf("%x", sha256.Sum256(cache))
+	if got := lock.Registry[ref].SHA256; got != cacheSum {
+		t.Errorf("persisted pin = %q, cache checksum = %q", got, cacheSum)
+	}
+	if cacheSum != testModuleSum() {
+		t.Errorf("final checksum = %q, want second update %q", cacheSum, testModuleSum())
+	}
+}
+
 const oldModuleYAML = "name: old-mod\nitems: []\n"
 
 func oldModuleSum() string {
