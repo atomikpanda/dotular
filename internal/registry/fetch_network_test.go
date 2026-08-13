@@ -581,8 +581,8 @@ func TestUpdatePinsCheckOnlyRejectsUnpinnedRefWithoutWriting(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "drifted") {
 		t.Fatalf("UpdatePins(check) error = %v, want unpinned ref to fail as drift", err)
 	}
-	if !strings.Contains(stderr.String(), "no pin") {
-		t.Errorf("UpdatePins(check) report = %q, want missing pin to be explicit", stderr.String())
+	if !strings.Contains(stderr.String(), "(none)") {
+		t.Errorf("UpdatePins(check) report = %q, want absent pin to be explicit", stderr.String())
 	}
 	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
 		t.Errorf("--check cache stat error = %v, want cache file not to exist", err)
