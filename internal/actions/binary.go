@@ -91,9 +91,10 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 				return fmt.Errorf("install binary: %w", err)
 			}
 		}
+		return os.Chmod(destPath, 0o755)
 	}
 
-	return os.Chmod(destPath, 0o755)
+	return nil
 }
 
 // --- download ----------------------------------------------------------------
@@ -184,8 +185,8 @@ func extractFromZip(archivePath, binaryName, destPath string) error {
 // executable mode — reporting failure while making things worse. An atomic
 // replace leaves the original untouched instead.
 //
-// The caller chmods destPath afterwards; the temp file's 0600 is deliberate
-// until then, so a half-written binary is never executable.
+// The temp file becomes executable before the rename, so a chmod failure
+// leaves an existing binary untouched.
 func writeBinary(r io.Reader, destPath string) error {
 	// Same directory as the target: a cross-filesystem rename is not atomic.
 	tmp, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+"-*")
@@ -198,10 +199,18 @@ func writeBinary(r io.Reader, destPath string) error {
 	if _, err := io.Copy(tmp, r); err != nil {
 		return errors.Join(err, tmp.Close())
 	}
-	// Close reports flush errors that io.Copy cannot see; dropping it would
-	// extract a truncated binary and report success.
+	return commitBinary(tmp, destPath)
+}
+
+// commitBinary performs every fallible preparation step before replacing the
+// destination. The same-directory rename remains atomic where the platform
+// supports atomic replacement.
+func commitBinary(tmp *os.File, destPath string) error {
+	if err := tmp.Chmod(0o755); err != nil {
+		return errors.Join(err, tmp.Close())
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, destPath)
+	return os.Rename(tmp.Name(), destPath)
 }

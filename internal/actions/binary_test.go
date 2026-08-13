@@ -173,6 +173,41 @@ func TestWriteBinaryFailureLeavesExistingBinaryIntact(t *testing.T) {
 	}
 }
 
+func TestCommitBinaryChmodFailureLeavesExistingBinaryIntact(t *testing.T) {
+	dir := t.TempDir()
+	destPath := filepath.Join(dir, "mybinary")
+	original := []byte("original-working-binary\n")
+	if err := os.WriteFile(destPath, original, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".mybinary-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString("replacement-binary\n"); err != nil {
+		t.Fatal(err)
+	}
+	// A closed handle makes File.Chmod fail consistently on every platform.
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := commitBinary(tmp, destPath); err == nil {
+		t.Fatal("commitBinary() = nil error, want the staged chmod failure to be reported")
+	}
+
+	data, err := os.ReadFile(destPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(destPath) error = %v, want the original binary still in place", err)
+	}
+	if !bytes.Equal(data, original) {
+		t.Errorf("destPath content = %q, want the original %q", data, original)
+	}
+}
+
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("archive entry read failed") }
