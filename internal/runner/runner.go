@@ -268,7 +268,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	}
 
 	// --- skip_if ---
-	if item.SkipIf != "" {
+	if !r.DryRun && item.SkipIf != "" {
 		exitsZero, err := shell.Eval(ctx, item.SkipIf)
 		if err != nil {
 			return outcomeFailed, fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, err)
@@ -323,7 +323,6 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 	// --- run ---
 	if r.DryRun {
 		r.UI.DryRun(action.Describe())
-		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "success"})
 		return outcomeApplied, nil
 	}
 

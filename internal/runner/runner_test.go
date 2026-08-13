@@ -544,6 +544,53 @@ func TestApplyModuleDryRun(t *testing.T) {
 	}
 }
 
+func TestApplyModuleDryRunDoesNotEvaluateSkipIf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	marker := filepath.Join(t.TempDir(), "skip-if-ran")
+	t.Setenv("DOTULAR_SKIP_IF_MARKER", marker)
+	mod := config.Module{
+		Name: "skip-if-dry-run",
+		Items: []config.Item{
+			{Run: "true", SkipIf: `touch "$DOTULAR_SKIP_IF_MARKER"`},
+		},
+	}
+	r := newTestRunner(config.Config{})
+
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("skip_if executed during dry-run; marker stat error = %v", err)
+	}
+}
+
+func TestApplyModuleDryRunDoesNotWriteSuccessAudit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	mod := config.Module{
+		Name:  "dry-run-audit",
+		Items: []config.Item{{Run: "true"}},
+	}
+	r := newTestRunner(config.Config{})
+
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	entries, err := audit.Read("dry-run-audit", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Outcome == "success" {
+			t.Fatalf("dry-run wrote a successful apply audit entry: %+v", entry)
+		}
+	}
+}
+
 func TestApplyModuleDryRunWithHooks(t *testing.T) {
 	mod := config.Module{
 		Name: "hookmod",
