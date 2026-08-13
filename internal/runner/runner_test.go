@@ -577,6 +577,47 @@ func TestApplyModuleDryRunDoesNotEvaluateSkipIf(t *testing.T) {
 	}
 }
 
+func TestApplyModuleDryRunSkipIfDoesNotCheckIdempotency(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	marker := filepath.Join(home, "idempotency-check-ran")
+	t.Setenv("DOTULAR_IDEMPOTENCY_MARKER", marker)
+	binDir := t.TempDir()
+	manager := filepath.Join(binDir, "brew")
+	if err := os.WriteFile(manager, []byte("#!/bin/sh\ntouch \"$DOTULAR_IDEMPOTENCY_MARKER\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	mod := config.Module{
+		Name: "guarded-package-dry-run",
+		Items: []config.Item{
+			{Package: "git", Via: "brew", SkipIf: "false"},
+		},
+	}
+	r := newTestRunner(config.Config{})
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Skipped != 0 || result.Unresolved != 1 {
+		t.Fatalf("dry-run result = %+v, want one unresolved item only", result)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("idempotency check executed during guarded dry-run; marker stat error = %v", err)
+	}
+	entries, err := audit.Read(mod.Name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("guarded dry-run wrote audit entries: %+v", entries)
+	}
+}
+
 func TestApplyModuleDryRunDoesNotWriteSuccessAudit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("audit.Log resolves its path from HOME only on Unix")

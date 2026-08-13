@@ -271,9 +271,13 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 		audit.Log(audit.Entry{Command: r.Command, Module: mod.Name, Item: action.Describe(), Outcome: "skipped", Reason: skipReason})
 		return outcomeSkipped, nil
 	}
+	if r.DryRun && item.SkipIf != "" {
+		r.UI.DryRun(action.Describe() + " [skip_if not evaluated]")
+		return outcomeUnresolved, nil
+	}
 
 	// --- skip_if ---
-	if !r.DryRun && item.SkipIf != "" {
+	if item.SkipIf != "" {
 		exitsZero, err := shell.Eval(ctx, item.SkipIf)
 		if err != nil {
 			return outcomeFailed, fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, err)
@@ -327,12 +331,7 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 
 	// --- run ---
 	if r.DryRun {
-		description := action.Describe()
-		if item.SkipIf != "" {
-			r.UI.DryRun(description + " [skip_if not evaluated]")
-			return outcomeUnresolved, nil
-		}
-		r.UI.DryRun(description)
+		r.UI.DryRun(action.Describe())
 		return outcomeApplied, nil
 	}
 
