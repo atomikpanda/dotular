@@ -520,6 +520,49 @@ func TestUpdatePinsReportsFullChecksumsForNewAndUnchangedRefs(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsPersistsMetadataForUnchangedRef(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	previousFetch := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {
+			SHA256:    testModuleSum(),
+			FetchedAt: previousFetch,
+			URL:       "https://previous.example/module.yaml",
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{Modules: []config.Module{{Name: "unchanged", From: ref}}}
+	if err := UpdatePins(
+		context.Background(),
+		cfg,
+		lockPath,
+		false,
+		ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := lock.Registry[ref]
+	if !entry.FetchedAt.After(previousFetch) {
+		t.Errorf("persisted fetched_at = %s, want after %s", entry.FetchedAt, previousFetch)
+	}
+	if want := ParseRef(ref).FetchURL; entry.URL != want {
+		t.Errorf("persisted URL = %q, want %q", entry.URL, want)
+	}
+	if entry.SHA256 != testModuleSum() {
+		t.Errorf("persisted checksum = %q, want unchanged %q", entry.SHA256, testModuleSum())
+	}
+}
+
 // --check is the CI mode: report the drift, write nothing at all, fail.
 func TestUpdatePinsCheckOnlyReportsWithoutWriting(t *testing.T) {
 	cfg, ref, lockPath := driftedSetup(t)

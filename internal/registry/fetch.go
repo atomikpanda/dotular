@@ -217,6 +217,7 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	}
 	drifted := 0
 	var repinned []string
+	lockDirty := false
 
 	// persist publishes a changed pin and its cache in a crash-safe order:
 	// remove the old cache, save the new pin, then install the new cache. A
@@ -253,7 +254,7 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 			}
 		}
 
-		if len(repinned) == 0 {
+		if len(repinned) == 0 && !lockDirty {
 			return nil
 		}
 		for _, ref := range repinned {
@@ -293,6 +294,11 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 				u.Warn(perr.Error())
 			}
 			return err
+		}
+		if !checkOnly {
+			// Repin refreshes FetchedAt and URL even when the checksum is
+			// unchanged; that metadata is part of the lockfile contract too.
+			lockDirty = true
 		}
 
 		switch newPin := lock.Registry[ref].SHA256; {
