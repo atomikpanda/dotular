@@ -159,17 +159,15 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 // With checkOnly it writes nothing and returns an error when any ref drifted,
 // which is the CI mode: report and signal through the exit status.
 func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOnly bool, u *ui.UI) error {
-	if !checkOnly {
-		release, err := AcquireWriterLock(lockPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if err := release(); err != nil {
-				u.Warn(fmt.Sprintf("could not release registry update lock: %v", err))
-			}
-		}()
+	release, err := AcquireWriterLock(lockPath)
+	if err != nil {
+		return err
 	}
+	defer func() {
+		if err := release(); err != nil {
+			u.Warn(fmt.Sprintf("could not release registry writer lock: %v", err))
+		}
+	}()
 
 	lock, err := LoadLock(lockPath)
 	if err != nil {

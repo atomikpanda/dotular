@@ -748,158 +748,108 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 	}
 }
 
-func TestUpdatePinsSerializesConcurrentWriters(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	firstRequest := make(chan struct{})
-	releaseFirst := make(chan struct{})
-	secondRequest := make(chan struct{})
-	var calls atomic.Int32
-
-	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
-		switch calls.Add(1) {
-		case 1:
-			close(firstRequest)
-			<-releaseFirst
-			fmt.Fprint(w, oldModuleYAML)
-		case 2:
-			close(secondRequest)
-			fmt.Fprint(w, testModuleYAML)
-		default:
-			t.Error("unexpected extra registry request")
-		}
-	})
-	cfg := config.Config{Modules: []config.Module{{Name: "mutable", From: ref}}}
-	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
-	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
-		ref: {SHA256: stalePin, URL: "https://" + ref},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(moduleCachePath(ref)) })
-
-	errs := make(chan error, 2)
-	startUpdate := func() {
-		go func() {
-			errs <- UpdatePins(
-				context.Background(),
-				cfg,
-				lockPath,
-				false,
-				ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
-			)
-		}()
-	}
-	startUpdate()
-	<-firstRequest
-	startUpdate()
-
-	select {
-	case <-secondRequest:
-		close(releaseFirst)
-		t.Fatal("second update reached the network while the first update still held the writer lock")
-	case <-time.After(registryLockContentionWindow):
-	}
-	close(releaseFirst)
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatalf("UpdatePins() = %v", err)
-		}
+func TestRegistryTransactionsSerializeWithUpdate(t *testing.T) {
+	tests := []struct {
+		name string
+		run  func(context.Context, config.Config, string, string, *ui.UI) error
+	}{
+		{
+			name: "update",
+			run: func(ctx context.Context, cfg config.Config, lockPath, _ string, u *ui.UI) error {
+				return UpdatePins(ctx, cfg, lockPath, false, u)
+			},
+		},
+		{
+			name: "check",
+			run: func(ctx context.Context, cfg config.Config, lockPath, _ string, u *ui.UI) error {
+				return UpdatePins(ctx, cfg, lockPath, true, u)
+			},
+		},
+		{
+			name: "resolve",
+			run: func(ctx context.Context, cfg config.Config, _ string, configPath string, u *ui.UI) error {
+				_, err := Resolve(ctx, cfg, configPath, false, u)
+				return err
+			},
+		},
 	}
 
-	lock, err := LoadLock(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache, err := os.ReadFile(moduleCachePath(ref))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cacheSum := fmt.Sprintf("%x", sha256.Sum256(cache))
-	if got := lock.Registry[ref].SHA256; got != cacheSum {
-		t.Errorf("persisted pin = %q, cache checksum = %q", got, cacheSum)
-	}
-	if cacheSum != testModuleSum() {
-		t.Errorf("final checksum = %q, want second update %q", cacheSum, testModuleSum())
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			firstRequest := make(chan struct{})
+			releaseFirst := make(chan struct{})
+			var calls atomic.Int32
 
-func TestResolveWaitsForConcurrentUpdate(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	updateRequest := make(chan struct{})
-	releaseUpdate := make(chan struct{})
-	unexpectedResolveRequest := make(chan struct{})
-	var calls atomic.Int32
+			ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+				if calls.Add(1) == 1 {
+					close(firstRequest)
+					<-releaseFirst
+				}
+				fmt.Fprint(w, testModuleYAML)
+			})
+			cfg := config.Config{Modules: []config.Module{{Name: "mutable", From: ref}}}
+			configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+			lockPath := LockPath(configPath)
+			if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+				ref: {SHA256: stalePin, URL: "https://" + ref},
+			}}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Remove(moduleCachePath(ref)) })
 
-	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
-		switch calls.Add(1) {
-		case 1:
-			close(updateRequest)
-			<-releaseUpdate
-			fmt.Fprint(w, testModuleYAML)
-		case 2:
-			close(unexpectedResolveRequest)
-			fmt.Fprint(w, oldModuleYAML)
-		default:
-			t.Error("unexpected extra registry request")
-		}
-	})
-	cfg := config.Config{Modules: []config.Module{{Name: "mutable", From: ref}}}
-	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
-	lockPath := LockPath(configPath)
-	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
-		ref: {SHA256: oldModuleSum(), URL: "https://" + ref},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Remove(moduleCachePath(ref)) })
+			firstErr := make(chan error, 1)
+			go func() {
+				firstErr <- UpdatePins(
+					context.Background(),
+					cfg,
+					lockPath,
+					false,
+					ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+				)
+			}()
+			<-firstRequest
 
-	updateErr := make(chan error, 1)
-	go func() {
-		updateErr <- UpdatePins(
-			context.Background(),
-			cfg,
-			lockPath,
-			false,
-			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
-		)
-	}()
-	<-updateRequest
+			secondStarted := make(chan struct{})
+			secondErr := make(chan error, 1)
+			go func() {
+				close(secondStarted)
+				secondErr <- tt.run(
+					context.Background(),
+					cfg,
+					lockPath,
+					configPath,
+					ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+				)
+			}()
+			<-secondStarted
+			select {
+			case err := <-secondErr:
+				close(releaseFirst)
+				t.Fatalf("second %s completed before update released the writer lock: %v", tt.name, err)
+			case <-time.After(registryLockContentionWindow):
+			}
+			close(releaseFirst)
 
-	resolveErr := make(chan error, 1)
-	go func() {
-		_, err := Resolve(
-			context.Background(),
-			cfg,
-			configPath,
-			false,
-			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
-		)
-		resolveErr <- err
-	}()
-	select {
-	case <-unexpectedResolveRequest:
-		close(releaseUpdate)
-		t.Fatal("Resolve reached the network while registry update still held the writer lock")
-	case <-time.After(registryLockContentionWindow):
-	}
-	close(releaseUpdate)
-	if err := <-updateErr; err != nil {
-		t.Fatalf("UpdatePins() = %v", err)
-	}
-	if err := <-resolveErr; err != nil {
-		t.Fatalf("Resolve() after update = %v", err)
-	}
+			if err := <-firstErr; err != nil {
+				t.Fatalf("first UpdatePins() = %v", err)
+			}
+			if err := <-secondErr; err != nil {
+				t.Fatalf("second %s = %v", tt.name, err)
+			}
 
-	lock, err := LoadLock(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cache, err := os.ReadFile(moduleCachePath(ref))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := lock.Registry[ref].SHA256, fmt.Sprintf("%x", sha256.Sum256(cache)); got != want {
-		t.Errorf("persisted pin = %q, cache checksum = %q", got, want)
+			lock, err := LoadLock(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cache, err := os.ReadFile(moduleCachePath(ref))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := lock.Registry[ref].SHA256, fmt.Sprintf("%x", sha256.Sum256(cache)); got != want {
+				t.Errorf("persisted pin = %q, cache checksum = %q", got, want)
+			}
+		})
 	}
 }
 

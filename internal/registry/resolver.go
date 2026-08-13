@@ -16,6 +16,20 @@ import (
 // configPath is the path to dotular.yaml and is used to locate the lockfile.
 // When noCache is true, all registry modules are re-fetched from the network.
 func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache bool, u *ui.UI) (config.Config, error) {
+	hasRegistryModule := false
+	for _, mod := range cfg.Modules {
+		if mod.IsRegistry() {
+			hasRegistryModule = true
+			break
+		}
+	}
+	if !hasRegistryModule {
+		return config.Config{
+			Age:     cfg.Age,
+			Modules: append([]config.Module(nil), cfg.Modules...),
+		}, nil
+	}
+
 	lockPath := LockPath(configPath)
 	release, err := AcquireWriterLock(lockPath)
 	if err != nil {

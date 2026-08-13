@@ -30,6 +30,7 @@ func TestDownloadError(t *testing.T) {
 }
 
 func TestResolveLocalModules(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", "relative-cache")
 	cfg := config.Config{
 		Modules: []config.Module{
 			{Name: "local", Items: []config.Item{{Package: "git", Via: "brew"}}},
