@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/testutil"
 )
 
@@ -586,6 +587,29 @@ func TestInitCmdExists(t *testing.T) {
 	}
 	if cmd.Use != "init" {
 		t.Errorf("init command Use = %q", cmd.Use)
+	}
+}
+
+func TestFreshInitCreatesRegularWriterLockTarget(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	if err := ensureInitConfigLockTarget(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load initialized config: %v", err)
+	}
+	if len(cfg.Modules) != 0 {
+		t.Errorf("initialized config has %d modules, want none", len(cfg.Modules))
+	}
+
+	release, err := registry.AcquireWriterLock(registry.LockPath(configPath), configPath)
+	if err != nil {
+		t.Fatalf("acquire fresh-init writer lock: %v", err)
+	}
+	if err := release(); err != nil {
+		t.Fatalf("release fresh-init writer lock: %v", err)
 	}
 }
 

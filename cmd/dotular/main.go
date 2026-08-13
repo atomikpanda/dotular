@@ -929,6 +929,33 @@ func runPicker(results []scanner.ScanResult) ([]scanner.ScanResult, error) {
 	return selected, nil
 }
 
+func ensureInitConfigLockTarget(path string) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if os.IsExist(err) {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return statErr
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("config path is not a regular file: %s", path)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("create config: %w", err)
+	}
+	if _, err := file.WriteString("modules: []\n"); err != nil {
+		file.Close()
+		os.Remove(path)
+		return fmt.Errorf("initialize config: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return fmt.Errorf("initialize config: %w", err)
+	}
+	return nil
+}
+
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
@@ -949,6 +976,13 @@ modules to add to your dotular.yaml.`,
 			if len(entries) == 0 {
 				u.Info("No modules found in registry.")
 				return nil
+			}
+			// A fresh init has no config file yet, but registry transactions need
+			// an existing regular lock target on every Unix filesystem. Creating
+			// the empty config is init's intended state change, not a sidecar
+			// coordination artifact.
+			if err := ensureInitConfigLockTarget(configFile); err != nil {
+				return err
 			}
 
 			// 2. Fetch all module definitions.
