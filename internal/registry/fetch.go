@@ -283,7 +283,7 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 		if errors.As(err, &mismatch) {
 			// Only reachable under checkOnly: an update authorises the re-pin.
 			drifted++
-			u.Warn(fmt.Sprintf("%-24s %s -> %s  DRIFT", ref, shortSum(mismatch.Pinned), shortSum(mismatch.Got)))
+			u.Warn(fmt.Sprintf("%-24s %s -> %s  DRIFT", ref, mismatch.Pinned, mismatch.Got))
 			continue
 		}
 		if err != nil {
@@ -299,16 +299,16 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 		case pinned == "":
 			if checkOnly {
 				drifted++
-				u.Warn(fmt.Sprintf("%-24s no pin -> %s  DRIFT", ref, shortSum(newPin)))
+				u.Warn(fmt.Sprintf("%-24s (none) -> %s  DRIFT", ref, newPin))
 			} else {
 				repinned = append(repinned, ref)
-				u.Info(fmt.Sprintf("%-24s new pin %s", ref, shortSum(newPin)))
+				u.Info(fmt.Sprintf("%-24s (none) -> %s  NEW", ref, newPin))
 			}
 		case newPin != pinned:
 			repinned = append(repinned, ref)
-			u.Info(fmt.Sprintf("%-24s %s -> %s", ref, shortSum(pinned), shortSum(newPin)))
+			u.Info(fmt.Sprintf("%-24s %s -> %s", ref, pinned, newPin))
 		default:
-			u.Info(fmt.Sprintf("%-24s unchanged", ref))
+			u.Info(fmt.Sprintf("%-24s %s -> %s  unchanged", ref, pinned, newPin))
 		}
 	}
 
@@ -328,15 +328,6 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	}
 	u.Success(fmt.Sprintf("updated %d pin(s) of %d registry module(s) checked", len(repinned), len(refs)))
 	return nil
-}
-
-// shortSum abbreviates a checksum for reports; the lockfile keeps the full one.
-func shortSum(sum string) string {
-	const abbrev = 8
-	if len(sum) <= abbrev {
-		return sum
-	}
-	return sum[:abbrev] + ".."
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {

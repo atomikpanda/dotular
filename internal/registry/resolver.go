@@ -48,18 +48,23 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 
 	result := config.Config{Age: cfg.Age}
 	lockDirty := false
+	requiresPinPersistence := false
 
 	for _, mod := range cfg.Modules {
 		if !mod.IsRegistry() {
 			result.Modules = append(result.Modules, mod)
 			continue
 		}
+		_, hadPin := lock.Registry[mod.From]
 
 		// Never Repin: applying a config must use what was approved, so an
 		// upstream change surfaces as an error rather than a silent adoption.
 		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{NoCache: noCache}, u)
 		if err != nil {
 			return config.Config{}, err
+		}
+		if !hadPin {
+			requiresPinPersistence = true
 		}
 
 		switch trust {
@@ -93,6 +98,9 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 
 	if lockDirty {
 		if err := SaveLock(lockPath, lock); err != nil {
+			if requiresPinPersistence {
+				return config.Config{}, fmt.Errorf("save first registry pin: %w", err)
+			}
 			u.Warn(fmt.Sprintf("could not save lockfile: %v", err))
 		}
 	}

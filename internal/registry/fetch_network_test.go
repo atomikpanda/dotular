@@ -457,7 +457,7 @@ func TestUpdatePinsReportsAndWritesDrift(t *testing.T) {
 	}
 
 	report := stdout.String()
-	for _, want := range []string{ref, shortSum(stalePin), shortSum(testModuleSum())} {
+	for _, want := range []string{ref, stalePin, testModuleSum()} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report = %q, want it to contain %q", report, want)
 		}
@@ -469,6 +469,54 @@ func TestUpdatePinsReportsAndWritesDrift(t *testing.T) {
 	}
 	if got := lock.Registry[ref].SHA256; got != testModuleSum() {
 		t.Errorf("pin = %q, want it moved to %q", got, testModuleSum())
+	}
+}
+
+func TestUpdatePinsReportsFullChecksumsForNewAndUnchangedRefs(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	tests := []struct {
+		name   string
+		pinned bool
+	}{
+		{name: "new"},
+		{name: "unchanged", pinned: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+			if tt.pinned {
+				if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+					ref: {SHA256: testModuleSum(), URL: "https://" + ref},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cfg := config.Config{Modules: []config.Module{{Name: tt.name, From: ref}}}
+			var stdout bytes.Buffer
+			if err := UpdatePins(
+				context.Background(),
+				cfg,
+				lockPath,
+				false,
+				ui.New(&stdout, &bytes.Buffer{}),
+			); err != nil {
+				t.Fatal(err)
+			}
+			report := stdout.String()
+			if tt.pinned {
+				if strings.Count(report, testModuleSum()) < 2 || !strings.Contains(report, "unchanged") {
+					t.Errorf("unchanged report = %q, want pinned and fetched full checksums", report)
+				}
+			} else if !strings.Contains(report, "(none)") ||
+				!strings.Contains(report, testModuleSum()) ||
+				!strings.Contains(report, "NEW") {
+				t.Errorf("new-pin report = %q, want absent old pin and full fetched checksum", report)
+			}
+		})
 	}
 }
 

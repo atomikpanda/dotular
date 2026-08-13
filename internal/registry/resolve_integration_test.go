@@ -141,3 +141,32 @@ func TestResolveFailsOnDriftAndLeavesLockfileAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveFailsWhenFirstPinCannotBePersisted(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	lockPath := LockPath(configPath)
+	if err := os.Mkdir(lockPath+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{Modules: []config.Module{{Name: "unpinned", From: ref}}}
+	result, err := Resolve(
+		context.Background(),
+		cfg,
+		configPath,
+		false,
+		ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+	)
+	if err == nil || !strings.Contains(err.Error(), "save first registry pin") {
+		t.Fatalf("Resolve() error = %v, want first-pin persistence failure", err)
+	}
+	if len(result.Modules) != 0 {
+		t.Errorf("Resolve() returned %d trusted module(s) without a durable pin", len(result.Modules))
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("lockfile stat error = %v, want no persisted lockfile", err)
+	}
+}
