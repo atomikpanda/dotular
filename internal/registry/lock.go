@@ -30,10 +30,10 @@ func LockPath(configPath string) string {
 	return filepath.Join(dir, "dotular.lock.yaml")
 }
 
-// acquireUpdateLock serializes writers for one lockfile across processes. The
-// lock lives in the user cache rather than beside the committed lockfile, where
-// a persistent coordination file would pollute the repository.
-func acquireUpdateLock(path string) (func() error, error) {
+// AcquireWriterLock serializes a lockfile load-modify-save transaction across
+// processes. The lock lives in the user cache rather than beside the committed
+// lockfile, where a persistent coordination file would pollute the repository.
+func AcquireWriterLock(path string) (func() error, error) {
 	canonical, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve lockfile path: %w", err)

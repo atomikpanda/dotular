@@ -22,6 +22,8 @@ import (
 
 const testModuleYAML = "name: test-mod\nitems:\n  - package: neovim\n    via: brew\n"
 
+const registryLockContentionWindow = 250 * time.Millisecond
+
 func testModuleSum() string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(testModuleYAML)))
 }
@@ -536,6 +538,52 @@ func TestUpdatePinsCheckOnlyLeavesCacheUntouched(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsKeepsDistinctCachesForCollidingRefs(t *testing.T) {
+	base := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a.b/foo":
+			fmt.Fprint(w, oldModuleYAML)
+		case "/a/b.foo":
+			fmt.Fprint(w, testModuleYAML)
+		default:
+			t.Errorf("unexpected registry path %q", r.URL.Path)
+		}
+	})
+	host := strings.TrimSuffix(base, "/module.yaml")
+	firstRef, secondRef := host+"/a.b/foo", host+"/a/b.foo"
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "first", From: firstRef},
+		{Name: "second", From: secondRef},
+	}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	t.Cleanup(func() {
+		_ = os.Remove(moduleCachePath(firstRef))
+		_ = os.Remove(moduleCachePath(secondRef))
+	})
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	forbidNetwork(t)
+	first, _, err := fetchForTest(t, firstRef, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch(%q) = %v", firstRef, err)
+	}
+	second, _, err := fetchForTest(t, secondRef, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch(%q) = %v", secondRef, err)
+	}
+	if first.Name != "old-mod" || second.Name != "test-mod" {
+		t.Errorf("cached modules = %q, %q; want %q, %q", first.Name, second.Name, "old-mod", "test-mod")
+	}
+}
+
 // A ref failing partway through must not leave the cache ahead of the lockfile:
 // the next apply would hash the new cached bytes against the old pin and report
 // dotular's own partial update as a tampered cache.
@@ -745,12 +793,11 @@ func TestUpdatePinsSerializesConcurrentWriters(t *testing.T) {
 	<-firstRequest
 	startUpdate()
 
-	const blockedUpdateWindow = 250 * time.Millisecond
 	select {
 	case <-secondRequest:
 		close(releaseFirst)
 		t.Fatal("second update reached the network while the first update still held the writer lock")
-	case <-time.After(blockedUpdateWindow):
+	case <-time.After(registryLockContentionWindow):
 	}
 	close(releaseFirst)
 	for range 2 {
@@ -773,6 +820,86 @@ func TestUpdatePinsSerializesConcurrentWriters(t *testing.T) {
 	}
 	if cacheSum != testModuleSum() {
 		t.Errorf("final checksum = %q, want second update %q", cacheSum, testModuleSum())
+	}
+}
+
+func TestResolveWaitsForConcurrentUpdate(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	updateRequest := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	unexpectedResolveRequest := make(chan struct{})
+	var calls atomic.Int32
+
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			close(updateRequest)
+			<-releaseUpdate
+			fmt.Fprint(w, testModuleYAML)
+		case 2:
+			close(unexpectedResolveRequest)
+			fmt.Fprint(w, oldModuleYAML)
+		default:
+			t.Error("unexpected extra registry request")
+		}
+	})
+	cfg := config.Config{Modules: []config.Module{{Name: "mutable", From: ref}}}
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	lockPath := LockPath(configPath)
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {SHA256: oldModuleSum(), URL: "https://" + ref},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(moduleCachePath(ref)) })
+
+	updateErr := make(chan error, 1)
+	go func() {
+		updateErr <- UpdatePins(
+			context.Background(),
+			cfg,
+			lockPath,
+			false,
+			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+		)
+	}()
+	<-updateRequest
+
+	resolveErr := make(chan error, 1)
+	go func() {
+		_, err := Resolve(
+			context.Background(),
+			cfg,
+			configPath,
+			false,
+			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+		)
+		resolveErr <- err
+	}()
+	select {
+	case <-unexpectedResolveRequest:
+		close(releaseUpdate)
+		t.Fatal("Resolve reached the network while registry update still held the writer lock")
+	case <-time.After(registryLockContentionWindow):
+	}
+	close(releaseUpdate)
+	if err := <-updateErr; err != nil {
+		t.Fatalf("UpdatePins() = %v", err)
+	}
+	if err := <-resolveErr; err != nil {
+		t.Fatalf("Resolve() after update = %v", err)
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := os.ReadFile(moduleCachePath(ref))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := lock.Registry[ref].SHA256, fmt.Sprintf("%x", sha256.Sum256(cache)); got != want {
+		t.Errorf("persisted pin = %q, cache checksum = %q", got, want)
 	}
 }
 

@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -161,7 +160,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 // which is the CI mode: report and signal through the exit status.
 func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOnly bool, u *ui.UI) error {
 	if !checkOnly {
-		release, err := acquireUpdateLock(lockPath)
+		release, err := AcquireWriterLock(lockPath)
 		if err != nil {
 			return err
 		}
@@ -337,11 +336,9 @@ func parseModule(data []byte) (*RemoteModule, error) {
 }
 
 func moduleCachePath(rawRef string) string {
-	safe := strings.NewReplacer(
-		"/", "_", "@", "_", ":", "_", ".", "_",
-	).Replace(rawRef)
+	sum := sha256.Sum256([]byte(rawRef))
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
+	return filepath.Join(home, ".cache", "dotular", "registry", fmt.Sprintf("%x.yaml", sum))
 }
 
 // writeCacheFile writes a cache entry atomically, mirroring SaveLock. A cache

@@ -939,6 +939,18 @@ modules to add to your dotular.yaml.`,
 
 			// 2. Fetch all module definitions.
 			lockPath := registry.LockPath(configFile)
+			releaseWriter, err := registry.AcquireWriterLock(lockPath)
+			if err != nil {
+				return err
+			}
+			writerReleased := false
+			defer func() {
+				if !writerReleased {
+					if err := releaseWriter(); err != nil {
+						u.Warn(fmt.Sprintf("could not release registry writer lock: %v", err))
+					}
+				}
+			}()
 			lock, err := registry.LoadLock(lockPath)
 			if err != nil {
 				return err
@@ -962,6 +974,10 @@ modules to add to your dotular.yaml.`,
 			if err := registry.SaveLock(lockPath, lock); err != nil {
 				u.Warn(fmt.Sprintf("could not save lock file: %v", err))
 			}
+			if err := releaseWriter(); err != nil {
+				u.Warn(fmt.Sprintf("could not release registry writer lock: %v", err))
+			}
+			writerReleased = true
 
 			// 3. Scan the machine.
 			u.Info("Scanning installed software...")

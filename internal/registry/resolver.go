@@ -17,6 +17,16 @@ import (
 // When noCache is true, all registry modules are re-fetched from the network.
 func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache bool, u *ui.UI) (config.Config, error) {
 	lockPath := LockPath(configPath)
+	release, err := AcquireWriterLock(lockPath)
+	if err != nil {
+		return config.Config{}, err
+	}
+	defer func() {
+		if err := release(); err != nil {
+			u.Warn(fmt.Sprintf("could not release registry writer lock: %v", err))
+		}
+	}()
+
 	lock, err := LoadLock(lockPath)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load lockfile: %w", err)
