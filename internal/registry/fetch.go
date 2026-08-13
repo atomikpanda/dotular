@@ -24,6 +24,10 @@ import (
 // a hostname.
 var httpClient = httputil.Client
 
+// createCacheTemp is replaceable only to make cache-write failures deterministic
+// in tests.
+var createCacheTemp = os.CreateTemp
+
 // FetchOptions controls how Fetch treats the two independent things a fetch
 // touches: the disk cache and the lockfile pin.
 type FetchOptions struct {
@@ -262,8 +266,13 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 
 		switch newPin := lock.Registry[ref].SHA256; {
 		case pinned == "":
-			repinned = append(repinned, ref)
-			u.Info(fmt.Sprintf("%-24s new pin %s", ref, shortSum(newPin)))
+			if checkOnly {
+				drifted++
+				u.Warn(fmt.Sprintf("%-24s no pin -> %s  DRIFT", ref, shortSum(newPin)))
+			} else {
+				repinned = append(repinned, ref)
+				u.Info(fmt.Sprintf("%-24s new pin %s", ref, shortSum(newPin)))
+			}
 		case newPin != pinned:
 			repinned = append(repinned, ref)
 			u.Info(fmt.Sprintf("%-24s %s -> %s", ref, shortSum(pinned), shortSum(newPin)))
@@ -339,26 +348,38 @@ func moduleCachePath(rawRef string) string {
 	return filepath.Join(home, ".cache", "dotular", "registry", fmt.Sprintf("%x.yaml", sum))
 }
 
-// writeCacheFile writes a cache entry atomically, mirroring SaveLock. A cache
-// file is only ever meaningful next to the pin it hashes to, so a write that
-// could not complete must leave no trace: a torn file — ENOSPC, a kill mid-write
-// — would hash to neither the old pin nor the new one, and Fetch would report
-// dotular's own interrupted write as a tampered cache. The temp file has to live
-// in the target's directory, because a rename across filesystems is not atomic.
+// writeCacheFile writes a cache entry atomically. Each writer uses a unique
+// temp file in the target directory, so concurrent fetches cannot truncate or
+// rename one another's in-progress bytes. A cache file is only meaningful next
+// to the pin it hashes to, so a failed write leaves the previous target intact.
 func writeCacheFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		os.Remove(tmp)
+	tmp, err := createCacheTemp(dir, filepath.Base(path)+".tmp-")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	tmpPath := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(tmpPath)
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
 		return err
 	}
-	return nil
+	n, err := tmp.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return fmt.Errorf("short cache write: wrote %d of %d bytes", n, len(data))
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // ClearCache removes the local registry cache directory.

@@ -30,16 +30,13 @@ func TestDownloadError(t *testing.T) {
 }
 
 func TestResolveLocalModules(t *testing.T) {
-	t.Setenv("XDG_CACHE_HOME", "relative-cache")
 	cfg := config.Config{
 		Modules: []config.Module{
 			{Name: "local", Items: []config.Item{{Package: "git", Via: "brew"}}},
 		},
 	}
 
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "dotular.yaml")
-	os.WriteFile(configPath, []byte("modules: []"), 0o644)
+	configPath := filepath.Join(t.TempDir(), "missing", "dotular.yaml")
 
 	result, err := Resolve(context.Background(), cfg, configPath, false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {

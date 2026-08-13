@@ -3,17 +3,34 @@
 package registry
 
 import (
-	"os"
+	"crypto/sha256"
+	"errors"
+	"fmt"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
 
-func lockUpdateFile(file *os.File) error {
-	var overlapped windows.Overlapped
-	return windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped)
-}
-
-func unlockUpdateFile(file *os.File) error {
-	var overlapped windows.Overlapped
-	return windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
+func acquirePlatformWriterLock(lockPath string) (func() error, error) {
+	sum := sha256.Sum256([]byte(strings.ToLower(lockPath)))
+	name, err := windows.UTF16PtrFromString(fmt.Sprintf("dotular-registry-%x", sum))
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateMutex(nil, false, name)
+	if err != nil && err != windows.ERROR_ALREADY_EXISTS {
+		return nil, err
+	}
+	result, err := windows.WaitForSingleObject(handle, windows.INFINITE)
+	if err != nil {
+		windows.CloseHandle(handle)
+		return nil, err
+	}
+	if result != windows.WAIT_OBJECT_0 && result != windows.WAIT_ABANDONED {
+		windows.CloseHandle(handle)
+		return nil, fmt.Errorf("unexpected mutex wait result %d", result)
+	}
+	return func() error {
+		return errors.Join(windows.ReleaseMutex(handle), windows.CloseHandle(handle))
+	}, nil
 }

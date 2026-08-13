@@ -335,9 +335,22 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 	// Try registry-based inference.
 	entries, err := registry.FetchIndex(ctx, u)
 	if err == nil && len(entries) > 0 {
-		lockPath := registry.LockPath(configFile)
-		lock, lockErr := registry.LoadLock(lockPath)
-		if lockErr == nil {
+		modules := func() []registry.RemoteModule {
+			lockPath := registry.LockPath(configFile)
+			release, lockErr := registry.AcquireWriterLock(lockPath)
+			if lockErr != nil {
+				return nil
+			}
+			defer func() {
+				if err := release(); err != nil {
+					u.Warn(fmt.Sprintf("could not release registry writer lock: %v", err))
+				}
+			}()
+			lock, lockErr := registry.LoadLock(lockPath)
+			if lockErr != nil {
+				return nil
+			}
+
 			var modules []registry.RemoteModule
 			for _, entry := range entries {
 				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
@@ -345,17 +358,18 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 					modules = append(modules, *mod)
 				}
 			}
-			if len(modules) > 0 {
-				matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath, actions.OSIsDir)
-				if len(matches) == 1 {
-					u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
-					return matches[0].ModuleName, nil
-				}
-				if len(matches) > 1 {
-					u.Info("Multiple registry modules match this path:")
-					for _, m := range matches {
-						u.Info(fmt.Sprintf("  - %s", m.ModuleName))
-					}
+			return modules
+		}()
+		if len(modules) > 0 {
+			matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath, actions.OSIsDir)
+			if len(matches) == 1 {
+				u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
+				return matches[0].ModuleName, nil
+			}
+			if len(matches) > 1 {
+				u.Info("Multiple registry modules match this path:")
+				for _, m := range matches {
+					u.Info(fmt.Sprintf("  - %s", m.ModuleName))
 				}
 			}
 		}

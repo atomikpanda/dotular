@@ -1,8 +1,6 @@
 package registry
 
 import (
-	"crypto/sha256"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,8 +29,7 @@ func LockPath(configPath string) string {
 }
 
 // AcquireWriterLock serializes a lockfile load-modify-save transaction across
-// processes. The lock lives in the user cache rather than beside the committed
-// lockfile, where a persistent coordination file would pollute the repository.
+// processes without creating coordination files.
 func AcquireWriterLock(path string) (func() error, error) {
 	canonical, err := filepath.Abs(path)
 	if err != nil {
@@ -41,27 +38,11 @@ func AcquireWriterLock(path string) (func() error, error) {
 	if dir, err := filepath.EvalSymlinks(filepath.Dir(canonical)); err == nil {
 		canonical = filepath.Join(dir, filepath.Base(canonical))
 	}
-
-	cacheDir, err := os.UserCacheDir()
+	release, err := acquirePlatformWriterLock(canonical)
 	if err != nil {
-		return nil, fmt.Errorf("resolve cache directory: %w", err)
+		return nil, fmt.Errorf("acquire registry writer lock: %w", err)
 	}
-	lockDir := filepath.Join(cacheDir, "dotular", "locks")
-	if err := os.MkdirAll(lockDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create update lock directory: %w", err)
-	}
-	sum := sha256.Sum256([]byte(canonical))
-	file, err := os.OpenFile(filepath.Join(lockDir, fmt.Sprintf("%x.lock", sum)), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open update lock: %w", err)
-	}
-	if err := lockUpdateFile(file); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("acquire update lock: %w", err)
-	}
-	return func() error {
-		return errors.Join(unlockUpdateFile(file), file.Close())
-	}, nil
+	return release, nil
 }
 
 // LoadLock reads the lockfile, returning an empty LockFile if not found.

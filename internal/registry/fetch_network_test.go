@@ -47,6 +47,17 @@ func swapClient(t *testing.T, c *http.Client) {
 	t.Cleanup(func() { httpClient = prev })
 }
 
+func failCacheTempWrites(t *testing.T) func() {
+	t.Helper()
+	previous := createCacheTemp
+	createCacheTemp = func(string, string) (*os.File, error) {
+		return nil, errors.New("cache temp creation blocked")
+	}
+	restore := func() { createCacheTemp = previous }
+	t.Cleanup(restore)
+	return restore
+}
+
 // forbidNetwork makes any HTTP request fail the test, so a "cache hit" claim is
 // proven rather than assumed.
 func forbidNetwork(t *testing.T) {
@@ -453,7 +464,10 @@ func TestUpdatePinsCheckOnlyPassesWithoutDrift(t *testing.T) {
 	}
 }
 
-func TestUpdatePinsCheckOnlyDoesNotWriteUnpinnedRef(t *testing.T) {
+func TestUpdatePinsCheckOnlyRejectsUnpinnedRefWithoutWriting(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	t.Setenv("LocalAppData", cacheRoot)
 	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, testModuleYAML)
 	})
@@ -465,15 +479,27 @@ func TestUpdatePinsCheckOnlyDoesNotWriteUnpinnedRef(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(cachePath) })
 
-	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err != nil {
-		t.Fatalf("UpdatePins(check) error = %v, want success for an unpinned ref", err)
+	var stderr bytes.Buffer
+	u := ui.New(&bytes.Buffer{}, &stderr)
+	err := UpdatePins(context.Background(), cfg, lockPath, true, u)
+	if err == nil || !strings.Contains(err.Error(), "drifted") {
+		t.Fatalf("UpdatePins(check) error = %v, want unpinned ref to fail as drift", err)
+	}
+	if !strings.Contains(stderr.String(), "no pin") {
+		t.Errorf("UpdatePins(check) report = %q, want missing pin to be explicit", stderr.String())
 	}
 	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
 		t.Errorf("--check cache stat error = %v, want cache file not to exist", err)
 	}
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Errorf("--check lockfile stat error = %v, want lockfile not to exist", err)
+	}
+	entries, err := os.ReadDir(cacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("--check created coordination files under the user cache: %v", entries)
 	}
 }
 
@@ -710,15 +736,8 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 	if err := writeCacheFile(cachePath, []byte(oldModuleYAML)); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_ = os.Remove(cachePath)
-		_ = os.RemoveAll(cachePath + ".tmp")
-	})
-	// A directory at the atomic writer's temp path makes the cache replacement
-	// fail even as root.
-	if err := os.Mkdir(cachePath+".tmp", 0o755); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() { _ = os.Remove(cachePath) })
+	restoreCacheWrites := failCacheTempWrites(t)
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
 	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
@@ -736,9 +755,7 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 		t.Errorf("cache stat error = %v, want old cache removed rather than paired with the new pin", err)
 	}
 
-	if err := os.RemoveAll(cachePath + ".tmp"); err != nil {
-		t.Fatal(err)
-	}
+	restoreCacheWrites()
 	mod, _, err := fetchForTest(t, ref, lock, FetchOptions{})
 	if err != nil {
 		t.Fatalf("Fetch() after failed cache write = %v, want a verified network recovery", err)
@@ -934,25 +951,17 @@ func TestUpdatePinsDiscardsItsCacheWritesWhenTheLockfileCannotBeSaved(t *testing
 	}
 }
 
-// A cache write that cannot complete must leave the previous entry alone: the
-// old bytes still hash to the pin, whereas a half-written file hashes to neither
-// and Fetch would report it as a tampered cache. This pins the mechanism — the
-// bytes go to a temp path and the target is only replaced by a rename. It does
-// not prove atomicity against a crash mid-write; that rests on os.Rename, which
-// a test cannot interrupt.
+// A cache write that cannot start must leave the previous entry alone: the old
+// bytes still hash to the pin, whereas a partial replacement hashes to neither.
 func TestWriteCacheFileKeepsThePreviousEntryWhenTheWriteFails(t *testing.T) {
 	path := moduleCachePath("cache.example/atomic/kept")
 	if err := writeCacheFile(path, []byte(oldModuleYAML)); err != nil {
 		t.Fatal(err)
 	}
-	// A directory where the temp file belongs fails the write for any user,
-	// including root.
-	if err := os.Mkdir(path+".tmp", 0o755); err != nil {
-		t.Fatal(err)
-	}
+	failCacheTempWrites(t)
 
 	if err := writeCacheFile(path, []byte(testModuleYAML)); err == nil {
-		t.Fatal("writeCacheFile() = nil error, want the blocked temp write to fail")
+		t.Fatal("writeCacheFile() = nil error, want temp creation failure")
 	}
 
 	got, err := os.ReadFile(path)
@@ -970,8 +979,12 @@ func TestWriteCacheFileLeavesNoTempFileBehind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
-		t.Errorf("temp file left in the cache directory (stat = %v)", err)
+	tempFiles, err := filepath.Glob(path + ".tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tempFiles) != 0 {
+		t.Errorf("temp files left in the cache directory: %v", tempFiles)
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -979,5 +992,57 @@ func TestWriteCacheFileLeavesNoTempFileBehind(t *testing.T) {
 	}
 	if string(got) != testModuleYAML {
 		t.Errorf("cache = %q, want %q", got, testModuleYAML)
+	}
+}
+
+func TestWriteCacheFileConcurrentWritersUseUniqueTemps(t *testing.T) {
+	path := moduleCachePath("cache.example/atomic/concurrent")
+	previous := createCacheTemp
+	created := make(chan string, 2)
+	release := make(chan struct{})
+	createCacheTemp = func(dir, pattern string) (*os.File, error) {
+		file, err := os.CreateTemp(dir, pattern)
+		if err == nil {
+			created <- file.Name()
+			<-release
+		}
+		return file, err
+	}
+	t.Cleanup(func() {
+		createCacheTemp = previous
+		_ = os.Remove(path)
+	})
+
+	first := []byte("name: first\nitems: []\n")
+	second := []byte("name: second\nitems: []\n")
+	errs := make(chan error, 2)
+	go func() { errs <- writeCacheFile(path, first) }()
+	go func() { errs <- writeCacheFile(path, second) }()
+
+	firstTemp, secondTemp := <-created, <-created
+	if firstTemp == secondTemp {
+		close(release)
+		t.Fatalf("concurrent writers shared temp path %q", firstTemp)
+	}
+	close(release)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("writeCacheFile() = %v", err)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, first) && !bytes.Equal(got, second) {
+		t.Errorf("cache contains mixed bytes: %q", got)
+	}
+	tempFiles, err := filepath.Glob(path + ".tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tempFiles) != 0 {
+		t.Errorf("temp files left after concurrent writes: %v", tempFiles)
 	}
 }
