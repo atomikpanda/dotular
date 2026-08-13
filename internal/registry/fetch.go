@@ -184,8 +184,8 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 //
 // With checkOnly it writes nothing and returns an error when any ref drifted,
 // which is the CI mode: report and signal through the exit status.
-func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOnly bool, u *ui.UI) error {
-	release, err := AcquireWriterLock(lockPath)
+func UpdatePins(ctx context.Context, cfg config.Config, lockPath, lockTarget string, checkOnly bool, u *ui.UI) error {
+	release, err := AcquireWriterLock(lockPath, lockTarget)
 	if err != nil {
 		return err
 	}

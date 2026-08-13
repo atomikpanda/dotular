@@ -29,8 +29,10 @@ func LockPath(configPath string) string {
 }
 
 // AcquireWriterLock serializes a lockfile load-modify-save transaction across
-// processes without creating coordination files.
-func AcquireWriterLock(path string) (func() error, error) {
+// processes. lockTarget must name an existing regular file, normally the
+// dotular config; using it avoids non-portable directory locks and creates no
+// coordination artifact.
+func AcquireWriterLock(path, lockTarget string) (func() error, error) {
 	canonical, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve lockfile path: %w", err)
@@ -38,7 +40,14 @@ func AcquireWriterLock(path string) (func() error, error) {
 	if dir, err := filepath.EvalSymlinks(filepath.Dir(canonical)); err == nil {
 		canonical = filepath.Join(dir, filepath.Base(canonical))
 	}
-	release, err := acquirePlatformWriterLock(canonical)
+	target, err := filepath.Abs(lockTarget)
+	if err != nil {
+		return nil, fmt.Errorf("resolve writer lock target: %w", err)
+	}
+	if evaluated, err := filepath.EvalSymlinks(target); err == nil {
+		target = evaluated
+	}
+	release, err := acquirePlatformWriterLock(canonical, target)
 	if err != nil {
 		return nil, fmt.Errorf("acquire registry writer lock: %w", err)
 	}

@@ -22,7 +22,10 @@ func TestWindowsMutexUsesGlobalCaseInsensitiveName(t *testing.T) {
 }
 
 func TestWindowsMutexKeepsOwnerOnOneOSThread(t *testing.T) {
-	release, err := acquirePlatformWriterLock(`C:\Users\Test\dotular.lock.yaml`)
+	release, err := acquirePlatformWriterLock(
+		`C:\Users\Test\dotular.lock.yaml`,
+		`C:\Users\Test\dotular.yaml`,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

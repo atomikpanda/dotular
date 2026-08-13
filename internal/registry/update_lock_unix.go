@@ -10,16 +10,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func acquirePlatformWriterLock(lockPath string) (func() error, error) {
-	dir, err := os.Open(filepath.Dir(lockPath))
+func acquirePlatformWriterLock(_ string, lockTarget string) (func() error, error) {
+	file, err := os.Open(lockTarget)
 	if err != nil {
 		return nil, err
 	}
-	if err := unix.Flock(int(dir.Fd()), unix.LOCK_EX); err != nil {
-		dir.Close()
+	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
+		file.Close()
 		return nil, err
 	}
 	return func() error {
-		return errors.Join(unix.Flock(int(dir.Fd()), unix.LOCK_UN), dir.Close())
+		return errors.Join(unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
 	}, nil
 }

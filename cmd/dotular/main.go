@@ -337,7 +337,7 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 	if err == nil && len(entries) > 0 {
 		modules := func() []registry.RemoteModule {
 			lockPath := registry.LockPath(configFile)
-			release, lockErr := registry.AcquireWriterLock(lockPath)
+			release, lockErr := registry.AcquireWriterLock(lockPath, configFile)
 			if lockErr != nil {
 				return nil
 			}
@@ -858,7 +858,7 @@ exits non-zero, so CI can fail on a lockfile that no longer matches upstream.`,
 				return err
 			}
 			u := ui.New(os.Stdout, os.Stderr)
-			return registry.UpdatePins(context.Background(), cfg, registry.LockPath(configFile), checkOnly, u)
+			return registry.UpdatePins(context.Background(), cfg, registry.LockPath(configFile), configFile, checkOnly, u)
 		},
 	}
 	updateCmd.Flags().Bool("check", false, "report drift and exit non-zero without writing any pins")
@@ -953,7 +953,7 @@ modules to add to your dotular.yaml.`,
 
 			// 2. Fetch all module definitions.
 			lockPath := registry.LockPath(configFile)
-			releaseWriter, err := registry.AcquireWriterLock(lockPath)
+			releaseWriter, err := registry.AcquireWriterLock(lockPath, configFile)
 			if err != nil {
 				return err
 			}

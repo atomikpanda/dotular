@@ -31,7 +31,7 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 	}
 
 	lockPath := LockPath(configPath)
-	release, err := AcquireWriterLock(lockPath)
+	release, err := AcquireWriterLock(lockPath, configPath)
 	if err != nil {
 		return config.Config{}, err
 	}

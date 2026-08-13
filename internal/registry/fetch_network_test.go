@@ -81,6 +81,15 @@ func newTestLock(t *testing.T) *LockFile {
 	return lock
 }
 
+func configPathForLock(t *testing.T, lockPath string) string {
+	t.Helper()
+	path := filepath.Join(filepath.Dir(lockPath), "dotular.yaml")
+	if err := os.WriteFile(path, []byte("modules: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func fetchForTest(t *testing.T, ref string, lock *LockFile, opts FetchOptions) (*RemoteModule, TrustLevel, error) {
 	t.Helper()
 	return Fetch(context.Background(), ref, lock, opts, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
@@ -452,7 +461,7 @@ func TestUpdatePinsReportsAndWritesDrift(t *testing.T) {
 
 	var stdout bytes.Buffer
 	u := ui.New(&stdout, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err != nil {
 		t.Fatalf("UpdatePins() error = %v", err)
 	}
 
@@ -497,13 +506,7 @@ func TestUpdatePinsReportsFullChecksumsForNewAndUnchangedRefs(t *testing.T) {
 
 			cfg := config.Config{Modules: []config.Module{{Name: tt.name, From: ref}}}
 			var stdout bytes.Buffer
-			if err := UpdatePins(
-				context.Background(),
-				cfg,
-				lockPath,
-				false,
-				ui.New(&stdout, &bytes.Buffer{}),
-			); err != nil {
+			if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, ui.New(&stdout, &bytes.Buffer{})); err != nil {
 				t.Fatal(err)
 			}
 			report := stdout.String()
@@ -537,13 +540,7 @@ func TestUpdatePinsPersistsMetadataForUnchangedRef(t *testing.T) {
 	}
 
 	cfg := config.Config{Modules: []config.Module{{Name: "unchanged", From: ref}}}
-	if err := UpdatePins(
-		context.Background(),
-		cfg,
-		lockPath,
-		false,
-		ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
-	); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, ui.New(&bytes.Buffer{}, &bytes.Buffer{})); err != nil {
 		t.Fatal(err)
 	}
 
@@ -573,7 +570,7 @@ func TestUpdatePinsCheckOnlyReportsWithoutWriting(t *testing.T) {
 
 	var stderr bytes.Buffer
 	u := ui.New(&bytes.Buffer{}, &stderr)
-	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err == nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), true, u); err == nil {
 		t.Fatal("UpdatePins(check) = nil error, want a non-zero exit for a drifted ref")
 	}
 	if !strings.Contains(stderr.String(), ref) {
@@ -598,7 +595,7 @@ func TestUpdatePinsCheckOnlyPassesWithoutDrift(t *testing.T) {
 	}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), true, u); err != nil {
 		t.Fatalf("UpdatePins(check) error = %v, want success when every ref matches its pin", err)
 	}
 }
@@ -620,7 +617,7 @@ func TestUpdatePinsCheckOnlyRejectsUnpinnedRefWithoutWriting(t *testing.T) {
 
 	var stderr bytes.Buffer
 	u := ui.New(&bytes.Buffer{}, &stderr)
-	err := UpdatePins(context.Background(), cfg, lockPath, true, u)
+	err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), true, u)
 	if err == nil || !strings.Contains(err.Error(), "drifted") {
 		t.Fatalf("UpdatePins(check) error = %v, want unpinned ref to fail as drift", err)
 	}
@@ -681,7 +678,7 @@ func TestUpdatePinsCheckOnlyLeavesCacheUntouched(t *testing.T) {
 	}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err == nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), true, u); err == nil {
 		t.Fatal("UpdatePins(check) = nil error, want a non-zero exit for the drifted ref")
 	}
 
@@ -727,7 +724,7 @@ func TestUpdatePinsKeepsDistinctCachesForCollidingRefs(t *testing.T) {
 	})
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err != nil {
 		t.Fatal(err)
 	}
 	lock, err := LoadLock(lockPath)
@@ -781,7 +778,7 @@ func TestUpdatePinsKeepsCacheAndLockfileInStepOnFailure(t *testing.T) {
 	}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err == nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err == nil {
 		t.Fatal("UpdatePins() = nil error, want the transport failure to propagate")
 	}
 
@@ -837,7 +834,7 @@ func TestUpdatePinsDoesNotPersistMalformedModulePin(t *testing.T) {
 	}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err == nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err == nil {
 		t.Fatal("UpdatePins() = nil error, want malformed YAML to fail")
 	}
 
@@ -879,7 +876,7 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 	restoreCacheWrites := failCacheTempWrites(t)
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err != nil {
 		t.Fatalf("UpdatePins() = %v, want the cache failure to remain non-fatal", err)
 	}
 
@@ -925,7 +922,7 @@ func TestUpdatePinsDiscardsStaleCacheWhenUnchangedReplacementFails(t *testing.T)
 
 	var stderr bytes.Buffer
 	u := ui.New(&bytes.Buffer{}, &stderr)
-	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+	if err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u); err != nil {
 		t.Fatalf("UpdatePins() = %v, want recoverable cache failure to remain non-fatal", err)
 	}
 	if report := stderr.String(); !strings.Contains(report, "cache temp creation blocked") ||
@@ -958,13 +955,13 @@ func TestRegistryTransactionsSerializeWithUpdate(t *testing.T) {
 		{
 			name: "update",
 			run: func(ctx context.Context, cfg config.Config, lockPath, _ string, u *ui.UI) error {
-				return UpdatePins(ctx, cfg, lockPath, false, u)
+				return UpdatePins(ctx, cfg, lockPath, configPathForLock(t, lockPath), false, u)
 			},
 		},
 		{
 			name: "check",
 			run: func(ctx context.Context, cfg config.Config, lockPath, _ string, u *ui.UI) error {
-				return UpdatePins(ctx, cfg, lockPath, true, u)
+				return UpdatePins(ctx, cfg, lockPath, configPathForLock(t, lockPath), true, u)
 			},
 		},
 		{
@@ -1002,13 +999,7 @@ func TestRegistryTransactionsSerializeWithUpdate(t *testing.T) {
 
 			firstErr := make(chan error, 1)
 			go func() {
-				firstErr <- UpdatePins(
-					context.Background(),
-					cfg,
-					lockPath,
-					false,
-					ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
-				)
+				firstErr <- UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 			}()
 			<-firstRequest
 
@@ -1098,7 +1089,7 @@ func TestUpdatePinsDiscardsItsCacheWritesWhenTheLockfileCannotBeSaved(t *testing
 	}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	err := UpdatePins(context.Background(), cfg, lockPath, false, u)
+	err := UpdatePins(context.Background(), cfg, lockPath, configPathForLock(t, lockPath), false, u)
 	if err == nil || !strings.Contains(err.Error(), "save lockfile") {
 		t.Fatalf("UpdatePins() error = %v, want the lockfile save failure", err)
 	}

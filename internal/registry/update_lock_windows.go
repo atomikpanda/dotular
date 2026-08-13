@@ -17,7 +17,7 @@ func windowsMutexObjectName(lockPath string) string {
 	return fmt.Sprintf(`Global\dotular-registry-%x`, sum)
 }
 
-func acquirePlatformWriterLock(lockPath string) (func() error, error) {
+func acquirePlatformWriterLock(lockPath, _ string) (func() error, error) {
 	// The Global namespace coordinates Dotular processes in every Windows
 	// session. The default security descriptor limits access to the creating
 	// user's token, which is the user whose config and lockfile are protected.
