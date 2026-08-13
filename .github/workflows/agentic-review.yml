@@ -20,6 +20,7 @@ jobs:
     secrets:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     with:
+      tools: read,grep,glob
       central_ref: v1
 
 # Everything the reviewer accepts, with its default. To override one, add it
