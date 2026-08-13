@@ -312,7 +312,9 @@ func TestFetchMigratesOnlyMatchingLegacyCacheEntry(t *testing.T) {
 		firstRef:     {SHA256: oldModuleSum(), URL: "https://" + firstRef},
 		collidingRef: {SHA256: testModuleSum(), URL: "https://" + collidingRef},
 	}}
-	forbidNetwork(t)
+	swapClient(t, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network unavailable")
+	})})
 
 	mod, _, err := fetchForTest(t, firstRef, lock, FetchOptions{})
 	if err != nil {
