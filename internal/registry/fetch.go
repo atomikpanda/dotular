@@ -31,6 +31,9 @@ type FetchOptions struct {
 	// NoCache bypasses the on-disk cache and always consults the network. It
 	// has no bearing on integrity: a pinned ref is verified either way.
 	NoCache bool
+	// NoWrite suppresses Fetch's disk-cache write. UpdatePins uses it for
+	// --check while retaining the fetched checksum in its private LockFile.
+	NoWrite bool
 	// Repin permits an existing pin to be moved to the bytes just fetched. Only
 	// UpdatePins sets it: everywhere else a ref whose content no longer matches
 	// its pin is refused, which is what makes an apply reproducible.
@@ -110,21 +113,23 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 		}
 	}
 
-	// Pin and cache together, under one condition. A ref with no entry yet is a
-	// first pin, not a re-pin, so it needs no authorisation. The cache is only
-	// ever read alongside a pin (see the guard above), so caching bytes we are
-	// not authorised to pin would at best be dead weight and at worst leave the
-	// two disagreeing — and --check, which authorises neither, must touch
-	// nothing at all.
+	// Pin and cache together. A ref with no entry yet is a first pin, not a
+	// re-pin, so it needs no authorisation. The cache is only ever read
+	// alongside a pin (see the guard above), so caching bytes we are not
+	// authorised to pin would at best be dead weight and at worst leave the two
+	// disagreeing. --check retains the proposed pin in memory for reporting but
+	// suppresses the cache write; UpdatePins separately skips SaveLock.
 	if !inLock || opts.Repin {
 		lock.Registry[rawRef] = LockEntry{
 			SHA256:    sum,
 			FetchedAt: time.Now().UTC(),
 			URL:       ref.FetchURL,
 		}
-		if err := writeCacheFile(cachePath, data); err != nil {
-			// Non-fatal: we have the data in memory.
-			u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+		if !opts.NoWrite {
+			if err := writeCacheFile(cachePath, data); err != nil {
+				// Non-fatal: we have the data in memory.
+				u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+			}
 		}
 	}
 
@@ -154,7 +159,7 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	// Map order would make the report jump around between otherwise identical runs.
 	sort.Strings(refs)
 
-	opts := FetchOptions{NoCache: true, Repin: !checkOnly}
+	opts := FetchOptions{NoCache: true, NoWrite: checkOnly, Repin: !checkOnly}
 	drifted := 0
 	// Refs whose pin this run moved, which are exactly the refs whose cache file
 	// now holds bytes the persisted lockfile does not yet vouch for.

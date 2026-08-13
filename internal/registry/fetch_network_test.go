@@ -418,6 +418,30 @@ func TestUpdatePinsCheckOnlyPassesWithoutDrift(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsCheckOnlyDoesNotWriteUnpinnedRef(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	cfg := config.Config{Modules: []config.Module{{Name: "new", From: ref}}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	cachePath := moduleCachePath(ref)
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(cachePath) })
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, true, u); err != nil {
+		t.Fatalf("UpdatePins(check) error = %v, want success for an unpinned ref", err)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Errorf("--check cache stat error = %v, want cache file not to exist", err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("--check lockfile stat error = %v, want lockfile not to exist", err)
+	}
+}
+
 // --check must be inert on disk. The cache is the half that was silently
 // written: --check never reads it, so nothing else would notice.
 func TestUpdatePinsCheckOnlyLeavesCacheUntouched(t *testing.T) {
