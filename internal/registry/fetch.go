@@ -113,28 +113,36 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 		}
 	}
 
-	// Pin and cache together. A ref with no entry yet is a first pin, not a
-	// re-pin, so it needs no authorisation. The cache is only ever read
-	// alongside a pin (see the guard above), so caching bytes we are not
-	// authorised to pin would at best be dead weight and at worst leave the two
-	// disagreeing. --check retains the proposed pin in memory for reporting but
-	// suppresses the cache write; UpdatePins separately skips SaveLock.
+	// Validate downloaded bytes before recording or caching them. In update
+	// mode an earlier ref may already need persisting if this one fails, so a
+	// malformed module must never enter that accumulated lock state.
+	mod, err := parseModule(data)
+	if err != nil {
+		return nil, ref.Trust, err
+	}
+
+	// A ref with no entry yet is a first pin, not a re-pin, so it needs no
+	// authorisation. --check retains the proposed pin only in memory for
+	// reporting; UpdatePins separately skips SaveLock.
 	if !inLock || opts.Repin {
 		lock.Registry[rawRef] = LockEntry{
 			SHA256:    sum,
 			FetchedAt: time.Now().UTC(),
 			URL:       ref.FetchURL,
 		}
-		if !opts.NoWrite {
-			if err := writeCacheFile(cachePath, data); err != nil {
-				// Non-fatal: we have the data in memory.
-				u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
-			}
+	}
+
+	// Every accepted network response is useful cache content, including a
+	// pinned response fetched because its cache entry was missing. Caching it
+	// must not imply moving an existing pin.
+	if !opts.NoWrite {
+		if err := writeCacheFile(cachePath, data); err != nil {
+			// Non-fatal: we have the data in memory.
+			u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
 		}
 	}
 
-	mod, err := parseModule(data)
-	return mod, ref.Trust, err
+	return mod, ref.Trust, nil
 }
 
 // UpdatePins re-fetches every registry ref used by cfg, bypassing the cache,

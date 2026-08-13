@@ -296,6 +296,39 @@ func TestFetchRefetchesWhenCacheFileMissing(t *testing.T) {
 	}
 }
 
+func TestFetchCachesAcceptedPinnedNetworkResponse(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	cachePath := moduleCachePath(ref)
+	if err := os.Remove(cachePath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(cachePath) })
+
+	pinned := LockEntry{
+		SHA256:    testModuleSum(),
+		FetchedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
+		URL:       "https://" + ref,
+	}
+	lock := newTestLock(t)
+	lock.Registry[ref] = pinned
+
+	if _, _, err := fetchForTest(t, ref, lock, FetchOptions{}); err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if got := lock.Registry[ref]; got != pinned {
+		t.Errorf("accepted fetch moved pin to %+v, want it left at %+v", got, pinned)
+	}
+	cached, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read populated cache: %v", err)
+	}
+	if !bytes.Equal(cached, []byte(testModuleYAML)) {
+		t.Errorf("cached bytes = %q, want %q", cached, testModuleYAML)
+	}
+}
+
 // The pin records what was approved, so content that disagrees with it must
 // leave the entry exactly as it was — URL and timestamp included, not just the
 // checksum.
@@ -555,6 +588,58 @@ func TestUpdatePinsKeepsCacheAndLockfileInStepOnFailure(t *testing.T) {
 	forbidNetwork(t)
 	if _, _, err := fetchForTest(t, okRef, lock, FetchOptions{}); err != nil {
 		t.Errorf("Fetch() after a partial update = %v, want the cache and the pin to agree", err)
+	}
+}
+
+func TestUpdatePinsDoesNotPersistMalformedModulePin(t *testing.T) {
+	const malformedModuleYAML = "name: [\n"
+	base := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "z-malformed.yaml") {
+			fmt.Fprint(w, malformedModuleYAML)
+			return
+		}
+		fmt.Fprint(w, testModuleYAML)
+	})
+	host := strings.TrimSuffix(base, "/module.yaml")
+	goodRef, malformedRef := host+"/a-good.yaml", host+"/z-malformed.yaml"
+	malformedCachePath := moduleCachePath(malformedRef)
+	if err := os.Remove(malformedCachePath); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(moduleCachePath(goodRef))
+		_ = os.Remove(malformedCachePath)
+	})
+
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "good", From: goodRef},
+		{Name: "malformed", From: malformedRef},
+	}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		goodRef:      {SHA256: stalePin, URL: "https://" + goodRef},
+		malformedRef: {SHA256: stalePin, URL: "https://" + malformedRef},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err == nil {
+		t.Fatal("UpdatePins() = nil error, want malformed YAML to fail")
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Registry[goodRef].SHA256; got != testModuleSum() {
+		t.Errorf("prior valid pin = %q, want persisted progress %q", got, testModuleSum())
+	}
+	if got := lock.Registry[malformedRef].SHA256; got != stalePin {
+		t.Errorf("malformed module pin = %q, want original pin %q", got, stalePin)
+	}
+	if _, err := os.Stat(malformedCachePath); !os.IsNotExist(err) {
+		t.Errorf("malformed cache stat error = %v, want cache file not to exist", err)
 	}
 }
 
