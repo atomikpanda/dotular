@@ -132,18 +132,26 @@ func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
 }
 
 // Summary writes a final summary line with counts and elapsed time to Out.
-func (u *UI) Summary(applied, skipped, failed int, elapsed time.Duration) {
+func (u *UI) Summary(applied, skipped, unresolved, failed int, elapsed time.Duration) {
 	icon, colorFn := u.summaryIcon(applied, failed)
-	body := fmt.Sprintf("%s %d applied, %d skipped, %d failed %s",
-		icon, applied, skipped, failed, formatDuration(elapsed))
+	unresolvedText := ""
+	if unresolved > 0 {
+		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)
+	}
+	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed %s",
+		icon, applied, skipped, unresolvedText, failed, formatDuration(elapsed))
 	fmt.Fprintf(u.Out, "\n%s\n", colorFn(body))
 }
 
 // ModuleSummary writes an indented summary line for a single module to Out.
-func (u *UI) ModuleSummary(applied, skipped, failed int) {
+func (u *UI) ModuleSummary(applied, skipped, unresolved, failed int) {
 	icon, colorFn := u.summaryIcon(applied, failed)
-	body := fmt.Sprintf("%s %d applied, %d skipped, %d failed",
-		icon, applied, skipped, failed)
+	unresolvedText := ""
+	if unresolved > 0 {
+		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)
+	}
+	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed",
+		icon, applied, skipped, unresolvedText, failed)
 	fmt.Fprintf(u.Out, "  %s\n", colorFn(body))
 }
 

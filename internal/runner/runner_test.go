@@ -557,9 +557,19 @@ func TestApplyModuleDryRunDoesNotEvaluateSkipIf(t *testing.T) {
 		},
 	}
 	r := newTestRunner(config.Config{})
+	var output bytes.Buffer
+	r.Out = &output
+	r.UI = ui.New(&output, &bytes.Buffer{})
 
-	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
 		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Unresolved != 1 {
+		t.Fatalf("dry-run result = %+v, want one unresolved item and no applied items", result)
+	}
+	if got := output.String(); !strings.Contains(got, "skip_if not evaluated") {
+		t.Fatalf("dry-run output = %q, want unresolved skip_if notice", got)
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("skip_if executed during dry-run; marker stat error = %v", err)

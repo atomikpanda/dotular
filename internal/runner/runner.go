@@ -28,15 +28,17 @@ type itemOutcome int
 const (
 	outcomeApplied itemOutcome = iota
 	outcomeSkipped
+	outcomeUnresolved
 	outcomeFailed
 )
 
 // ModuleResult holds the outcome counts for a single applied module.
 type ModuleResult struct {
-	Applied int
-	Skipped int
-	Failed  int
-	Err     error
+	Applied    int
+	Skipped    int
+	Unresolved int
+	Failed     int
+	Err        error
 }
 
 // Runner orchestrates applying config modules on the current platform.
@@ -78,11 +80,11 @@ func New(cfg config.Config, dryRun, verbose, atomic bool) *Runner {
 // ApplyAll applies every module in order, respecting tag filters.
 func (r *Runner) ApplyAll(ctx context.Context) error {
 	start := time.Now()
-	var totalApplied, totalSkipped, totalFailed int
+	var totalApplied, totalSkipped, totalUnresolved, totalFailed int
 	var firstErr error
 
 	defer func() {
-		r.UI.Summary(totalApplied, totalSkipped, totalFailed, time.Since(start))
+		r.UI.Summary(totalApplied, totalSkipped, totalUnresolved, totalFailed, time.Since(start))
 	}()
 
 	for _, mod := range r.Config.Modules {
@@ -95,6 +97,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 		result := r.ApplyModule(ctx, mod)
 		totalApplied += result.Applied
 		totalSkipped += result.Skipped
+		totalUnresolved += result.Unresolved
 		totalFailed += result.Failed
 		if result.Err != nil {
 			firstErr = result.Err
@@ -121,7 +124,7 @@ func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) ModuleResul
 		}
 	}
 
-	applied, skipped, failed, applyErr := r.applyItems(ctx, mod, snap)
+	applied, skipped, unresolved, failed, applyErr := r.applyItems(ctx, mod, snap)
 
 	if applyErr != nil && snap != nil {
 		r.UI.Warn(fmt.Sprintf("[rollback] restoring snapshot after failure in %q", mod.Name))
@@ -129,25 +132,25 @@ func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) ModuleResul
 			r.UI.Warn(fmt.Sprintf("[rollback] restore error: %v", restoreErr))
 		}
 		snap.Discard()
-		r.UI.ModuleSummary(applied, skipped, failed)
-		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: applyErr}
+		r.UI.ModuleSummary(applied, skipped, unresolved, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Unresolved: unresolved, Failed: failed, Err: applyErr}
 	}
 	if snap != nil {
 		snap.Discard()
 	}
 
 	if applyErr != nil {
-		r.UI.ModuleSummary(applied, skipped, failed)
-		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: applyErr}
+		r.UI.ModuleSummary(applied, skipped, unresolved, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Unresolved: unresolved, Failed: failed, Err: applyErr}
 	}
 
 	if err := r.runHook(ctx, mod.Hooks.AfterApply, "module", mod.Name, "after_apply"); err != nil {
-		r.UI.ModuleSummary(applied, skipped, failed)
-		return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed, Err: err}
+		r.UI.ModuleSummary(applied, skipped, unresolved, failed)
+		return ModuleResult{Applied: applied, Skipped: skipped, Unresolved: unresolved, Failed: failed, Err: err}
 	}
 
-	r.UI.ModuleSummary(applied, skipped, failed)
-	return ModuleResult{Applied: applied, Skipped: skipped, Failed: failed}
+	r.UI.ModuleSummary(applied, skipped, unresolved, failed)
+	return ModuleResult{Applied: applied, Skipped: skipped, Unresolved: unresolved, Failed: failed}
 }
 
 // --- public verify API -------------------------------------------------------
@@ -215,7 +218,7 @@ func (r *Runner) VerifyModule(ctx context.Context, mod config.Module) (allPassed
 // --- internal apply flow -----------------------------------------------------
 
 // applyItems applies every item in the module, firing sync hooks around sync items.
-func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapshot.Snapshot) (applied, skipped, failed int, err error) {
+func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapshot.Snapshot) (applied, skipped, unresolved, failed int, err error) {
 	hasSyncItem := false
 	for _, item := range mod.Items {
 		t := item.Type()
@@ -227,7 +230,7 @@ func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapsh
 
 	if hasSyncItem {
 		if err := r.runHook(ctx, mod.Hooks.BeforeSync, "module", mod.Name, "before_sync"); err != nil {
-			return applied, skipped, failed, err
+			return applied, skipped, unresolved, failed, err
 		}
 	}
 
@@ -238,20 +241,22 @@ func (r *Runner) applyItems(ctx context.Context, mod config.Module, snap *snapsh
 			applied++
 		case outcomeSkipped:
 			skipped++
+		case outcomeUnresolved:
+			unresolved++
 		case outcomeFailed:
 			failed++
 		}
 		if itemErr != nil {
-			return applied, skipped, failed, itemErr
+			return applied, skipped, unresolved, failed, itemErr
 		}
 	}
 
 	if hasSyncItem {
 		if err := r.runHook(ctx, mod.Hooks.AfterSync, "module", mod.Name, "after_sync"); err != nil {
-			return applied, skipped, failed, err
+			return applied, skipped, unresolved, failed, err
 		}
 	}
-	return applied, skipped, failed, nil
+	return applied, skipped, unresolved, failed, nil
 }
 
 func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.Item, snap *snapshot.Snapshot) (itemOutcome, error) {
@@ -322,7 +327,12 @@ func (r *Runner) applyItem(ctx context.Context, mod config.Module, item config.I
 
 	// --- run ---
 	if r.DryRun {
-		r.UI.DryRun(action.Describe())
+		description := action.Describe()
+		if item.SkipIf != "" {
+			r.UI.DryRun(description + " [skip_if not evaluated]")
+			return outcomeUnresolved, nil
+		}
+		r.UI.DryRun(description)
 		return outcomeApplied, nil
 	}
 

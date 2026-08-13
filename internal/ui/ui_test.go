@@ -244,9 +244,9 @@ func TestSummarySuccess(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(10, 2, 0, 3*time.Second)
+	u.Summary(10, 2, 1, 0, 3*time.Second)
 	got := out.String()
-	for _, want := range []string{"10 applied", "2 skipped", "0 failed", "(3.0s)", "[ok]"} {
+	for _, want := range []string{"10 applied", "2 skipped", "1 unresolved", "0 failed", "(3.0s)", "[ok]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Summary output = %q, want to contain %q", got, want)
 		}
@@ -260,7 +260,7 @@ func TestSummaryWithFailures(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(5, 1, 2, 10*time.Second)
+	u.Summary(5, 1, 0, 2, 10*time.Second)
 	got := out.String()
 	if !strings.Contains(got, "2 failed") {
 		t.Errorf("Summary output = %q, want to contain %q", got, "2 failed")
@@ -277,7 +277,7 @@ func TestSummaryAllSkipped(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(0, 5, 0, 1*time.Second)
+	u.Summary(0, 5, 0, 0, 1*time.Second)
 	got := out.String()
 	// Should use dash icon when applied == 0
 	if !strings.Contains(got, "-") {
@@ -292,13 +292,16 @@ func TestModuleSummary(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.ModuleSummary(3, 1, 0)
+	u.ModuleSummary(3, 1, 1, 0)
 	got := out.String()
 	if !strings.Contains(got, "3 applied") {
 		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "3 applied")
 	}
 	if !strings.Contains(got, "1 skipped") {
 		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "1 skipped")
+	}
+	if !strings.Contains(got, "1 unresolved") {
+		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "1 unresolved")
 	}
 }
 
