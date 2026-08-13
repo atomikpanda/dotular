@@ -147,6 +147,9 @@ func TestResolveFailsWhenFirstPinCannotBePersisted(t *testing.T) {
 		fmt.Fprint(w, testModuleYAML)
 	})
 	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	if err := os.WriteFile(configPath, []byte("modules: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	lockPath := LockPath(configPath)
 	if err := os.Mkdir(lockPath+".tmp", 0o755); err != nil {
 		t.Fatal(err)
