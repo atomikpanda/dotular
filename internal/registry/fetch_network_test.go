@@ -289,6 +289,52 @@ func TestFetchIgnoresCacheWithoutLockEntry(t *testing.T) {
 	}
 }
 
+// A legacy cache entry is usable only by a ref whose persisted pin matches it.
+func TestFetchMigratesOnlyMatchingLegacyCacheEntry(t *testing.T) {
+	firstRef, collidingRef := "cache.example/a.b/foo", "cache.example/a/b.foo"
+	legacyPath := legacyModuleCachePath(firstRef)
+	if got := legacyModuleCachePath(collidingRef); got != legacyPath {
+		t.Fatalf("legacy paths do not collide: %q != %q", got, legacyPath)
+	}
+	if err := writeCacheFile(legacyPath, []byte(oldModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{firstRef, collidingRef} {
+		_ = os.Remove(moduleCachePath(ref))
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(legacyPath)
+		_ = os.Remove(moduleCachePath(firstRef))
+		_ = os.Remove(moduleCachePath(collidingRef))
+	})
+
+	lock := &LockFile{Registry: map[string]LockEntry{
+		firstRef:     {SHA256: oldModuleSum(), URL: "https://" + firstRef},
+		collidingRef: {SHA256: testModuleSum(), URL: "https://" + collidingRef},
+	}}
+	forbidNetwork(t)
+
+	mod, _, err := fetchForTest(t, firstRef, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() matching legacy entry = %v", err)
+	}
+	if mod.Name != "old-mod" {
+		t.Errorf("legacy module name = %q, want %q", mod.Name, "old-mod")
+	}
+	if _, err := os.Stat(moduleCachePath(firstRef)); err != nil {
+		t.Fatalf("hashed cache was not migrated: %v", err)
+	}
+
+	_, _, err = fetchForTest(t, collidingRef, lock, FetchOptions{})
+	if err == nil {
+		t.Fatal("Fetch() colliding legacy entry = nil error, want network fallback")
+	}
+	var mismatch *ChecksumMismatch
+	if errors.As(err, &mismatch) {
+		t.Fatalf("colliding legacy entry was treated as this ref's tampered cache: %v", err)
+	}
+}
+
 // A lockfile entry whose cache file has been evicted must fall back to the
 // network and still be verified against the pin.
 func TestFetchRefetchesWhenCacheFileMissing(t *testing.T) {
@@ -1016,6 +1062,24 @@ func TestWriteCacheFileKeepsThePreviousEntryWhenTheWriteFails(t *testing.T) {
 	}
 	if string(got) != oldModuleYAML {
 		t.Errorf("cache = %q, want the previous entry %q left intact", got, oldModuleYAML)
+	}
+}
+
+func TestWriteCacheFileReplacesExistingEntry(t *testing.T) {
+	path := moduleCachePath("cache.example/atomic/replace")
+	t.Cleanup(func() { _ = os.Remove(path) })
+	if err := writeCacheFile(path, []byte(oldModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCacheFile(path, []byte(testModuleYAML)); err != nil {
+		t.Fatalf("replace existing cache: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != testModuleYAML {
+		t.Errorf("cache = %q, want replacement %q", got, testModuleYAML)
 	}
 }
 

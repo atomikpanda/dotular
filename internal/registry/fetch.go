@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -90,7 +91,8 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	// The cache is only read when a pin exists to check it against; --no-cache
 	// bypasses the cache, never the verification.
 	if !opts.NoCache && inLock {
-		// Validate cache file exists and checksum matches.
+		// The hashed path is authoritative once present: a mismatch there is
+		// genuine stale/tampered cache content.
 		if data, err := os.ReadFile(cachePath); err == nil {
 			sum := fmt.Sprintf("%x", sha256.Sum256(data))
 			if sum != entry.SHA256 {
@@ -100,6 +102,26 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 			}
 			mod, err := parseModule(data)
 			return mod, ref.Trust, err
+		}
+
+		// Before hashed cache keys, punctuation was replaced with underscores,
+		// so different refs could share a filename. Accept a legacy entry only
+		// when its bytes match this ref's pin; a mismatch is an ambiguous
+		// collision and falls through to the verified network path.
+		if data, err := os.ReadFile(legacyModuleCachePath(rawRef)); err == nil {
+			sum := fmt.Sprintf("%x", sha256.Sum256(data))
+			if sum == entry.SHA256 {
+				mod, err := parseModule(data)
+				if err != nil {
+					return nil, ref.Trust, err
+				}
+				if !opts.NoWrite {
+					if err := writeCacheFile(cachePath, data); err != nil {
+						u.Warn(fmt.Sprintf("could not migrate legacy registry cache: %v", err))
+					}
+				}
+				return mod, ref.Trust, nil
+			}
 		}
 		// Cache file missing despite lockfile entry — re-fetch below.
 	}
@@ -357,6 +379,14 @@ func moduleCachePath(rawRef string) string {
 	return filepath.Join(home, ".cache", "dotular", "registry", fmt.Sprintf("%x.yaml", sum))
 }
 
+func legacyModuleCachePath(rawRef string) string {
+	safe := strings.NewReplacer(
+		"/", "_", "@", "_", ":", "_", ".", "_",
+	).Replace(rawRef)
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
+}
+
 // writeCacheFile writes a cache entry atomically. Each writer uses a unique
 // temp file in the target directory, so concurrent fetches cannot truncate or
 // rename one another's in-progress bytes. A cache file is only meaningful next
@@ -388,7 +418,7 @@ func writeCacheFile(path string, data []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, path)
+	return replaceCacheFile(tmpPath, path)
 }
 
 // ClearCache removes the local registry cache directory.
