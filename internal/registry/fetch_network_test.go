@@ -765,6 +765,52 @@ func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsDiscardsStaleCacheWhenUnchangedReplacementFails(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	cfg := config.Config{Modules: []config.Module{{Name: "unchanged", From: ref}}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {SHA256: testModuleSum(), URL: "https://" + ref},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cachePath := moduleCachePath(ref)
+	if err := writeCacheFile(cachePath, []byte(oldModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(cachePath) })
+	restoreCacheWrites := failCacheTempWrites(t)
+
+	var stderr bytes.Buffer
+	u := ui.New(&bytes.Buffer{}, &stderr)
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+		t.Fatalf("UpdatePins() = %v, want recoverable cache failure to remain non-fatal", err)
+	}
+	if report := stderr.String(); !strings.Contains(report, "cache temp creation blocked") ||
+		!strings.Contains(report, "discarded previous cache entry") {
+		t.Errorf("UpdatePins() warning = %q, want original write error and cache invalidation", report)
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Errorf("cache stat error = %v, want stale cache removed", err)
+	}
+
+	restoreCacheWrites()
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod, _, err := fetchForTest(t, ref, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() after failed unchanged cache write = %v, want verified network recovery", err)
+	}
+	if mod.Name != "test-mod" {
+		t.Errorf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+}
+
 func TestRegistryTransactionsSerializeWithUpdate(t *testing.T) {
 	tests := []struct {
 		name string

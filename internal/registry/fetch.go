@@ -217,8 +217,17 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 			if _, changed := repinnedPaths[path]; !ok || changed {
 				continue
 			}
-			if err := writeCacheFile(path, data); err != nil {
-				u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+			if writeErr := writeCacheFile(path, data); writeErr != nil {
+				if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+					return fmt.Errorf(
+						"cache %s: %v; discard stale cache: %w",
+						ref, writeErr, removeErr,
+					)
+				}
+				u.Warn(fmt.Sprintf(
+					"could not cache registry module: %v; discarded previous cache entry",
+					writeErr,
+				))
 			}
 		}
 
