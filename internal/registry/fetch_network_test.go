@@ -643,6 +643,63 @@ func TestUpdatePinsDoesNotPersistMalformedModulePin(t *testing.T) {
 	}
 }
 
+// Updating a pin and its cache is a two-file transaction. If the cache cannot
+// be replaced, the new pin must never be persisted beside the old cache bytes;
+// a missing cache is safe because Fetch restores it and verifies the pin.
+func TestUpdatePinsKeepsPinAndCacheCoherentWhenCacheWriteFails(t *testing.T) {
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	cfg := config.Config{Modules: []config.Module{{Name: "changed", From: ref}}}
+	lockPath := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	if err := SaveLock(lockPath, &LockFile{Registry: map[string]LockEntry{
+		ref: {SHA256: oldModuleSum(), URL: "https://" + ref},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	cachePath := moduleCachePath(ref)
+	if err := writeCacheFile(cachePath, []byte(oldModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Remove(cachePath)
+		_ = os.RemoveAll(cachePath + ".tmp")
+	})
+	// A directory at the atomic writer's temp path makes the cache replacement
+	// fail even as root.
+	if err := os.Mkdir(cachePath+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
+	if err := UpdatePins(context.Background(), cfg, lockPath, false, u); err != nil {
+		t.Fatalf("UpdatePins() = %v, want the cache failure to remain non-fatal", err)
+	}
+
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lock.Registry[ref].SHA256; got != testModuleSum() {
+		t.Errorf("persisted pin = %q, want accepted checksum %q", got, testModuleSum())
+	}
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Errorf("cache stat error = %v, want old cache removed rather than paired with the new pin", err)
+	}
+
+	if err := os.RemoveAll(cachePath + ".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	mod, _, err := fetchForTest(t, ref, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() after failed cache write = %v, want a verified network recovery", err)
+	}
+	if mod.Name != "test-mod" {
+		t.Errorf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+}
+
 const oldModuleYAML = "name: old-mod\nitems: []\n"
 
 func oldModuleSum() string {

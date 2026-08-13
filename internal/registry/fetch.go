@@ -38,6 +38,9 @@ type FetchOptions struct {
 	// UpdatePins sets it: everywhere else a ref whose content no longer matches
 	// its pin is refused, which is what makes an apply reproducible.
 	Repin bool
+	// deferredCacheWrites lets UpdatePins publish downloaded bytes only after
+	// their pins are durable. It is nil for every ordinary fetch.
+	deferredCacheWrites map[string][]byte
 }
 
 // ChecksumMismatch reports content that disagrees with the lockfile pin. The
@@ -133,10 +136,13 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	}
 
 	// Every accepted network response is useful cache content, including a
-	// pinned response fetched because its cache entry was missing. Caching it
-	// must not imply moving an existing pin.
+	// pinned response fetched because its cache entry was missing. UpdatePins
+	// stages these bytes until after the matching pins are durable; otherwise a
+	// failed write can leave old cache bytes next to a newly persisted pin.
 	if !opts.NoWrite {
-		if err := writeCacheFile(cachePath, data); err != nil {
+		if opts.deferredCacheWrites != nil {
+			opts.deferredCacheWrites[cachePath] = data
+		} else if err := writeCacheFile(cachePath, data); err != nil {
 			// Non-fatal: we have the data in memory.
 			u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
 		}
@@ -167,39 +173,60 @@ func UpdatePins(ctx context.Context, cfg config.Config, lockPath string, checkOn
 	// Map order would make the report jump around between otherwise identical runs.
 	sort.Strings(refs)
 
-	opts := FetchOptions{NoCache: true, NoWrite: checkOnly, Repin: !checkOnly}
+	deferredCacheWrites := make(map[string][]byte)
+	opts := FetchOptions{
+		NoCache:            true,
+		NoWrite:            checkOnly,
+		Repin:              !checkOnly,
+		deferredCacheWrites: deferredCacheWrites,
+	}
 	drifted := 0
-	// Refs whose pin this run moved, which are exactly the refs whose cache file
-	// now holds bytes the persisted lockfile does not yet vouch for.
 	var repinned []string
 
-	// persist writes the pins accumulated so far, and runs on the way out of the
-	// failure path as well as the success path. Fetch has already written the
-	// cache file for every ref it pinned, so abandoning those pins would leave
-	// the cache holding new bytes that the lockfile still pins to the old
-	// checksum — the next apply would hash the cache, disagree with the pin, and
-	// report dotular's own partial update as a tampered cache. Partial progress
-	// is already this tool's semantic (ApplyAll leaves earlier modules applied);
-	// an incoherent disk is not.
+	// persist publishes a changed pin and its cache in a crash-safe order:
+	// remove the old cache, save the new pin, then install the new cache. A
+	// process interrupted at either boundary leaves a missing cache, which the
+	// normal fetch path safely restores from the network and verifies. Unchanged
+	// responses can be cached first because their bytes already match the
+	// persisted pin.
 	persist := func() error {
-		if checkOnly || len(repinned) == 0 {
+		if checkOnly {
 			return nil
 		}
-		if err := SaveLock(lockPath, lock); err != nil {
-			// The old pins stay on disk, so drop the cache files this run wrote
-			// to match them. Fetch treats a missing cache file as a re-fetch and
-			// verifies that against the pin it kept, which is correct behaviour;
-			// leaving the new bytes next to an old pin reads as tampering. Only
-			// the refs pinned here are removed — a ref reported "unchanged" has a
-			// cache that still agrees with its pin and is worth keeping.
-			for _, ref := range repinned {
-				if rmErr := os.Remove(moduleCachePath(ref)); rmErr != nil && !os.IsNotExist(rmErr) {
-					// Warned, not returned: the lockfile failure is the
-					// actionable one.
-					u.Warn(fmt.Sprintf("could not discard cached %s: %v", ref, rmErr))
-				}
+
+		repinnedPaths := make(map[string]struct{}, len(repinned))
+		for _, ref := range repinned {
+			repinnedPaths[moduleCachePath(ref)] = struct{}{}
+		}
+		for _, ref := range refs {
+			path := moduleCachePath(ref)
+			data, ok := deferredCacheWrites[path]
+			if _, changed := repinnedPaths[path]; !ok || changed {
+				continue
 			}
+			if err := writeCacheFile(path, data); err != nil {
+				u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+			}
+		}
+
+		if len(repinned) == 0 {
+			return nil
+		}
+		for _, ref := range repinned {
+			if err := os.Remove(moduleCachePath(ref)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("discard old cache for %s: %w", ref, err)
+			}
+		}
+		if err := SaveLock(lockPath, lock); err != nil {
 			return fmt.Errorf("save lockfile: %w", err)
+		}
+		for _, ref := range repinned {
+			path := moduleCachePath(ref)
+			if err := writeCacheFile(path, deferredCacheWrites[path]); err != nil {
+				// The durable pin and missing cache are coherent; the next fetch
+				// restores and verifies the same bytes.
+				u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+			}
 		}
 		return nil
 	}
