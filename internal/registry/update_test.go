@@ -1050,20 +1050,20 @@ func indexOfEvent(events []string, want string) int {
 }
 
 type updateFixture struct {
-	t          *testing.T
-	server     *httptest.Server
-	responses  map[string][]byte
-	requestsMu sync.Mutex
-	requests   map[string]int
+	t               *testing.T
+	server          *httptest.Server
+	responses       map[string][]byte
+	requestsMu      sync.Mutex
+	requests        map[string]int
 	requestsInOrder []string
-	configPath string
-	lockPath   string
-	cfg        config.Config
-	lock       *LockFile
-	cachePaths map[string]string
-	lockBytes  []byte
-	cacheBytes map[string][]byte
-	lockCopy   *LockFile
+	configPath      string
+	lockPath        string
+	cfg             config.Config
+	lock            *LockFile
+	cachePaths      map[string]string
+	lockBytes       []byte
+	cacheBytes      map[string][]byte
+	lockCopy        *LockFile
 }
 
 func newUpdateFixture(t *testing.T, responses map[string][]byte) *updateFixture {
