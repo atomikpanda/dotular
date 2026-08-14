@@ -180,10 +180,12 @@ func moduleCachePath(rawRef string) string {
 
 	lower := strings.ToLower(safe)
 	reserved := lower == "con" || lower == "prn" || lower == "aux" || lower == "nul"
-	if len(lower) == 4 &&
-		(strings.HasPrefix(lower, "com") || strings.HasPrefix(lower, "lpt")) &&
-		lower[3] >= '1' && lower[3] <= '9' {
-		reserved = true
+	if strings.HasPrefix(lower, "com") || strings.HasPrefix(lower, "lpt") {
+		suffix := lower[3:]
+		if (len(suffix) == 1 && suffix[0] >= '1' && suffix[0] <= '9') ||
+			suffix == "¹" || suffix == "²" || suffix == "³" {
+			reserved = true
+		}
 	}
 	if reserved {
 		safe += "_"

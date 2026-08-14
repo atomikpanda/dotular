@@ -60,6 +60,11 @@ func TestModuleCachePath(t *testing.T) {
 			ref:      "com0",
 			filename: "com0.yaml",
 		},
+		{
+			name:     "non-reserved superscript device prefix retains its cache name",
+			ref:      "CoM⁴",
+			filename: "CoM⁴.yaml",
+		},
 	}
 
 	for _, invalid := range `<>:"/\|?*` {
@@ -77,7 +82,11 @@ func TestModuleCachePath(t *testing.T) {
 		})
 	}
 
-	reserved := []string{"con", "PRN", "Aux", "nUl"}
+	reserved := []string{
+		"con", "PRN", "Aux", "nUl",
+		"CoM¹", "cOm²", "Com³",
+		"lPt¹", "LpT²", "lPT³",
+	}
 	for i := 1; i <= 9; i++ {
 		reserved = append(reserved, fmt.Sprintf("CoM%d", i), fmt.Sprintf("lPt%d", i))
 	}
