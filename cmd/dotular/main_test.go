@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,6 +101,112 @@ func commandHTTPResponse(req *http.Request, body string) *http.Response {
 		Header:     make(http.Header),
 		Request:    req,
 	}
+}
+
+type cliPinStateSnapshot struct {
+	lockBytes  []byte
+	cachePaths []string
+	cacheFiles map[string][]byte
+}
+
+func snapshotCLIPinState(
+	t *testing.T,
+	lockPath string,
+	cachePath string,
+) cliPinStateSnapshot {
+	t.Helper()
+
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read CLI lock snapshot: %v", err)
+	}
+
+	snapshot := cliPinStateSnapshot{
+		lockBytes:  bytes.Clone(lockBytes),
+		cacheFiles: make(map[string][]byte),
+	}
+
+	err = filepath.WalkDir(cachePath, func(
+		path string,
+		entry fs.DirEntry,
+		walkErr error,
+	) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		relative, err := filepath.Rel(cachePath, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		snapshot.cachePaths = append(snapshot.cachePaths, relative)
+
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snapshot.cacheFiles[relative] = bytes.Clone(content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot configured CLI cache: %v", err)
+	}
+
+	slices.Sort(snapshot.cachePaths)
+	return snapshot
+}
+
+func assertCLIPinStateUnchanged(
+	t *testing.T,
+	before cliPinStateSnapshot,
+	lockPath string,
+	cachePath string,
+) {
+	t.Helper()
+
+	after := snapshotCLIPinState(t, lockPath, cachePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf(
+			"CLI check changed durable state:\nbefore: %#v\nafter:  %#v",
+			before,
+			after,
+		)
+	}
+}
+
+func seedCLIPinState(
+	t *testing.T,
+	configPath string,
+) (lockPath string, cachePath string, before cliPinStateSnapshot) {
+	t.Helper()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	lockPath = registry.LockPath(configPath)
+	if err := os.WriteFile(
+		lockPath,
+		[]byte("registry:\n  state.example/seed:\n    sha256: unchanged\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("seed CLI lock: %v", err)
+	}
+
+	cachePath = filepath.Join(home, ".cache", "dotular", "registry")
+	seedPath := filepath.Join(cachePath, "nested", "seed.yaml")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("create configured CLI cache: %v", err)
+	}
+	if err := os.WriteFile(seedPath, []byte("unchanged cache"), 0o644); err != nil {
+		t.Fatalf("seed configured CLI cache: %v", err)
+	}
+
+	return lockPath, cachePath, snapshotCLIPinState(t, lockPath, cachePath)
 }
 
 func TestDirectRegistryFetchLoopsWaitForMutationLock(t *testing.T) {
@@ -755,6 +864,60 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 	}
 }
 
+func TestWritePinChangesPreservesInputOrderAndRendersMissingOldAsNone(
+	t *testing.T,
+) {
+	t.Parallel()
+
+	changes := []registry.PinChange{
+		{
+			Ref:       "registry.example/zeta",
+			Status:    registry.PinStatusMissing,
+			OldSHA256: "",
+			NewSHA256: "sha256:222",
+		},
+		{
+			Ref:       "registry.example/alpha",
+			Status:    registry.PinStatusDrift,
+			OldSHA256: "sha256:333",
+			NewSHA256: "sha256:444",
+		},
+		{
+			Ref:       "registry.example/mu",
+			Status:    registry.PinStatusMatch,
+			OldSHA256: "sha256:555",
+			NewSHA256: "sha256:555",
+		},
+	}
+
+	var output bytes.Buffer
+	if err := writePinChanges(&output, changes); err != nil {
+		t.Fatalf("writePinChanges returned error: %v", err)
+	}
+
+	const want = "" +
+		"REF\tSTATUS\tOLD\tNEW\n" +
+		"registry.example/zeta\tmissing\tnone\tsha256:222\n" +
+		"registry.example/alpha\tdrift\tsha256:333\tsha256:444\n" +
+		"registry.example/mu\tmatch\tsha256:555\tsha256:555\n"
+
+	if got := output.String(); got != want {
+		t.Fatalf("output mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestWritePinChangesWritesNothingForEmptyChanges(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	if err := writePinChanges(&output, nil); err != nil {
+		t.Fatalf("writePinChanges returned error: %v", err)
+	}
+	if got := output.String(); got != "" {
+		t.Fatalf("output = %q, want empty", got)
+	}
+}
+
 const (
 	registryUpdateRefA = "example.invalid/a.yaml"
 	registryUpdateRefM = "example.invalid/m.yaml"
@@ -807,6 +970,32 @@ func stubRegistryUpdatePins(
 	t.Cleanup(func() { updateRegistryPins = previous })
 }
 
+func stubRegistryCheckPins(
+	t *testing.T,
+	stub func(context.Context, *config.Config, string) ([]registry.PinChange, error),
+) {
+	t.Helper()
+	previous := checkRegistryPins
+	checkRegistryPins = stub
+	t.Cleanup(func() { checkRegistryPins = previous })
+}
+
+func executeRegistryArgs(
+	t *testing.T,
+	path string,
+	args []string,
+) (string, error) {
+	t.Helper()
+	var stdout bytes.Buffer
+	root := buildRoot()
+	configFile = path
+	root.SetOut(&stdout)
+	root.SetErr(io.Discard)
+	root.SetArgs(args)
+	err := root.Execute()
+	return stdout.String(), err
+}
+
 func executeRegistryUpdate(t *testing.T, path string) (string, error) {
 	t.Helper()
 	var stdout bytes.Buffer
@@ -816,6 +1005,273 @@ func executeRegistryUpdate(t *testing.T, path string) (string, error) {
 	root.SetArgs([]string{"registry", "update", "--config", path})
 	err := root.Execute()
 	return stdout.String(), err
+}
+
+func TestRegistryUpdateCheckInvocation(t *testing.T) {
+	path := writeTestConfig(t, "modules: []\n")
+	var updateCalls, checkCalls int
+
+	stubRegistryUpdatePins(t, func(
+		context.Context,
+		config.Config,
+		string,
+		*ui.UI,
+	) ([]registry.PinChange, error) {
+		updateCalls++
+		return registryUpdateChanges(), nil
+	})
+	stubRegistryCheckPins(t, func(
+		context.Context,
+		*config.Config,
+		string,
+	) ([]registry.PinChange, error) {
+		checkCalls++
+		return []registry.PinChange{{
+			Ref:       registryUpdateRefM,
+			OldSHA256: registryUpdateOldM,
+			NewSHA256: registryUpdateOldM,
+			Status:    registry.PinStatusMatch,
+		}}, nil
+	})
+
+	checkOutput, err := executeRegistryArgs(
+		t,
+		path,
+		[]string{"registry", "update", "--check"},
+	)
+	if err != nil {
+		t.Fatalf("registry update --check: %v", err)
+	}
+	const wantCheckOutput = "" +
+		"REF\tSTATUS\tOLD\tNEW\n" +
+		"example.invalid/m.yaml\tmatch\told-m\told-m\n"
+	if checkOutput != wantCheckOutput {
+		t.Fatalf("check stdout = %q, want %q", checkOutput, wantCheckOutput)
+	}
+	if checkCalls != 1 || updateCalls != 0 {
+		t.Fatalf("after check: CheckPins calls = %d, UpdatePins calls = %d", checkCalls, updateCalls)
+	}
+
+	if _, err := executeRegistryArgs(
+		t,
+		path,
+		[]string{"registry", "--check", "update"},
+	); err == nil {
+		t.Fatal("registry --check update succeeded, want parse error")
+	}
+	if checkCalls != 1 || updateCalls != 0 {
+		t.Fatalf(
+			"misowned flag routed execution: CheckPins calls = %d, UpdatePins calls = %d",
+			checkCalls,
+			updateCalls,
+		)
+	}
+
+	if _, err := executeRegistryArgs(
+		t,
+		path,
+		[]string{"registry", "update", "check"},
+	); err == nil {
+		t.Fatal("registry update check succeeded, want positional-argument error")
+	}
+	if checkCalls != 1 || updateCalls != 0 {
+		t.Fatalf(
+			"positional check routed execution: CheckPins calls = %d, UpdatePins calls = %d",
+			checkCalls,
+			updateCalls,
+		)
+	}
+
+	updateOutput, err := executeRegistryArgs(
+		t,
+		path,
+		[]string{"registry", "update"},
+	)
+	if err != nil {
+		t.Fatalf("registry update: %v", err)
+	}
+	if updateOutput != registryUpdateOutput() {
+		t.Fatalf("normal update stdout = %q, want %q", updateOutput, registryUpdateOutput())
+	}
+	if checkCalls != 1 || updateCalls != 1 {
+		t.Fatalf("after update: CheckPins calls = %d, UpdatePins calls = %d", checkCalls, updateCalls)
+	}
+}
+
+func TestRegistryUpdateCheckResultsAndReadOnlyState(t *testing.T) {
+	tests := []struct {
+		name       string
+		changes    []registry.PinChange
+		err        error
+		wantOutput string
+		repeats    int
+	}{
+		{
+			name:    "no active refs",
+			repeats: 1,
+		},
+		{
+			name: "all match",
+			changes: []registry.PinChange{{
+				Ref:       "registry.example/beta",
+				Status:    registry.PinStatusMatch,
+				OldSHA256: "sha256:111",
+				NewSHA256: "sha256:111",
+			}},
+			wantOutput: "" +
+				"REF\tSTATUS\tOLD\tNEW\n" +
+				"registry.example/beta\tmatch\tsha256:111\tsha256:111\n",
+			repeats: 1,
+		},
+		{
+			name: "missing unpinned ref",
+			changes: []registry.PinChange{{
+				Ref:       "registry.example/gamma",
+				Status:    registry.PinStatusMissing,
+				NewSHA256: "sha256:222",
+			}},
+			err: registry.ErrPinsOutOfDate,
+			wantOutput: "" +
+				"REF\tSTATUS\tOLD\tNEW\n" +
+				"registry.example/gamma\tmissing\tnone\tsha256:222\n",
+			repeats: 1,
+		},
+		{
+			name: "drift",
+			changes: []registry.PinChange{{
+				Ref:       "registry.example/alpha",
+				Status:    registry.PinStatusDrift,
+				OldSHA256: "sha256:333",
+				NewSHA256: "sha256:444",
+			}},
+			err: registry.ErrPinsOutOfDate,
+			wantOutput: "" +
+				"REF\tSTATUS\tOLD\tNEW\n" +
+				"registry.example/alpha\tdrift\tsha256:333\tsha256:444\n",
+			repeats: 1,
+		},
+		{
+			name: "mixed preserves inherited order",
+			changes: []registry.PinChange{
+				{
+					Ref:       "registry.example/beta",
+					Status:    registry.PinStatusMatch,
+					OldSHA256: "sha256:111",
+					NewSHA256: "sha256:111",
+				},
+				{
+					Ref:       "registry.example/gamma",
+					Status:    registry.PinStatusMissing,
+					NewSHA256: "sha256:222",
+				},
+				{
+					Ref:       "registry.example/alpha",
+					Status:    registry.PinStatusDrift,
+					OldSHA256: "sha256:333",
+					NewSHA256: "sha256:444",
+				},
+			},
+			err: registry.ErrPinsOutOfDate,
+			wantOutput: "" +
+				"REF\tSTATUS\tOLD\tNEW\n" +
+				"registry.example/beta\tmatch\tsha256:111\tsha256:111\n" +
+				"registry.example/gamma\tmissing\tnone\tsha256:222\n" +
+				"registry.example/alpha\tdrift\tsha256:333\tsha256:444\n",
+			repeats: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, "modules: []\n")
+			lockPath, cachePath, before := seedCLIPinState(t, path)
+			var calls int
+			stubRegistryCheckPins(t, func(
+				context.Context,
+				*config.Config,
+				string,
+			) ([]registry.PinChange, error) {
+				calls++
+				return tt.changes, tt.err
+			})
+
+			var firstOutput string
+			for run := 0; run < tt.repeats; run++ {
+				output, err := executeRegistryArgs(
+					t,
+					path,
+					[]string{"registry", "update", "--check"},
+				)
+				if !errors.Is(err, tt.err) {
+					t.Fatalf("run %d error = %v, want %v", run+1, err, tt.err)
+				}
+				if got, want := exitCode(err), exitCode(tt.err); got != want {
+					t.Fatalf("run %d exit = %d, want %d", run+1, got, want)
+				}
+				if output != tt.wantOutput {
+					t.Fatalf("run %d stdout = %q, want %q", run+1, output, tt.wantOutput)
+				}
+				if strings.Contains(output, "TIMESTAMP") {
+					t.Fatalf("run %d stdout contains timestamp column: %q", run+1, output)
+				}
+				if run > 0 && output != firstOutput {
+					t.Fatalf("repeated stdout differs:\nfirst:  %q\nsecond: %q", firstOutput, output)
+				}
+				firstOutput = output
+				assertCLIPinStateUnchanged(t, before, lockPath, cachePath)
+			}
+			if calls != tt.repeats {
+				t.Fatalf("CheckPins calls = %d, want %d", calls, tt.repeats)
+			}
+		})
+	}
+}
+
+func TestRegistryUpdateCheckStagingFailuresPreserveState(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "lock or input parse failure", err: errors.New("parse lock or input")},
+		{name: "download failure", err: errors.New("download")},
+		{name: "downloaded-payload parse failure", err: errors.New("parse downloaded payload")},
+		{name: "validation failure", err: errors.New("validate")},
+		{name: "checksum failure", err: errors.New("checksum")},
+		{name: "comparison failure", err: errors.New("compare")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, "modules: []\n")
+			lockPath, cachePath, before := seedCLIPinState(t, path)
+			stubRegistryCheckPins(t, func(
+				context.Context,
+				*config.Config,
+				string,
+			) ([]registry.PinChange, error) {
+				return nil, tt.err
+			})
+
+			output, err := executeRegistryArgs(
+				t,
+				path,
+				[]string{"registry", "update", "--check"},
+			)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("error = %v, want inherited %v", err, tt.err)
+			}
+			if errors.Is(err, registry.ErrPinsOutOfDate) {
+				t.Fatalf("error = %v, must not include ErrPinsOutOfDate", err)
+			}
+			if exitCode(err) == 0 {
+				t.Fatal("staging failure exited successfully")
+			}
+			if output != "" {
+				t.Fatalf("stdout = %q, want no rows", output)
+			}
+			assertCLIPinStateUnchanged(t, before, lockPath, cachePath)
+		})
+	}
 }
 
 func TestRegistryUpdatePrintsSortedRowsWithExactNoneRendering(t *testing.T) {
@@ -973,12 +1429,22 @@ func TestRegistryUpdateIsTheOnlyPinMutationCommand(t *testing.T) {
 	if updateCount != 1 {
 		t.Fatalf("registry update commands = %d, want 1", updateCount)
 	}
-	for _, flagName := range []string{"check", "repin"} {
-		if updateCommand.Flags().Lookup(flagName) != nil ||
-			updateCommand.PersistentFlags().Lookup(flagName) != nil ||
-			updateCommand.InheritedFlags().Lookup(flagName) != nil {
-			t.Fatalf("registry update exposes forbidden --%s flag", flagName)
-		}
+	if updateCommand.Flags().Lookup("check") == nil {
+		t.Fatal("registry update does not expose --check")
+	}
+	if updateCommand.PersistentFlags().Lookup("check") != nil ||
+		updateCommand.InheritedFlags().Lookup("check") != nil {
+		t.Fatal("registry update --check is not a local flag")
+	}
+	if registryCommand.Flags().Lookup("check") != nil ||
+		registryCommand.PersistentFlags().Lookup("check") != nil ||
+		registryCommand.InheritedFlags().Lookup("check") != nil {
+		t.Fatal("registry parent exposes --check")
+	}
+	if updateCommand.Flags().Lookup("repin") != nil ||
+		updateCommand.PersistentFlags().Lookup("repin") != nil ||
+		updateCommand.InheritedFlags().Lookup("repin") != nil {
+		t.Fatal("registry update exposes forbidden --repin flag")
 	}
 }
 

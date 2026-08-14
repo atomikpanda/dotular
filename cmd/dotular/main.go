@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -42,7 +43,10 @@ var (
 	noCache    bool
 )
 
-var updateRegistryPins = registry.UpdatePins
+var (
+	updateRegistryPins = registry.UpdatePins
+	checkRegistryPins  = registry.CheckPins
+)
 
 // Exit statuses. 2 is the conventional status for a caller who invoked the CLI
 // wrongly, so scripts can tell a typo from a genuine failure.
@@ -762,6 +766,51 @@ func logCmd() *cobra.Command {
 
 // --- registry ----------------------------------------------------------------
 
+func writePinChanges(w io.Writer, changes []registry.PinChange) error {
+	if len(changes) == 0 {
+		return nil
+	}
+
+	if _, err := io.WriteString(w, "REF\tSTATUS\tOLD\tNEW\n"); err != nil {
+		return err
+	}
+
+	for _, change := range changes {
+		oldChecksum := change.OldSHA256
+		if oldChecksum == "" {
+			oldChecksum = "none"
+		}
+
+		if _, err := fmt.Fprintf(
+			w,
+			"%s\t%s\t%s\t%s\n",
+			change.Ref,
+			change.Status,
+			oldChecksum,
+			change.NewSHA256,
+		); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func runRegistryUpdateCheck(
+	ctx context.Context,
+	stdout io.Writer,
+	cfg *config.Config,
+	configPath string,
+) error {
+	changes, err := checkRegistryPins(ctx, cfg, configPath)
+	if len(changes) != 0 {
+		if writeErr := writePinChanges(stdout, changes); writeErr != nil {
+			return writeErr
+		}
+	}
+	return err
+}
+
 func registryCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "registry",
@@ -833,6 +882,43 @@ func registryCmd() *cobra.Command {
 	}
 	listCmd.Flags().Bool("cached", false, "show locally cached modules instead of the remote index")
 
+	var check bool
+	updateCmd := &cobra.Command{
+		Use:   "update",
+		Short: "Re-fetch all registry modules referenced in the config",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if check {
+				return runRegistryUpdateCheck(ctx, out, &cfg, configFile)
+			}
+			u := ui.New(out, cmd.ErrOrStderr())
+			changes, err := updateRegistryPins(ctx, cfg, configFile, u)
+			for _, change := range changes {
+				old := change.OldSHA256
+				if old == "" {
+					old = "none"
+				}
+				if _, writeErr := fmt.Fprintf(
+					out,
+					"%s\t%s\t%s\n",
+					change.Ref,
+					old,
+					change.NewSHA256,
+				); writeErr != nil {
+					return writeErr
+				}
+			}
+			return err
+		},
+	}
+	updateCmd.Flags().BoolVar(&check, "check", false, "check registry pins without updating them")
+
 	cmd.AddCommand(
 		listCmd,
 		&cobra.Command{
@@ -847,36 +933,7 @@ func registryCmd() *cobra.Command {
 				return nil
 			},
 		},
-		&cobra.Command{
-			Use:   "update",
-			Short: "Re-fetch all registry modules referenced in the config",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-				cfg, err := loadConfig()
-				if err != nil {
-					return err
-				}
-				out := cmd.OutOrStdout()
-				u := ui.New(out, cmd.ErrOrStderr())
-				changes, err := updateRegistryPins(ctx, cfg, configFile, u)
-				for _, change := range changes {
-					old := change.OldSHA256
-					if old == "" {
-						old = "none"
-					}
-					if _, writeErr := fmt.Fprintf(
-						out,
-						"%s\t%s\t%s\n",
-						change.Ref,
-						old,
-						change.NewSHA256,
-					); writeErr != nil {
-						return writeErr
-					}
-				}
-				return err
-			},
-		},
+		updateCmd,
 	)
 	return requireSubcommand(cmd)
 }
