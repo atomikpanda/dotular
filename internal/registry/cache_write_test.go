@@ -41,6 +41,61 @@ func (f *fakeCacheTempFile) Name() string {
 	return f.name
 }
 
+func TestWriteCacheFileWithOpsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cache.json")
+	tempPath := filepath.Join(dir, ".cache.json.tmp-fake")
+	data := []byte("complete new cache data")
+	writeTestFile(t, tempPath, data)
+
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination exists before update: os.Stat(%q) error = %v", path, err)
+	}
+
+	file := &fakeCacheTempFile{
+		name:   tempPath,
+		writeN: len(data),
+	}
+	replaceCalled := false
+
+	err := writeCacheFileWithOps(path, data, cacheWriteOps{
+		createTemp: func(gotDir string, gotPattern string) (cacheTempFile, error) {
+			if gotDir != dir {
+				t.Fatalf("createTemp directory = %q, want %q", gotDir, dir)
+			}
+			if gotPattern != ".cache.json.tmp-*" {
+				t.Fatalf("createTemp pattern = %q, want %q", gotPattern, ".cache.json.tmp-*")
+			}
+			return file, nil
+		},
+		replace: func(gotTempPath string, gotPath string) error {
+			if !file.closed {
+				t.Fatal("replace called before the temporary-file handle was released")
+			}
+			if gotTempPath != tempPath {
+				t.Fatalf("replace temporary path = %q, want %q", gotTempPath, tempPath)
+			}
+			if gotPath != path {
+				t.Fatalf("replace destination path = %q, want %q", gotPath, path)
+			}
+			replaceCalled = true
+			return os.Rename(gotTempPath, gotPath)
+		},
+	})
+	if err != nil {
+		t.Fatalf("writeCacheFileWithOps() error = %v", err)
+	}
+	if !replaceCalled {
+		t.Fatal("replace was not called")
+	}
+	if file.closeCalls != 1 || !file.closed {
+		t.Fatalf("Close() calls = %d, closed = %v; want one released handle", file.closeCalls, file.closed)
+	}
+
+	assertTestFileData(t, path, data)
+	assertDirectoryNames(t, dir, []string{"cache.json"})
+}
+
 func TestWriteCacheFileWithOpsCreateError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cache.json")
