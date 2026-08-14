@@ -35,6 +35,45 @@ type PinChange struct {
 	Status    PinStatus
 }
 
+// ErrPinsOutOfDate reports that at least one active registry pin is missing or
+// differs from the downloaded registry module.
+var ErrPinsOutOfDate = errors.New("registry pins are out of date")
+
+// CheckPins stages every active registry ref without committing lock or cache
+// changes and reports whether the durable pins match.
+func CheckPins(
+	ctx context.Context,
+	cfg *config.Config,
+	configPath string,
+) (changes []PinChange, err error) {
+	if len(CollectActiveRefs(*cfg)) == 0 {
+		return []PinChange{}, nil
+	}
+
+	lockPath := LockPath(configPath)
+	err = WithRegistryMutationLock(func() error {
+		lock, err := LoadLock(lockPath)
+		if err != nil {
+			return err
+		}
+
+		staged, err := stageActiveRefs(ctx, *cfg, lock, maxAggregateStagedBytes)
+		if err != nil {
+			return err
+		}
+		changes = changesFromStaged(staged)
+
+		for _, change := range changes {
+			switch change.Status {
+			case PinStatusMissing, PinStatusDrift:
+				return ErrPinsOutOfDate
+			}
+		}
+		return nil
+	})
+	return changes, err
+}
+
 type stagedRef struct {
 	ref            string
 	oldSHA256      string

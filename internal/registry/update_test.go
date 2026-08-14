@@ -37,6 +37,340 @@ func TestPinStatusValues(t *testing.T) {
 	}
 }
 
+type pinStateSnapshot struct {
+	lockBytes  []byte
+	cachePaths []string
+	cacheFiles map[string][]byte
+}
+
+func snapshotPinState(t *testing.T, lockPath, cachePath string) pinStateSnapshot {
+	t.Helper()
+
+	lockBytes, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read lock snapshot: %v", err)
+	}
+
+	snapshot := pinStateSnapshot{
+		lockBytes:  bytes.Clone(lockBytes),
+		cacheFiles: make(map[string][]byte),
+	}
+
+	err = filepath.WalkDir(cachePath, func(
+		path string,
+		entry fs.DirEntry,
+		walkErr error,
+	) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		relative, err := filepath.Rel(cachePath, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		snapshot.cachePaths = append(snapshot.cachePaths, relative)
+
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		snapshot.cacheFiles[relative] = bytes.Clone(content)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot configured cache: %v", err)
+	}
+
+	slices.Sort(snapshot.cachePaths)
+	return snapshot
+}
+
+func assertPinStateUnchanged(
+	t *testing.T,
+	before pinStateSnapshot,
+	lockPath string,
+	cachePath string,
+) {
+	t.Helper()
+
+	after := snapshotPinState(t, lockPath, cachePath)
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf(
+			"check mode changed durable state:\nbefore: %#v\nafter:  %#v",
+			before,
+			after,
+		)
+	}
+}
+
+func TestCheckPins(t *testing.T) {
+	downloadErr := errors.New("download failed")
+	tests := []struct {
+		name        string
+		prepare     func(*testing.T, *updateFixture, string, []byte)
+		want        func(string, []byte) []PinChange
+		wantErr     error
+		wantErrText string
+	}{
+		{
+			name: "all active refs match",
+			prepare: func(_ *testing.T, fixture *updateFixture, ref string, data []byte) {
+				fixture.persistLock(map[string]LockEntry{
+					ref: {SHA256: sha256Hex(data)},
+				})
+			},
+			want: func(ref string, data []byte) []PinChange {
+				checksum := sha256Hex(data)
+				return []PinChange{{
+					Ref:       ref,
+					OldSHA256: checksum,
+					NewSHA256: checksum,
+					Status:    PinStatusMatch,
+				}}
+			},
+		},
+		{
+			name: "active ref is unpinned",
+			prepare: func(_ *testing.T, fixture *updateFixture, _ string, _ []byte) {
+				fixture.persistLock(nil)
+			},
+			want: func(ref string, data []byte) []PinChange {
+				return []PinChange{{
+					Ref:       ref,
+					OldSHA256: "",
+					NewSHA256: sha256Hex(data),
+					Status:    PinStatusMissing,
+				}}
+			},
+			wantErr: ErrPinsOutOfDate,
+		},
+		{
+			name: "active ref has drifted",
+			prepare: func(_ *testing.T, fixture *updateFixture, ref string, _ []byte) {
+				fixture.persistLock(map[string]LockEntry{
+					ref: {SHA256: strings.Repeat("0", sha256.Size*2)},
+				})
+			},
+			want: func(ref string, data []byte) []PinChange {
+				return []PinChange{{
+					Ref:       ref,
+					OldSHA256: strings.Repeat("0", sha256.Size*2),
+					NewSHA256: sha256Hex(data),
+					Status:    PinStatusDrift,
+				}}
+			},
+			wantErr: ErrPinsOutOfDate,
+		},
+		{
+			name: "lock parse failure",
+			prepare: func(t *testing.T, fixture *updateFixture, _ string, _ []byte) {
+				fixture.persistLock(nil)
+				if err := os.WriteFile(
+					fixture.lockPath,
+					[]byte("registry: [unterminated\n"),
+					0o644,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want:        func(string, []byte) []PinChange { return nil },
+			wantErrText: "parse lockfile",
+		},
+		{
+			name: "download failure preserves error identity",
+			prepare: func(_ *testing.T, fixture *updateFixture, _ string, _ []byte) {
+				fixture.persistLock(nil)
+				fixture.swapTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return nil, downloadErr
+				}))
+			},
+			want:    func(string, []byte) []PinChange { return nil },
+			wantErr: downloadErr,
+		},
+		{
+			name: "downloaded payload parse failure",
+			prepare: func(_ *testing.T, fixture *updateFixture, _ string, _ []byte) {
+				fixture.persistLock(nil)
+				fixture.responses["/module"] = []byte("name: [unterminated\n")
+			},
+			want:        func(string, []byte) []PinChange { return nil },
+			wantErrText: "parse registry module",
+		},
+		{
+			name: "validation failure",
+			prepare: func(_ *testing.T, fixture *updateFixture, _ string, _ []byte) {
+				fixture.persistLock(nil)
+				fixture.responses["/module"] = []byte(
+					"name: parameterized\n" +
+						"params:\n" +
+						"  package:\n" +
+						"    default: safe\n" +
+						"items:\n" +
+						"  - package: '{{ .package }}'\n" +
+						"    via: brew\n",
+				)
+				fixture.cfg.Modules[0].Name = "invalid-usage"
+				fixture.cfg.Modules[0].With = map[string]any{"package": "invalid'quote"}
+			},
+			want:        func(string, []byte) []PinChange { return nil },
+			wantErrText: "validate registry ref",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data := moduleYAML("module", "package")
+			fixture := newUpdateFixture(t, map[string][]byte{"/module": data})
+			ref := fixture.ref("/module")
+			fixture.configure(ref)
+			test.prepare(t, fixture, ref, data)
+			fixture.seedCache("state.example/seed", []byte("unchanged cache"))
+			cachePath, err := registryCacheDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := snapshotPinState(t, fixture.lockPath, cachePath)
+
+			got, err := CheckPins(
+				context.Background(),
+				&fixture.cfg,
+				fixture.configPath,
+			)
+
+			if test.wantErr == nil && test.wantErrText == "" {
+				if err != nil {
+					t.Fatalf("CheckPins() error = %v, want nil", err)
+				}
+			} else {
+				if err == nil {
+					t.Fatal("CheckPins() error = nil, want failure")
+				}
+				if test.wantErr != nil && !errors.Is(err, test.wantErr) {
+					t.Fatalf("CheckPins() error = %v, want errors.Is(%v)", err, test.wantErr)
+				}
+				if test.wantErrText != "" && !strings.Contains(err.Error(), test.wantErrText) {
+					t.Fatalf("CheckPins() error = %q, want %q", err, test.wantErrText)
+				}
+			}
+			if test.wantErr != ErrPinsOutOfDate && errors.Is(err, ErrPinsOutOfDate) {
+				t.Fatalf("CheckPins() error = %v, must not include ErrPinsOutOfDate", err)
+			}
+			want := test.want(ref, data)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("CheckPins() changes = %#v, want %#v", got, want)
+			}
+			assertPinStateUnchanged(t, before, fixture.lockPath, cachePath)
+		})
+	}
+}
+
+func TestCheckPinsMixedFindingsPreservesInheritedOrderAndState(t *testing.T) {
+	dataAlpha := moduleYAML("alpha", "alpha")
+	dataBeta := moduleYAML("beta", "beta")
+	dataGamma := moduleYAML("gamma", "gamma")
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/alpha": dataAlpha,
+		"/beta":  dataBeta,
+		"/gamma": dataGamma,
+	})
+	refAlpha := fixture.ref("/alpha")
+	refBeta := fixture.ref("/beta")
+	refGamma := fixture.ref("/gamma")
+	fixture.configure(refBeta, refGamma, refAlpha, refGamma)
+	oldAlpha := strings.Repeat("3", sha256.Size*2)
+	fixture.persistLock(map[string]LockEntry{
+		refAlpha: {SHA256: oldAlpha},
+		refBeta:  {SHA256: sha256Hex(dataBeta)},
+	})
+	fixture.seedCache("state.example/seed", []byte("unchanged cache"))
+	cachePath, err := registryCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotPinState(t, fixture.lockPath, cachePath)
+
+	got, err := CheckPins(
+		context.Background(),
+		&fixture.cfg,
+		fixture.configPath,
+	)
+
+	if !errors.Is(err, ErrPinsOutOfDate) {
+		t.Fatalf("CheckPins() error = %v, want ErrPinsOutOfDate", err)
+	}
+	want := []PinChange{
+		{
+			Ref:       refAlpha,
+			OldSHA256: oldAlpha,
+			NewSHA256: sha256Hex(dataAlpha),
+			Status:    PinStatusDrift,
+		},
+		{
+			Ref:       refBeta,
+			OldSHA256: sha256Hex(dataBeta),
+			NewSHA256: sha256Hex(dataBeta),
+			Status:    PinStatusMatch,
+		},
+		{
+			Ref:       refGamma,
+			OldSHA256: "",
+			NewSHA256: sha256Hex(dataGamma),
+			Status:    PinStatusMissing,
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CheckPins() changes = %#v, want inherited order %#v", got, want)
+	}
+	if got[2].OldSHA256 != "" {
+		t.Fatalf("missing pin OldSHA256 = %q, want empty", got[2].OldSHA256)
+	}
+	for _, ref := range []string{refAlpha, refBeta, refGamma} {
+		if requests := fixture.requestCount(ref); requests != 1 {
+			t.Fatalf("requests for %q = %d, want one staging request", ref, requests)
+		}
+	}
+	assertPinStateUnchanged(t, before, fixture.lockPath, cachePath)
+}
+
+func TestCheckPinsNoActiveRefsIgnoresMalformedLockAndPreservesState(t *testing.T) {
+	fixture := newUpdateFixture(t, nil)
+	fixture.configure()
+	fixture.persistLock(nil)
+	if err := os.WriteFile(
+		fixture.lockPath,
+		[]byte("registry: [unterminated\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	fixture.seedCache("state.example/seed", []byte("unchanged cache"))
+	cachePath, err := registryCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotPinState(t, fixture.lockPath, cachePath)
+
+	got, err := CheckPins(
+		context.Background(),
+		&fixture.cfg,
+		fixture.configPath,
+	)
+
+	if err != nil {
+		t.Fatalf("CheckPins() error = %v, want nil", err)
+	}
+	if !reflect.DeepEqual(got, []PinChange{}) {
+		t.Fatalf("CheckPins() changes = %#v, want empty non-nil slice", got)
+	}
+	assertPinStateUnchanged(t, before, fixture.lockPath, cachePath)
+}
+
 func TestStageActiveRefsReturnsCompleteSortedUniqueRecordsWithoutWrites(t *testing.T) {
 	dataA := moduleYAML("module-a", "a")
 	dataM := moduleYAML("module-m", "m")
@@ -1548,7 +1882,15 @@ func TestUpdatePinsFromDifferentConfigDirectoriesShareMutationLock(t *testing.T)
 	select {
 	case <-secondRequested:
 	case err := <-secondDone:
-		t.Fatalf("second UpdatePins returned without requesting its module: %v", err)
+		select {
+		case <-secondRequested:
+			if err != nil {
+				t.Fatalf("second UpdatePins() error = %v", err)
+			}
+			return
+		default:
+			t.Fatalf("second UpdatePins returned without requesting its module: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("second UpdatePins remained blocked after first update completed")
 	}
