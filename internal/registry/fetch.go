@@ -134,13 +134,6 @@ func moduleCachePath(rawRef string) string {
 	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
 }
 
-func writeCacheFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
-}
-
 // ClearCache removes the local registry cache directory.
 func ClearCache() error {
 	home, err := os.UserHomeDir()
