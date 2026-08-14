@@ -1784,6 +1784,34 @@ func TestAddCmdValidatesConfigBeforeCopy(t *testing.T) {
 	}
 }
 
+func TestAddCmdRejectsRegistryModuleBeforeSourceWork(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dotular.yaml")
+	before := []byte("modules:\n  - name: shell\n    from: example.invalid/module.yaml\n")
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := buildRoot()
+	root.SetArgs([]string{"add", filepath.Join(dir, "missing.txt"), "shell", "--config", cfgPath})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "registry") {
+		t.Fatalf("error = %v, want registry-backed module rejection", err)
+	}
+	after, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config changed\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "shell")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("module directory stat error = %v, want fs.ErrNotExist", statErr)
+	}
+}
+
 func TestAddCmdWithDirection(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -1992,6 +2020,7 @@ modules:
 		{name: "verify", args: []string{"verify"}},
 		{name: "registry update", args: []string{"registry", "update"}},
 		{name: "registry check", args: []string{"registry", "update", "--check"}},
+		{name: "init", args: []string{"init"}},
 	}
 
 	for _, tt := range tests {

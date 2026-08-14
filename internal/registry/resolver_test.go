@@ -118,6 +118,11 @@ func TestRenderItemsValidatesRenderedValues(t *testing.T) {
 			items: []config.Item{{Package: "git", File: "config"}},
 			want:  "package, file",
 		},
+		{
+			name:  "malformed template without params",
+			items: []config.Item{{Package: "{{ .bad"}},
+			want:  "parse template",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

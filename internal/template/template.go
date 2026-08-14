@@ -30,10 +30,6 @@ func Render(s string, params map[string]any) (string, error) {
 // resulting string as a template, then unmarshalling back. This approach
 // automatically covers every string field without explicit enumeration.
 func RenderItem(item config.Item, params map[string]any) (config.Item, error) {
-	if len(params) == 0 {
-		return item, nil
-	}
-
 	data, err := yaml.Marshal(item)
 	if err != nil {
 		return item, fmt.Errorf("marshal item for template rendering: %w", err)
