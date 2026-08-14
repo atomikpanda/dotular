@@ -1882,7 +1882,15 @@ func TestUpdatePinsFromDifferentConfigDirectoriesShareMutationLock(t *testing.T)
 	select {
 	case <-secondRequested:
 	case err := <-secondDone:
-		t.Fatalf("second UpdatePins returned without requesting its module: %v", err)
+		select {
+		case <-secondRequested:
+			if err != nil {
+				t.Fatalf("second UpdatePins() error = %v", err)
+			}
+			return
+		default:
+			t.Fatalf("second UpdatePins returned without requesting its module: %v", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("second UpdatePins remained blocked after first update completed")
 	}
