@@ -47,6 +47,53 @@ func TestExpandPathEnvVar(t *testing.T) {
 	}
 }
 
+func TestExpandPathWindowsEnvVars(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		path  string
+		want  string
+	}{
+		{"APPDATA", `C:\Users\test\AppData\Roaming`, `%APPDATA%\fastfetch`, `C:\Users\test\AppData\Roaming\fastfetch`},
+		{"LOCALAPPDATA", `C:\Users\test\AppData\Local`, `%LOCALAPPDATA%\Google\Chrome`, `C:\Users\test\AppData\Local\Google\Chrome`},
+		{"USERPROFILE", `C:\Users\test`, `%USERPROFILE%\.claude`, `C:\Users\test\.claude`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(tt.name, tt.value)
+			if got := ExpandPath(tt.path); got != tt.want {
+				t.Errorf("ExpandPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExpandPathWindowsEnvBoundaries(t *testing.T) {
+	const missing = "DOTULAR_TEST_MISSING_WINDOWS_ENV"
+	t.Setenv(missing, "temporary")
+	if err := os.Unsetenv(missing); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"unknown variable", `%DOTULAR_TEST_MISSING_WINDOWS_ENV%\config`},
+		{"unmatched literal percent", `100%\config`},
+		{"paired literal percents", `100%%\config`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExpandPath(tt.path); got != tt.path {
+				t.Errorf("ExpandPath(%q) = %q, want unchanged", tt.path, got)
+			}
+		})
+	}
+}
+
 func TestExpandPathNoExpansion(t *testing.T) {
 	got := ExpandPath("/absolute/path")
 	if got != "/absolute/path" {
