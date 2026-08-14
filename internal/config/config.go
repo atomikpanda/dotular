@@ -86,7 +86,7 @@ type Item struct {
 	// can be referenced in Source URLs via {{ .version }}.
 	Binary    string      `yaml:"binary,omitempty"`
 	Version   string      `yaml:"version,omitempty"`
-	Source    PlatformMap `yaml:"source,omitempty"`  // download URL per OS
+	Source    PlatformMap `yaml:"source,omitempty"`     // download URL per OS
 	InstallTo string      `yaml:"install_to,omitempty"` // destination directory
 
 	// --- run ---
@@ -102,8 +102,8 @@ type Item struct {
 	Via string `yaml:"via,omitempty"`
 
 	// --- shared: honoured on every item type ---
-	SkipIf string `yaml:"skip_if,omitempty"`
-	Verify string `yaml:"verify,omitempty"`
+	SkipIf string    `yaml:"skip_if,omitempty"`
+	Verify string    `yaml:"verify,omitempty"`
 	Hooks  ItemHooks `yaml:"hooks,omitempty"`
 }
 

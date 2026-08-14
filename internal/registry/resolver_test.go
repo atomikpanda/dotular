@@ -44,8 +44,8 @@ func TestMergeOverrides(t *testing.T) {
 		{File: ".vimrc"},
 	}
 	overrides := []config.Item{
-		{Package: "curl", Via: "apt"},      // replaces
-		{Package: "neovim", Via: "brew"},    // appends (no match)
+		{Package: "curl", Via: "apt"},    // replaces
+		{Package: "neovim", Via: "brew"}, // appends (no match)
 	}
 
 	result := mergeOverrides(base, overrides)
@@ -114,9 +114,9 @@ func TestRenderItemsValidatesRenderedValues(t *testing.T) {
 			want:   `direction "pul"`,
 		},
 		{
-			name:   "multiple primaries rejected",
-			items:  []config.Item{{Package: "git", File: "config"}},
-			want:   "package, file",
+			name:  "multiple primaries rejected",
+			items: []config.Item{{Package: "git", File: "config"}},
+			want:  "package, file",
 		},
 	}
 	for _, tt := range tests {
