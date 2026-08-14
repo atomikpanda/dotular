@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -174,8 +175,19 @@ func download(ctx context.Context, url string) ([]byte, error) {
 // paths — deciding it here is what made every cache hit look external.
 func parseModule(data []byte) (*RemoteModule, error) {
 	var mod RemoteModule
-	if err := yaml.Unmarshal(data, &mod); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&mod); err != nil {
 		return nil, fmt.Errorf("parse registry module: %w", err)
+	}
+	if err := config.ValidateItems(mod.Items, config.ItemValidationOptions{
+		AllowDirectionTemplates: true,
+	}); err != nil {
+		name := mod.Name
+		if name == "" {
+			name = "<unnamed>"
+		}
+		return nil, fmt.Errorf("validate registry module %q: items: %w", name, err)
 	}
 	return &mod, nil
 }
