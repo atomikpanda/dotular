@@ -44,51 +44,52 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	cachePath := moduleCachePath(rawRef)
 	entry, inLock := lock.Registry[rawRef]
 
+	var data []byte
+	fromCache := false
 	if !opts.NoCache && inLock {
-		// Validate cache file exists and checksum matches.
-		if data, err := os.ReadFile(cachePath); err == nil {
-			sum := fmt.Sprintf("%x", sha256.Sum256(data))
-			if sum != entry.SHA256 {
-				return nil, ref.Trust, fmt.Errorf(
-					"registry: checksum mismatch for %s (expected %s, got %s) — run with --no-cache to re-fetch",
-					rawRef, entry.SHA256, sum,
-				)
-			}
-			mod, err := parseModule(data)
-			return mod, ref.Trust, err
+		if cachedData, err := os.ReadFile(cachePath); err == nil {
+			data = cachedData
+			fromCache = true
 		}
-		// Cache file missing despite lockfile entry — re-fetch below.
 	}
 
-	// Fetch from network.
-	data, err := download(ctx, ref.FetchURL)
-	if err != nil {
-		return nil, ref.Trust, fmt.Errorf("fetch %s: %w", rawRef, err)
+	if !fromCache {
+		var err error
+		data, err = download(ctx, ref.FetchURL)
+		if err != nil {
+			return nil, ref.Trust, fmt.Errorf("fetch %s: %w", rawRef, err)
+		}
 	}
 
-	// Verify against existing lockfile entry when using cache; skip when
-	// explicitly re-fetching so that updated modules are accepted.
 	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	if !opts.NoCache && inLock && entry.SHA256 != sum {
+	if inLock && entry.SHA256 != sum && !opts.Repin {
 		return nil, ref.Trust, fmt.Errorf(
-			"registry: checksum mismatch for %s after re-fetch (lockfile: %s, got: %s)",
+			"registry: checksum mismatch for %s (expected %s, got %s)",
 			rawRef, entry.SHA256, sum,
 		)
 	}
 
-	// Update lockfile + write cache.
-	lock.Registry[rawRef] = LockEntry{
-		SHA256:    sum,
-		FetchedAt: time.Now().UTC(),
-		URL:       ref.FetchURL,
-	}
-	if err := writeCacheFile(cachePath, data); err != nil {
-		// Non-fatal: we have the data in memory.
-		u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+	mod, err := parseModule(data)
+	if err != nil {
+		return nil, ref.Trust, err
 	}
 
-	mod, err := parseModule(data)
-	return mod, ref.Trust, err
+	if !inLock || entry.SHA256 != sum {
+		lock.Registry[rawRef] = LockEntry{
+			SHA256:    sum,
+			FetchedAt: time.Now().UTC(),
+			URL:       ref.FetchURL,
+		}
+	}
+
+	if !fromCache {
+		if err := writeCacheFile(cachePath, data); err != nil {
+			// Non-fatal: we have the data in memory.
+			u.Warn(fmt.Sprintf("could not cache registry module: %v", err))
+		}
+	}
+
+	return mod, ref.Trust, nil
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {
