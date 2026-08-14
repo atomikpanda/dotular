@@ -711,8 +711,8 @@ func TestUpdatePinsRetainsExactReadableActiveCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if len(recorder.removes) != 0 || len(recorder.publications) != 0 {
-		t.Fatalf("removes = %q, publications = %q, want none", recorder.removes, recorder.publications)
+	if len(recorder.publications) != 0 {
+		t.Fatalf("publications = %q, want none", recorder.publications)
 	}
 }
 
@@ -724,23 +724,32 @@ func TestUpdatePinsTreatsMissingActiveCacheAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if len(recorder.removes) != 0 {
-		t.Fatalf("removes = %q, want none", recorder.removes)
+	if len(recorder.publications) != 1 {
+		t.Fatalf("publications = %q, want one", recorder.publications)
 	}
 	requirePublishedBytes(t, recorder, ref, data)
 }
 
-func TestUpdatePinsRemovesMismatchingActiveCache(t *testing.T) {
+func TestUpdatePinsReplacesMismatchingActiveCacheOnlyAfterSave(t *testing.T) {
 	fixture, recorder, ref, data := newSingleUpdateScenario(t, true)
-	recorder.files[recorder.path(ref)] = []byte("stale")
+	path := recorder.path(ref)
+	old := []byte("stale")
+	recorder.files[path] = append([]byte(nil), old...)
+	oldPresentAtSave := false
+	recorder.beforeSave = func() {
+		oldPresentAtSave = bytes.Equal(recorder.files[path], old)
+	}
 
 	_, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
 
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if !slices.Equal(recorder.removes, []string{recorder.path(ref)}) {
-		t.Fatalf("removes = %q, want %q", recorder.removes, []string{recorder.path(ref)})
+	if !oldPresentAtSave {
+		t.Fatalf("cache %q changed before SaveLock: events=%q", path, recorder.events)
+	}
+	if indexOfEvent(recorder.events, "save") > indexOfEvent(recorder.events, "publish:"+path) {
+		t.Fatalf("events = %q, want save before publication", recorder.events)
 	}
 	requirePublishedBytes(t, recorder, ref, data)
 }
@@ -754,40 +763,51 @@ func TestUpdatePinsRetainsMatchingOrphanForMissingPin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if len(recorder.removes) != 0 || len(recorder.publications) != 0 {
-		t.Fatalf("removes = %q, publications = %q, want none", recorder.removes, recorder.publications)
+	if len(recorder.publications) != 0 {
+		t.Fatalf("publications = %q, want none", recorder.publications)
 	}
 }
 
-func TestUpdatePinsRemovesMismatchingOrphanForMissingPin(t *testing.T) {
+func TestUpdatePinsReplacesMismatchingOrphanOnlyAfterSave(t *testing.T) {
 	fixture, recorder, ref, data := newSingleUpdateScenario(t, false)
-	recorder.files[recorder.path(ref)] = []byte("orphan")
+	path := recorder.path(ref)
+	old := []byte("orphan")
+	recorder.files[path] = append([]byte(nil), old...)
+	oldPresentAtSave := false
+	recorder.beforeSave = func() {
+		oldPresentAtSave = bytes.Equal(recorder.files[path], old)
+	}
 
 	_, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
 
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if !slices.Equal(recorder.removes, []string{recorder.path(ref)}) {
-		t.Fatalf("removes = %q, want %q", recorder.removes, []string{recorder.path(ref)})
+	if !oldPresentAtSave {
+		t.Fatalf("orphan cache %q changed before SaveLock: events=%q", path, recorder.events)
 	}
 	requirePublishedBytes(t, recorder, ref, data)
 }
 
-func TestUpdatePinsReadErrorRemoveSuccessContinues(t *testing.T) {
+func TestUpdatePinsReadErrorPreservesBytesUntilPostSavePublication(t *testing.T) {
 	fixture, recorder, ref, data := newSingleUpdateScenario(t, true)
 	path := recorder.path(ref)
 	errRead := errors.New("read failed")
+	old := []byte("unverifiable")
 	recorder.readErrors[path] = errRead
-	recorder.files[path] = []byte("unverifiable")
+	recorder.files[path] = append([]byte(nil), old...)
+	oldPresentAtSave := false
+	recorder.beforeSave = func() {
+		oldPresentAtSave = bytes.Equal(recorder.files[path], old)
+	}
 
 	_, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
 
 	if err != nil {
 		t.Fatalf("updatePinsWithOps() error = %v", err)
 	}
-	if !slices.Equal(recorder.removes, []string{path}) {
-		t.Fatalf("removes = %q, want %q", recorder.removes, []string{path})
+	if !oldPresentAtSave {
+		t.Fatalf("unreadable cache %q changed before SaveLock: events=%q", path, recorder.events)
 	}
 	if len(recorder.saveAttempts) != 1 {
 		t.Fatalf("save attempts = %d, want 1", len(recorder.saveAttempts))
@@ -800,60 +820,6 @@ func TestUpdatePinsReadErrorRemoveSuccessContinues(t *testing.T) {
 	}
 }
 
-func TestUpdatePinsReadErrorRemoveFailureStopsBeforeSave(t *testing.T) {
-	fixture, recorder, ref, _ := newSingleUpdateScenario(t, true)
-	path := recorder.path(ref)
-	errRead := errors.New("read failed")
-	errRemove := errors.New("remove failed")
-	recorder.readErrors[path] = errRead
-	recorder.removeErrors[path] = errRemove
-	before := cloneTestLock(&recorder.durable)
-
-	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
-
-	if !errors.Is(err, errRemove) {
-		t.Fatalf("error = %v, want it to wrap %v", err, errRemove)
-	}
-	requireChangeRefs(t, changes, ref)
-	if !slices.Equal(recorder.removes, []string{path}) {
-		t.Fatalf("removes = %q, want %q", recorder.removes, []string{path})
-	}
-	if len(recorder.saveAttempts) != 0 || len(recorder.publications) != 0 {
-		t.Fatalf("save attempts = %d, publications = %q, want none", len(recorder.saveAttempts), recorder.publications)
-	}
-	if !reflect.DeepEqual(&recorder.durable, before) {
-		t.Fatalf("durable lock changed\nbefore: %#v\nafter:  %#v", before, recorder.durable)
-	}
-}
-
-func TestUpdatePinsPreparationFailureReturnsAllRows(t *testing.T) {
-	fixture := newUpdateFixture(t, map[string][]byte{
-		"/a": moduleYAML("module-a", "a"),
-		"/z": moduleYAML("module-z", "z"),
-	})
-	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
-	fixture.configure(refZ, refA)
-	fixture.persistLock(nil)
-	recorder := newUpdateRecorder(fixture.lock)
-	pathA, pathZ := recorder.path(refA), recorder.path(refZ)
-	recorder.files[pathA] = []byte("stale-a")
-	recorder.files[pathZ] = []byte("stale-z")
-	errRemove := errors.New("remove z failed")
-	recorder.removeErrors[pathZ] = errRemove
-
-	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
-
-	if !errors.Is(err, errRemove) {
-		t.Fatalf("error = %v, want it to wrap %v", err, errRemove)
-	}
-	requireChangeRefs(t, changes, refA, refZ)
-	if _, ok := recorder.files[pathA]; ok {
-		t.Fatalf("earlier prepared target %q still exists", pathA)
-	}
-	if len(recorder.saveAttempts) != 0 || len(recorder.publications) != 0 {
-		t.Fatalf("save attempts = %d, publications = %q, want none", len(recorder.saveAttempts), recorder.publications)
-	}
-}
 
 func TestUpdatePinsStagesWholeCommandBeforeFirstPreparation(t *testing.T) {
 	fixture := newUpdateFixture(t, map[string][]byte{
@@ -937,16 +903,23 @@ func TestUpdatePinsSavesCompleteReplacementExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestUpdatePinsSaveLockFailureReturnsAllRowsAndPreventsPublication(t *testing.T) {
+func TestUpdatePinsSaveLockFailureReturnsAllRowsAndPreservesEveryCacheByte(t *testing.T) {
 	fixture := newUpdateFixture(t, map[string][]byte{
 		"/a": moduleYAML("module-a", "a"),
 		"/z": moduleYAML("module-z", "z"),
 	})
 	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
 	fixture.configure(refZ, refA)
-	fixture.persistLock(nil)
+	fixture.persistLock(map[string]LockEntry{
+		refA: {SHA256: strings.Repeat("a", sha256.Size*2), URL: "https://old.example/a"},
+		refZ: {SHA256: strings.Repeat("z", sha256.Size*2), URL: "https://old.example/z"},
+	})
 	recorder := newUpdateRecorder(fixture.lock)
-	recorder.files[recorder.path(refA)] = []byte("stale")
+	pathA, pathZ := recorder.path(refA), recorder.path(refZ)
+	oldA, oldZ := []byte("stale-a"), []byte("unreadable-z")
+	recorder.files[pathA] = append([]byte(nil), oldA...)
+	recorder.files[pathZ] = append([]byte(nil), oldZ...)
+	recorder.readErrors[pathZ] = errors.New("read failed")
 	errSave := errors.New("save failed")
 	recorder.saveError = errSave
 	before := cloneTestLock(&recorder.durable)
@@ -966,15 +939,15 @@ func TestUpdatePinsSaveLockFailureReturnsAllRowsAndPreventsPublication(t *testin
 	if !reflect.DeepEqual(&recorder.durable, before) {
 		t.Fatalf("durable lock changed\nbefore: %#v\nafter:  %#v", before, recorder.durable)
 	}
-	for _, ref := range []string{refA, refZ} {
-		path := recorder.path(ref)
-		if got, ok := recorder.files[path]; ok && !bytes.Equal(got, responseForRef(t, fixture, ref)) {
-			t.Fatalf("prepared target %q = %q, want exact staged bytes or absent", path, got)
-		}
+	if got := recorder.files[pathA]; !bytes.Equal(got, oldA) {
+		t.Fatalf("cache %q = %q, want unchanged %q", pathA, got, oldA)
+	}
+	if got := recorder.files[pathZ]; !bytes.Equal(got, oldZ) {
+		t.Fatalf("cache %q = %q, want unchanged %q", pathZ, got, oldZ)
 	}
 }
 
-func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesMatchingOrAbsentTargets(t *testing.T) {
+func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesAtomicOldOrNewBytes(t *testing.T) {
 	fixture := newUpdateFixture(t, map[string][]byte{
 		"/a": moduleYAML("module-a", "a"),
 		"/z": moduleYAML("module-z", "z"),
@@ -983,8 +956,11 @@ func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesMatchingOrAbsentTarg
 	fixture.configure(refZ, refA)
 	fixture.persistLock(nil)
 	recorder := newUpdateRecorder(fixture.lock)
+	pathZ := recorder.path(refZ)
+	oldZ := []byte("stale-z")
+	recorder.files[pathZ] = append([]byte(nil), oldZ...)
 	errPublish := errors.New("publish failed")
-	recorder.publishErrors[recorder.path(refZ)] = errPublish
+	recorder.publishErrors[pathZ] = errPublish
 
 	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
 
@@ -999,10 +975,12 @@ func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesMatchingOrAbsentTarg
 		if got := recorder.durable.Registry[change.Ref].SHA256; got != change.NewSHA256 {
 			t.Fatalf("durable checksum for %q = %q, want %q", change.Ref, got, change.NewSHA256)
 		}
-		path := recorder.path(change.Ref)
-		if got, ok := recorder.files[path]; ok && !bytes.Equal(got, responseForRef(t, fixture, change.Ref)) {
-			t.Fatalf("target %q = %q, want exact staged bytes or absent", path, got)
-		}
+	}
+	if got := recorder.files[recorder.path(refA)]; !bytes.Equal(got, responseForRef(t, fixture, refA)) {
+		t.Fatalf("published target %q = %q, want exact staged bytes", refA, got)
+	}
+	if got := recorder.files[pathZ]; !bytes.Equal(got, oldZ) {
+		t.Fatalf("failed atomic replacement target %q = %q, want unchanged %q", pathZ, got, oldZ)
 	}
 }
 
@@ -1286,10 +1264,6 @@ func TestUpdatePinsWithOpsEmptyAndLocalOnlyConfigsSkipEveryOperation(t *testing.
 					t.Fatal("readFile called for no-active config")
 					return nil, nil
 				},
-				remove: func(string) error {
-					t.Fatal("remove called for no-active config")
-					return nil
-				},
 				publish: func(string, []byte) error {
 					t.Fatal("publish called for no-active config")
 					return nil
@@ -1363,16 +1337,15 @@ type updateRecorder struct {
 	paths           map[string]string
 	files           map[string][]byte
 	readErrors      map[string]error
-	removeErrors    map[string]error
 	publishErrors   map[string]error
 	saveError       error
 	reads           []string
-	removes         []string
 	publications    []string
 	warnings        []string
 	saveAttempts    []*LockFile
 	events          []string
 	beforeFirstRead func()
+	beforeSave      func()
 }
 
 func newUpdateRecorder(lock *LockFile) *updateRecorder {
@@ -1383,7 +1356,6 @@ func newUpdateRecorder(lock *LockFile) *updateRecorder {
 		paths:         make(map[string]string),
 		files:         make(map[string][]byte),
 		readErrors:    make(map[string]error),
-		removeErrors:  make(map[string]error),
 		publishErrors: make(map[string]error),
 	}
 }
@@ -1402,6 +1374,9 @@ func (r *updateRecorder) ops() updateOps {
 			return *r.source, nil
 		},
 		saveLock: func(lock LockFile) error {
+			if r.beforeSave != nil {
+				r.beforeSave()
+			}
 			captured := lock
 			r.saveAttempts = append(r.saveAttempts, &captured)
 			r.events = append(r.events, "save")
@@ -1427,15 +1402,6 @@ func (r *updateRecorder) ops() updateOps {
 			}
 			return append([]byte(nil), data...), nil
 		},
-		remove: func(path string) error {
-			r.removes = append(r.removes, path)
-			r.events = append(r.events, "remove:"+path)
-			if err := r.removeErrors[path]; err != nil {
-				return err
-			}
-			delete(r.files, path)
-			return nil
-		},
 		publish: func(path string, data []byte) error {
 			r.publications = append(r.publications, path)
 			r.events = append(r.events, "publish:"+path)
@@ -1454,11 +1420,10 @@ func (r *updateRecorder) ops() updateOps {
 
 func (r *updateRecorder) requireNoMutationOps(t *testing.T) {
 	t.Helper()
-	if len(r.reads) != 0 || len(r.removes) != 0 || len(r.saveAttempts) != 0 || len(r.publications) != 0 {
+	if len(r.reads) != 0 || len(r.saveAttempts) != 0 || len(r.publications) != 0 {
 		t.Fatalf(
-			"reads = %q, removes = %q, saves = %d, publications = %q, want none",
+			"reads = %q, saves = %d, publications = %q, want none",
 			r.reads,
-			r.removes,
 			len(r.saveAttempts),
 			r.publications,
 		)
@@ -1467,9 +1432,9 @@ func (r *updateRecorder) requireNoMutationOps(t *testing.T) {
 
 func (r *updateRecorder) requirePathUntouched(t *testing.T, path string) {
 	t.Helper()
-	for _, paths := range [][]string{r.reads, r.removes, r.publications} {
+	for _, paths := range [][]string{r.reads, r.publications} {
 		if slices.Contains(paths, path) {
-			t.Fatalf("inactive path %q was accessed: reads=%q removes=%q publications=%q", path, r.reads, r.removes, r.publications)
+			t.Fatalf("inactive path %q was accessed: reads=%q publications=%q", path, r.reads, r.publications)
 		}
 	}
 }

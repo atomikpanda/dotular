@@ -3,9 +3,7 @@ package registry
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -144,7 +142,6 @@ type updateOps struct {
 	saveLock  func(LockFile) error
 	cachePath func(string) string
 	readFile  func(string) ([]byte, error)
-	remove    func(string) error
 	publish   func(string, []byte) error
 	warn      func(string)
 }
@@ -200,22 +197,9 @@ func prepareActiveTarget(
 	path string,
 	want []byte,
 	readFile func(string) ([]byte, error),
-	remove func(string) error,
-) (bool, error) {
+) bool {
 	got, err := readFile(path)
-	if err == nil && bytes.Equal(got, want) {
-		return true, nil
-	}
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-
-	if removeErr := remove(path); removeErr != nil &&
-		!errors.Is(removeErr, fs.ErrNotExist) {
-		return false, fmt.Errorf("remove registry cache %q: %w", path, removeErr)
-	}
-
-	return false, nil
+	return err == nil && bytes.Equal(got, want)
 }
 
 // UpdatePins stages every active registry ref before coordinating the lock and
@@ -241,7 +225,6 @@ func UpdatePins(
 		},
 		cachePath: moduleCachePath,
 		readFile:  os.ReadFile,
-		remove:    os.Remove,
 		publish:   writeCacheFile,
 		warn:      u.Warn,
 	})
@@ -287,15 +270,11 @@ func updatePinsWithOps(
 
 	retained := make([]bool, len(staged))
 	for i, ref := range staged {
-		retained[i], err = prepareActiveTarget(
+		retained[i] = prepareActiveTarget(
 			ops.cachePath(ref.ref),
 			ref.data,
 			ops.readFile,
-			ops.remove,
 		)
-		if err != nil {
-			return changes, err
-		}
 	}
 
 	if err := ops.saveLock(*nextLock); err != nil {
