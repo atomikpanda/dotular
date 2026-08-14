@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/audit"
@@ -602,6 +603,104 @@ func TestApplyModuleDryRun(t *testing.T) {
 	r := newTestRunner(config.Config{})
 	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
 		t.Fatal(result.Err)
+	}
+}
+
+func TestApplyModuleDryRunDoesNotEvaluateSkipIf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	marker := filepath.Join(t.TempDir(), "skip-if-ran")
+	t.Setenv("DOTULAR_SKIP_IF_MARKER", marker)
+	mod := config.Module{
+		Name: "skip-if-dry-run",
+		Items: []config.Item{
+			{Run: "true", SkipIf: `touch "$DOTULAR_SKIP_IF_MARKER"`},
+		},
+	}
+	r := newTestRunner(config.Config{})
+	var output bytes.Buffer
+	r.Out = &output
+	r.UI = ui.New(&output, &bytes.Buffer{})
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Unresolved != 1 {
+		t.Fatalf("dry-run result = %+v, want one unresolved item and no applied items", result)
+	}
+	if got := output.String(); !strings.Contains(got, "skip_if not evaluated") {
+		t.Fatalf("dry-run output = %q, want unresolved skip_if notice", got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("skip_if executed during dry-run; marker stat error = %v", err)
+	}
+}
+
+func TestApplyModuleDryRunSkipIfDoesNotCheckIdempotency(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	marker := filepath.Join(home, "idempotency-check-ran")
+	t.Setenv("DOTULAR_IDEMPOTENCY_MARKER", marker)
+	binDir := t.TempDir()
+	manager := filepath.Join(binDir, "brew")
+	if err := os.WriteFile(manager, []byte("#!/bin/sh\ntouch \"$DOTULAR_IDEMPOTENCY_MARKER\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	mod := config.Module{
+		Name: "guarded-package-dry-run",
+		Items: []config.Item{
+			{Package: "git", Via: "brew", SkipIf: "false"},
+		},
+	}
+	r := newTestRunner(config.Config{})
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Skipped != 0 || result.Unresolved != 1 {
+		t.Fatalf("dry-run result = %+v, want one unresolved item only", result)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("idempotency check executed during guarded dry-run; marker stat error = %v", err)
+	}
+	entries, err := audit.Read(mod.Name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("guarded dry-run wrote audit entries: %+v", entries)
+	}
+}
+
+func TestApplyModuleDryRunDoesNotWriteSuccessAudit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	t.Setenv("HOME", t.TempDir())
+	mod := config.Module{
+		Name:  "dry-run-audit",
+		Items: []config.Item{{Run: "true"}},
+	}
+	r := newTestRunner(config.Config{})
+
+	if result := r.ApplyModule(context.Background(), mod); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	entries, err := audit.Read("dry-run-audit", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.Outcome == "success" {
+			t.Fatalf("dry-run wrote a successful apply audit entry: %+v", entry)
+		}
 	}
 }
 
