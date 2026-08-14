@@ -1180,6 +1180,84 @@ func TestUpdatePinsProductionWarningUsesUI(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsWithOpsNoActiveRefsIsNoOp(t *testing.T) {
+	inactiveRef := "inactive.example/module"
+	inactiveEntry := LockEntry{
+		SHA256:    strings.Repeat("i", sha256.Size*2),
+		FetchedAt: time.Date(2025, 6, 7, 8, 9, 10, 0, time.UTC),
+		URL:       "https://inactive.example/module",
+	}
+	lock := &LockFile{Registry: map[string]LockEntry{inactiveRef: inactiveEntry}}
+	before := cloneTestLock(lock)
+	recorder := newUpdateRecorder(lock)
+	inactivePath := recorder.path(inactiveRef)
+	recorder.files[inactivePath] = []byte("inactive cache")
+
+	changes, err := updatePinsWithOps(context.Background(), config.Config{}, recorder.ops())
+
+	if err != nil {
+		t.Fatalf("updatePinsWithOps() error = %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes = %#v, want empty", changes)
+	}
+	recorder.requireNoMutationOps(t)
+	if len(recorder.warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", recorder.warnings)
+	}
+	if !reflect.DeepEqual(lock, before) {
+		t.Fatalf("loaded lock changed\nbefore: %#v\nafter:  %#v", before, lock)
+	}
+	if got := recorder.files[inactivePath]; !bytes.Equal(got, []byte("inactive cache")) {
+		t.Fatalf("inactive cache = %q, want unchanged", got)
+	}
+}
+
+func TestUpdatePinsNoActiveRefsDoesNotCreateMissingLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(home, "dotular.yaml")
+	lockPath := LockPath(configPath)
+	u := ui.New(io.Discard, io.Discard)
+
+	changes, err := UpdatePins(context.Background(), config.Config{}, configPath, u)
+
+	if err != nil {
+		t.Fatalf("UpdatePins() error = %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes = %#v, want empty", changes)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stat lockfile error = %v, want %v", err, fs.ErrNotExist)
+	}
+}
+
+func TestUpdatePinsNoActiveRefsPreservesExistingInactiveLockAndCache(t *testing.T) {
+	fixture := newUpdateFixture(t, nil)
+	inactiveRef := "inactive.example/module"
+	inactiveEntry := LockEntry{
+		SHA256:    strings.Repeat("i", sha256.Size*2),
+		FetchedAt: time.Date(2025, 6, 7, 8, 9, 10, 0, time.UTC),
+		URL:       "https://inactive.example/module",
+	}
+	fixture.configure()
+	fixture.persistLock(map[string]LockEntry{inactiveRef: inactiveEntry})
+	fixture.seedCache(inactiveRef, []byte("inactive cache"))
+	fixture.snapshotDurableState()
+	u := ui.New(io.Discard, io.Discard)
+
+	changes, err := UpdatePins(context.Background(), fixture.cfg, fixture.configPath, u)
+
+	if err != nil {
+		t.Fatalf("UpdatePins() error = %v", err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("changes = %#v, want empty", changes)
+	}
+	fixture.requireDurableStateUnchanged()
+}
+
 type updateRecorder struct {
 	source          *LockFile
 	durable         LockFile

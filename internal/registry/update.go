@@ -263,13 +263,16 @@ func updatePinsWithOps(
 		return nil, err
 	}
 
+	changes := changesFromStaged(staged)
+	if len(staged) == 0 {
+		return changes, nil
+	}
+
 	for _, ref := range staged {
 		if ref.trust == External {
 			ops.warn(fmt.Sprintf("[external] %s", ref.ref))
 		}
 	}
-
-	changes := changesFromStaged(staged)
 	nextLock := replacementLock(lock, staged)
 
 	if err := rejectModuleCachePathCollisions(
