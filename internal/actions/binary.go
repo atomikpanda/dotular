@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,10 +61,15 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	defer os.Remove(tmpPath)
 
 	if err := downloadTo(ctx, a.SourceURL, tmpFile); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("download %s: %w", a.SourceURL, err)
+		// The download error is the useful one, but a close failure alongside it
+		// says the partial bytes never landed either, so keep both.
+		return errors.Join(fmt.Errorf("download %s: %w", a.SourceURL, err), tmpFile.Close())
 	}
-	tmpFile.Close()
+	// Close reports flush errors that io.Copy cannot see; dropping it would
+	// install and chmod 0755 a short binary as though the download succeeded.
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("finish download %s: %w", a.SourceURL, err)
+	}
 
 	destPath := filepath.Join(destDir, a.Name)
 
@@ -85,9 +91,10 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 				return fmt.Errorf("install binary: %w", err)
 			}
 		}
+		return os.Chmod(destPath, 0o755)
 	}
 
-	return os.Chmod(destPath, 0o755)
+	return nil
 }
 
 // --- download ----------------------------------------------------------------
@@ -171,12 +178,39 @@ func extractFromZip(archivePath, binaryName, destPath string) error {
 	return fmt.Errorf("binary %q not found in zip", binaryName)
 }
 
+// writeBinary streams r into destPath by writing a temp file and renaming it
+// into place, like the plain-binary path in Run does. Creating destPath directly
+// would truncate it before the first byte arrives, so any failure mid-stream
+// would leave a working binary replaced by a corrupt one that keeps its
+// executable mode — reporting failure while making things worse. An atomic
+// replace leaves the original untouched instead.
+//
+// The temp file becomes executable before the rename, so a chmod failure
+// leaves an existing binary untouched.
 func writeBinary(r io.Reader, destPath string) error {
-	out, err := os.Create(destPath)
+	// Same directory as the target: a cross-filesystem rename is not atomic.
+	tmp, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+"-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-	_, err = io.Copy(out, r)
-	return err
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds
+
+	if _, err := io.Copy(tmp, r); err != nil {
+		return errors.Join(err, tmp.Close())
+	}
+	return commitBinary(tmp, destPath)
+}
+
+// commitBinary performs every fallible preparation step before replacing the
+// destination. The same-directory rename remains atomic where the platform
+// supports atomic replacement.
+func commitBinary(tmp *os.File, destPath string) error {
+	if err := tmp.Chmod(0o755); err != nil {
+		return errors.Join(err, tmp.Close())
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), destPath)
 }
