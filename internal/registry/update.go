@@ -3,6 +3,7 @@ package registry
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,6 +139,7 @@ func replacementLock(lock *LockFile, staged []stagedRef) *LockFile {
 
 type updateOps struct {
 	goos      string
+	acquire   func() (func() error, error)
 	loadLock  func() (LockFile, error)
 	saveLock  func(LockFile) error
 	cachePath func(string) string
@@ -202,8 +204,8 @@ func prepareActiveTarget(
 	return err == nil && bytes.Equal(got, want)
 }
 
-// UpdatePins stages every active registry ref before coordinating the lock and
-// cache transition for the complete command.
+// UpdatePins serializes the lock and cache transition for the complete active
+// registry set.
 func UpdatePins(
 	ctx context.Context,
 	cfg config.Config,
@@ -213,6 +215,9 @@ func UpdatePins(
 	lockPath := LockPath(configPath)
 	return updatePinsWithOps(ctx, cfg, updateOps{
 		goos: runtime.GOOS,
+		acquire: func() (func() error, error) {
+			return acquireRegistryUpdateLock(configPath)
+		},
 		loadLock: func() (LockFile, error) {
 			lock, err := LoadLock(lockPath)
 			if err != nil {
@@ -234,10 +239,20 @@ func updatePinsWithOps(
 	ctx context.Context,
 	cfg config.Config,
 	ops updateOps,
-) ([]PinChange, error) {
+) (changes []PinChange, err error) {
 	if len(CollectActiveRefs(cfg)) == 0 {
 		return []PinChange{}, nil
 	}
+
+	release, err := ops.acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if releaseErr := release(); releaseErr != nil {
+			err = errors.Join(err, releaseErr)
+		}
+	}()
 
 	loaded, err := ops.loadLock()
 	if err != nil {
@@ -250,7 +265,7 @@ func updatePinsWithOps(
 		return nil, err
 	}
 
-	changes := changesFromStaged(staged)
+	changes = changesFromStaged(staged)
 
 	for _, ref := range staged {
 		if ref.trust == External {

@@ -172,7 +172,7 @@ func parseModule(data []byte) (*RemoteModule, error) {
 
 func moduleCachePath(rawRef string) string {
 	safe := strings.NewReplacer(
-		"/", "_", "@", "_", ":", "_", ".", "_",
+		"/", "_", `\`, "_", "@", "_", ":", "_", ".", "_",
 	).Replace(rawRef)
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")

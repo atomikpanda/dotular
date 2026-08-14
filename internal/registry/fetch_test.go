@@ -23,12 +23,48 @@ func TestMain(m *testing.M) {
 }
 
 func TestModuleCachePath(t *testing.T) {
-	got := moduleCachePath("github.com/atomikpanda/dotular/modules/neovim@main")
-	if got == "" {
-		t.Error("expected non-empty cache path")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Should not contain slashes or @ in the filename part.
-	// The path replacer should have sanitized them.
+	cacheRoot := filepath.Join(home, ".cache", "dotular", "registry")
+
+	tests := []struct {
+		name     string
+		ref      string
+		filename string
+	}{
+		{
+			name:     "ordinary ref retains its cache name",
+			ref:      "github.com/atomikpanda/dotular/modules/neovim@main",
+			filename: "github_com_atomikpanda_dotular_modules_neovim_main.yaml",
+		},
+		{
+			name:     "backslash is sanitized",
+			ref:      `github.com\atomikpanda\dotular\modules\neovim@main`,
+			filename: "github_com_atomikpanda_dotular_modules_neovim_main.yaml",
+		},
+		{
+			name:     "mixed traversal separators are sanitized",
+			ref:      `github.com/atomikpanda/dotular\..\..\neovim@main`,
+			filename: "github_com_atomikpanda_dotular_______neovim_main.yaml",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := moduleCachePath(tt.ref)
+			if dir := filepath.Dir(got); dir != cacheRoot {
+				t.Errorf("cache directory = %q, want %q", dir, cacheRoot)
+			}
+			if filename := filepath.Base(got); filename != tt.filename {
+				t.Errorf("cache filename = %q, want %q", filename, tt.filename)
+			}
+			if strings.Contains(filepath.Base(got), `\`) {
+				t.Errorf("cache filename contains Windows separator: %q", got)
+			}
+		})
+	}
 }
 
 func TestCachedRefs(t *testing.T) {

@@ -820,7 +820,6 @@ func TestUpdatePinsReadErrorPreservesBytesUntilPostSavePublication(t *testing.T)
 	}
 }
 
-
 func TestUpdatePinsStagesWholeCommandBeforeFirstPreparation(t *testing.T) {
 	fixture := newUpdateFixture(t, map[string][]byte{
 		"/a": moduleYAML("module-a", "a"),
@@ -1191,6 +1190,149 @@ func TestUpdatePinsWithOpsNoActiveRefsIsNoOp(t *testing.T) {
 	}
 }
 
+func TestUpdatePinsWithOpsAcquisitionFailureSkipsLoad(t *testing.T) {
+	fixture, recorder, _, _ := newSingleUpdateScenario(t, false)
+	errAcquire := errors.New("acquire failed")
+	ops := recorder.ops()
+	ops.acquire = func() (func() error, error) {
+		return nil, errAcquire
+	}
+	ops.loadLock = func() (LockFile, error) {
+		t.Fatal("loadLock called after acquisition failure")
+		return LockFile{}, nil
+	}
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, ops)
+
+	if !errors.Is(err, errAcquire) {
+		t.Fatalf("updatePinsWithOps() error = %v, want %v", err, errAcquire)
+	}
+	if changes != nil {
+		t.Fatalf("changes = %#v, want nil", changes)
+	}
+}
+
+func TestUpdatePinsWithOpsReleaseFailureReturnsCompleteChanges(t *testing.T) {
+	fixture, recorder, ref, _ := newSingleUpdateScenario(t, false)
+	errRelease := errors.New("release failed")
+	ops := recorder.ops()
+	ops.acquire = func() (func() error, error) {
+		return func() error {
+			recorder.events = append(recorder.events, "release")
+			return errRelease
+		}, nil
+	}
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, ops)
+
+	if !errors.Is(err, errRelease) {
+		t.Fatalf("updatePinsWithOps() error = %v, want %v", err, errRelease)
+	}
+	requireChangeRefs(t, changes, ref)
+	if got := recorder.events[len(recorder.events)-1]; got != "release" {
+		t.Fatalf("last event = %q, want release; events=%q", got, recorder.events)
+	}
+}
+
+func TestUpdatePinsWithOpsJoinsPublicationAndReleaseFailures(t *testing.T) {
+	fixture, recorder, ref, _ := newSingleUpdateScenario(t, false)
+	errPublish := errors.New("publish failed")
+	errRelease := errors.New("release failed")
+	recorder.publishErrors[recorder.path(ref)] = errPublish
+	ops := recorder.ops()
+	ops.acquire = func() (func() error, error) {
+		return func() error {
+			recorder.events = append(recorder.events, "release")
+			return errRelease
+		}, nil
+	}
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, ops)
+
+	if !errors.Is(err, errPublish) || !errors.Is(err, errRelease) {
+		t.Fatalf("updatePinsWithOps() error = %v, want joined %v and %v", err, errPublish, errRelease)
+	}
+	requireChangeRefs(t, changes, ref)
+	wantTail := []string{"publish:" + recorder.path(ref), "release"}
+	if got := recorder.events[len(recorder.events)-2:]; !slices.Equal(got, wantTail) {
+		t.Fatalf("event tail = %q, want %q; events=%q", got, wantTail, recorder.events)
+	}
+}
+
+func TestUpdatePinsWithOpsSerializesLoadThroughPublication(t *testing.T) {
+	fixture, first, _, _ := newSingleUpdateScenario(t, false)
+	second := newUpdateRecorder(fixture.lock)
+	firstPublishing := make(chan struct{})
+	allowFirstPublication := make(chan struct{})
+	firstReleased := make(chan struct{})
+	secondAcquireStarted := make(chan struct{})
+	secondLoaded := make(chan struct{})
+
+	firstOps := first.ops()
+	firstOps.acquire = func() (func() error, error) {
+		return func() error {
+			close(firstReleased)
+			return nil
+		}, nil
+	}
+	firstPublish := firstOps.publish
+	firstOps.publish = func(path string, data []byte) error {
+		close(firstPublishing)
+		<-allowFirstPublication
+		return firstPublish(path, data)
+	}
+
+	secondOps := second.ops()
+	secondOps.acquire = func() (func() error, error) {
+		close(secondAcquireStarted)
+		<-firstReleased
+		return func() error { return nil }, nil
+	}
+	secondLoad := secondOps.loadLock
+	secondOps.loadLock = func() (LockFile, error) {
+		close(secondLoaded)
+		return secondLoad()
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := updatePinsWithOps(context.Background(), fixture.cfg, firstOps)
+		firstDone <- err
+	}()
+	<-firstPublishing
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := updatePinsWithOps(context.Background(), fixture.cfg, secondOps)
+		secondDone <- err
+	}()
+	<-secondAcquireStarted
+
+	select {
+	case <-firstReleased:
+		t.Fatal("first update released while publication was blocked")
+	default:
+	}
+	select {
+	case <-secondLoaded:
+		t.Fatal("second update loaded before first publication and release")
+	default:
+	}
+
+	close(allowFirstPublication)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first update error = %v", err)
+	}
+	select {
+	case <-secondLoaded:
+	case <-time.After(time.Second):
+		t.Fatal("second update did not load after first publication and release")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second update error = %v", err)
+	}
+}
+
 func TestUpdatePinsNoActiveRefsDoesNotCreateMissingLock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1270,6 +1412,10 @@ func TestUpdatePinsWithOpsEmptyAndLocalOnlyConfigsSkipEveryOperation(t *testing.
 				},
 				warn: func(string) {
 					t.Fatal("warn called for no-active config")
+				},
+				acquire: func() (func() error, error) {
+					t.Fatal("acquire called for no-active config")
+					return nil, nil
 				},
 			}
 
@@ -1370,6 +1516,9 @@ func (r *updateRecorder) path(ref string) string {
 func (r *updateRecorder) ops() updateOps {
 	return updateOps{
 		goos: r.goos,
+		acquire: func() (func() error, error) {
+			return func() error { return nil }, nil
+		},
 		loadLock: func() (LockFile, error) {
 			return *r.source, nil
 		},
@@ -1547,6 +1696,7 @@ func newUpdateFixture(t *testing.T, responses map[string][]byte) *updateFixture 
 	swapClient(t, f.server.Client())
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
 	f.configPath = filepath.Join(home, "dotular.yaml")
 	f.lockPath = LockPath(f.configPath)
 	return f
