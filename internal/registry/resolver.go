@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"fmt"
+	"runtime"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	tmpl "github.com/atomikpanda/dotular/internal/template"
@@ -24,6 +25,20 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, opts Res
 	lock, err := LoadLock(lockPath)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load lockfile: %w", err)
+	}
+
+	activeRefSet := CollectActiveRefs(cfg)
+	activeRefs := make([]string, 0, len(activeRefSet))
+	for ref := range activeRefSet {
+		activeRefs = append(activeRefs, ref)
+	}
+	if err := rejectModuleCachePathCollisions(
+		activeRefs,
+		CachedRefs(lock),
+		moduleCachePath,
+		runtime.GOOS,
+	); err != nil {
+		return config.Config{}, err
 	}
 
 	result := config.Config{Age: cfg.Age}

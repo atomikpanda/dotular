@@ -24,6 +24,53 @@ func TestResolveOptionContract(t *testing.T) {
 	}
 }
 
+func TestResolveRejectsActiveCachePathCollisionBeforeMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	leftRef := "github.com/user/repo?x"
+	rightRef := "github.com/user/repo:x"
+	if leftPath, rightPath := moduleCachePath(leftRef), moduleCachePath(rightRef); leftPath != rightPath {
+		t.Fatalf("test refs do not collide: %q != %q", leftPath, rightPath)
+	}
+
+	var requests atomic.Int32
+	swapClient(t, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, os.ErrPermission
+	})})
+	cfg := config.Config{Modules: []config.Module{
+		{From: leftRef},
+		{From: rightRef},
+	}}
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+
+	_, err := Resolve(
+		context.Background(),
+		cfg,
+		configPath,
+		ResolveOptions{},
+		ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+	)
+
+	if err == nil || !strings.Contains(err.Error(), "module cache path collision") {
+		t.Fatalf("Resolve() error = %v, want cache path collision", err)
+	}
+	for _, ref := range []string{leftRef, rightRef} {
+		if !strings.Contains(err.Error(), ref) {
+			t.Errorf("Resolve() error = %q, want ref %q", err, ref)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("network requests = %d, want 0", got)
+	}
+	if _, statErr := os.Stat(LockPath(configPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("lockfile stat error = %v, want not-exist", statErr)
+	}
+	cacheRoot := filepath.Dir(moduleCachePath(leftRef))
+	if _, statErr := os.Stat(cacheRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("cache root stat error = %v, want not-exist", statErr)
+	}
+}
+
 func TestDownloadError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

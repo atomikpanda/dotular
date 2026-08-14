@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -37,6 +38,15 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	// Checked before the cache is consulted: an unhonourable version is a bad
 	// reference, not a stale download, so a warm cache must not mask it.
 	if err := ref.checkVersionSupported(); err != nil {
+		return nil, ref.Trust, err
+	}
+
+	if err := rejectModuleCachePathCollisions(
+		[]string{rawRef},
+		CachedRefs(lock),
+		moduleCachePath,
+		runtime.GOOS,
+	); err != nil {
 		return nil, ref.Trust, err
 	}
 

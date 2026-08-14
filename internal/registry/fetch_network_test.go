@@ -521,3 +521,53 @@ func TestFetchRejectsPinnedMismatchBeforeYAMLParsing(t *testing.T) {
 		t.Fatalf("network requests = %d, want 1", got)
 	}
 }
+
+func TestFetchRejectsCachePathCollisionBeforeIO(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	activeRef := "github.com/user/repo?x"
+	lockedRef := "github.com/user/repo:x"
+	entry := LockEntry{
+		SHA256: "locked-checksum",
+		URL:    ParseRef(lockedRef).FetchURL,
+	}
+	lock := &LockFile{Registry: map[string]LockEntry{lockedRef: entry}}
+	cached := []byte("locked cache remains unchanged")
+	cachePath := moduleCachePath(lockedRef)
+	if err := writeCacheFile(cachePath, cached); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests atomic.Int32
+	swapClient(t, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, fmt.Errorf("unexpected network request")
+	})})
+
+	_, _, err := fetchWithOptionsForTest(t, activeRef, lock, FetchOptions{})
+
+	if err == nil || !strings.Contains(err.Error(), "module cache path collision") {
+		t.Fatalf("Fetch() error = %v, want cache path collision", err)
+	}
+	for _, ref := range []string{activeRef, lockedRef} {
+		if !strings.Contains(err.Error(), ref) {
+			t.Errorf("Fetch() error = %q, want ref %q", err, ref)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("network requests = %d, want 0", got)
+	}
+	if len(lock.Registry) != 1 {
+		t.Fatalf("lock entries = %d, want 1", len(lock.Registry))
+	}
+	requireLockEntryUnchanged(t, entry, lock.Registry[lockedRef])
+	if _, exists := lock.Registry[activeRef]; exists {
+		t.Fatalf("Fetch() added colliding ref %q to lock", activeRef)
+	}
+	gotCache, readErr := os.ReadFile(cachePath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(gotCache, cached) {
+		t.Fatalf("cache changed: got %q, want %q", gotCache, cached)
+	}
+}
