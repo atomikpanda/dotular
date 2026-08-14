@@ -180,6 +180,11 @@ func parseModule(data []byte) (*RemoteModule, error) {
 	return &mod, nil
 }
 
+func registryCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	return filepath.Join(home, ".cache", "dotular", "registry"), err
+}
+
 func moduleCachePath(rawRef string) string {
 	safe := strings.Map(func(r rune) rune {
 		if r < ' ' || strings.ContainsRune(`<>:"/\|?*@.`, r) {
@@ -201,17 +206,17 @@ func moduleCachePath(rawRef string) string {
 		safe += "_"
 	}
 
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
+	cacheDir, _ := registryCacheDir()
+	return filepath.Join(cacheDir, safe+".yaml")
 }
 
 // ClearCache removes the local registry cache directory.
 func ClearCache() error {
-	home, err := os.UserHomeDir()
+	cacheDir, err := registryCacheDir()
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(filepath.Join(home, ".cache", "dotular", "registry"))
+	return os.RemoveAll(cacheDir)
 }
 
 // CachedRefs returns the references currently in the cache directory.

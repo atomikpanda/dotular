@@ -11,8 +11,9 @@ import (
 )
 
 func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityOutsideRegistryCache(t *testing.T) {
-	cacheRoot := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache", "dotular", "registry"))
 	repository := t.TempDir()
 	configA := filepath.Join(repository, "a.yaml")
 	configB := filepath.Join(repository, "b.yaml")
@@ -59,11 +60,11 @@ func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityOutsideRegistryCache
 		t.Fatalf("config-file alias in distinct lockfile directory reused %q", pathA)
 	}
 
-	wantDir := filepath.Join(cacheRoot, "dotular", "update-locks")
+	wantDir := filepath.Join(home, ".cache", "dotular", "update-locks")
 	if filepath.Dir(pathA) != wantDir {
 		t.Fatalf("lock directory = %q, want %q", filepath.Dir(pathA), wantDir)
 	}
-	registryCacheDir := filepath.Join(cacheRoot, "dotular", "registry")
+	registryCacheDir := filepath.Join(home, ".cache", "dotular", "registry")
 	relativeToRegistry, err := filepath.Rel(registryCacheDir, pathA)
 	if err != nil {
 		t.Fatalf("resolve lock path relative to registry cache: %v", err)
@@ -91,9 +92,10 @@ func TestNormalizeRegistryUpdateIdentityFoldsCaseForCaseInsensitivePlatforms(t *
 	}
 }
 
-func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
-	cacheRoot := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+func TestClearCachePreservesHeldRegistryUpdateLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache", "dotular", "registry"))
 	configDir := t.TempDir()
 	configA := filepath.Join(configDir, "a.yaml")
 	configB := filepath.Join(configDir, "b.yaml")
@@ -113,6 +115,17 @@ func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
 			_ = releaseFirst()
 		}
 	})
+
+	lockPath, err := registryUpdateLockPath(configA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ClearCache(); err != nil {
+		t.Fatalf("ClearCache() error = %v", err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("stat lock file after ClearCache: %v", err)
+	}
 
 	attempted := make(chan struct{})
 	acquired := make(chan func() error, 1)
@@ -152,11 +165,14 @@ func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
 		t.Fatal("second acquisition remained blocked after first release")
 	}
 
-	lockPath, err := registryUpdateLockPath(configA)
+	retainedPath, err := registryUpdateLockPath(configA)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(lockPath); err != nil {
+	if retainedPath != lockPath {
+		t.Fatalf("lock path changed after release: got %q, want %q", retainedPath, lockPath)
+	}
+	if _, err := os.Stat(retainedPath); err != nil {
 		t.Fatalf("stat retained lock file: %v", err)
 	}
 }

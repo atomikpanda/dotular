@@ -35,11 +35,11 @@ func registryUpdateLockPath(configPath string) (string, error) {
 		runtime.GOOS,
 	)
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
-	cacheDir, err := os.UserCacheDir()
+	registryDir, err := registryCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("locate user cache directory: %w", err)
 	}
-	return filepath.Join(cacheDir, "dotular", "update-locks", key+".lock"), nil
+	return filepath.Join(filepath.Dir(registryDir), "update-locks", key+".lock"), nil
 }
 
 func normalizeRegistryUpdateIdentity(path, goos string) string {
