@@ -29,15 +29,21 @@ func TestModuleCachePath(t *testing.T) {
 	}
 	cacheRoot := filepath.Join(home, ".cache", "dotular", "registry")
 
-	tests := []struct {
+	type testCase struct {
 		name     string
 		ref      string
 		filename string
-	}{
+	}
+	tests := []testCase{
 		{
 			name:     "ordinary ref retains its cache name",
 			ref:      "github.com/atomikpanda/dotular/modules/neovim@main",
 			filename: "github_com_atomikpanda_dotular_modules_neovim_main.yaml",
+		},
+		{
+			name:     "query ref is sanitized",
+			ref:      "github.com/atomikpanda/dotular@main?raw=true",
+			filename: "github_com_atomikpanda_dotular_main_raw=true.yaml",
 		},
 		{
 			name:     "backslash is sanitized",
@@ -49,6 +55,38 @@ func TestModuleCachePath(t *testing.T) {
 			ref:      `github.com/atomikpanda/dotular\..\..\neovim@main`,
 			filename: "github_com_atomikpanda_dotular_______neovim_main.yaml",
 		},
+		{
+			name:     "non-reserved device prefix retains its cache name",
+			ref:      "com0",
+			filename: "com0.yaml",
+		},
+	}
+
+	for _, invalid := range `<>:"/\|?*` {
+		tests = append(tests, testCase{
+			name:     fmt.Sprintf("Windows-invalid character U+%04X is sanitized", invalid),
+			ref:      "ref" + string(invalid) + "name",
+			filename: "ref_name.yaml",
+		})
+	}
+	for invalid := rune(0); invalid < ' '; invalid++ {
+		tests = append(tests, testCase{
+			name:     fmt.Sprintf("control character U+%04X is sanitized", invalid),
+			ref:      "ref" + string(invalid) + "name",
+			filename: "ref_name.yaml",
+		})
+	}
+
+	reserved := []string{"con", "PRN", "Aux", "nUl"}
+	for i := 1; i <= 9; i++ {
+		reserved = append(reserved, fmt.Sprintf("CoM%d", i), fmt.Sprintf("lPt%d", i))
+	}
+	for _, ref := range reserved {
+		tests = append(tests, testCase{
+			name:     "reserved device name " + ref + " is made safe",
+			ref:      ref,
+			filename: ref + "_.yaml",
+		})
 	}
 
 	for _, tt := range tests {
@@ -60,8 +98,12 @@ func TestModuleCachePath(t *testing.T) {
 			if filename := filepath.Base(got); filename != tt.filename {
 				t.Errorf("cache filename = %q, want %q", filename, tt.filename)
 			}
-			if strings.Contains(filepath.Base(got), `\`) {
-				t.Errorf("cache filename contains Windows separator: %q", got)
+			relative, err := filepath.Rel(cacheRoot, got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if relative != filepath.Base(got) {
+				t.Errorf("cache path does not name one file beneath root: %q", got)
 			}
 		})
 	}

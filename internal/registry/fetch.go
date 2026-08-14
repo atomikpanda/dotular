@@ -171,9 +171,24 @@ func parseModule(data []byte) (*RemoteModule, error) {
 }
 
 func moduleCachePath(rawRef string) string {
-	safe := strings.NewReplacer(
-		"/", "_", `\`, "_", "@", "_", ":", "_", ".", "_",
-	).Replace(rawRef)
+	safe := strings.Map(func(r rune) rune {
+		if r < ' ' || strings.ContainsRune(`<>:"/\|?*@.`, r) {
+			return '_'
+		}
+		return r
+	}, rawRef)
+
+	lower := strings.ToLower(safe)
+	reserved := lower == "con" || lower == "prn" || lower == "aux" || lower == "nul"
+	if len(lower) == 4 &&
+		(strings.HasPrefix(lower, "com") || strings.HasPrefix(lower, "lpt")) &&
+		lower[3] >= '1' && lower[3] <= '9' {
+		reserved = true
+	}
+	if reserved {
+		safe += "_"
+	}
+
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".cache", "dotular", "registry", safe+".yaml")
 }
