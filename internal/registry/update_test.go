@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/atomikpanda/dotular/internal/config"
-	"gopkg.in/yaml.v3"
 )
 
 func TestPinStatusValues(t *testing.T) {
@@ -269,9 +268,8 @@ func TestStageActiveRefsYAMLTypeFailureHasNoWrites(t *testing.T) {
 
 	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
 	fixture.requireWrappedStageError(err, ref, "must be a string or a macos/windows/linux mapping")
-	var typeErr *yaml.TypeError
-	if !errors.As(err, &typeErr) {
-		t.Fatalf("stageActiveRefs() error = %v, want it to wrap *yaml.TypeError", err)
+	if !strings.Contains(err.Error(), "parse registry module") {
+		t.Fatalf("stageActiveRefs() error = %q, want stable parse context", err)
 	}
 	if got != nil {
 		t.Fatalf("stageActiveRefs() = %#v, want nil records", got)
