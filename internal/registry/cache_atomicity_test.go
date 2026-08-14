@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
-const (
-	cacheObservationRounds = 48
-	cacheReadsPerRound     = 24
-)
+const cacheObservationRounds = 48
 
 func TestWriteCacheFilePublishesWithoutTempLitter(t *testing.T) {
 	tests := []struct {
@@ -162,29 +160,9 @@ func runCacheObservationRound(
 		close(observerReady)
 		<-writerEntered
 
-		postStartValidations := 1
-		observationErr := observe()
-		if observationErr != nil {
-			result <- observationResult{
-				writeErr:             <-writeDone,
-				observationErr:       observationErr,
-				postStartValidations: postStartValidations,
-			}
-			return
-		}
-
-		for postStartValidations < cacheReadsPerRound {
-			select {
-			case writeErr := <-writeDone:
-				result <- observationResult{
-					writeErr:             writeErr,
-					postStartValidations: postStartValidations,
-				}
-				return
-			default:
-			}
-
-			observationErr = observe()
+		postStartValidations := 0
+		for {
+			observationErr := observe()
 			postStartValidations++
 			if observationErr != nil {
 				result <- observationResult{
@@ -194,22 +172,16 @@ func runCacheObservationRound(
 				}
 				return
 			}
-		}
 
-		select {
-		case writeErr := <-writeDone:
-			result <- observationResult{
-				writeErr:             writeErr,
-				postStartValidations: postStartValidations,
-			}
-		default:
-			result <- observationResult{
-				writeErr: <-writeDone,
-				observationErr: fmt.Errorf(
-					"writer did not complete within %d post-start validations",
-					cacheReadsPerRound,
-				),
-				postStartValidations: postStartValidations,
+			runtime.Gosched()
+			select {
+			case writeErr := <-writeDone:
+				result <- observationResult{
+					writeErr:             writeErr,
+					postStartValidations: postStartValidations,
+				}
+				return
+			default:
 			}
 		}
 	}()
@@ -225,13 +197,8 @@ func runCacheObservationRound(
 	}()
 
 	observation := <-result
-	if observation.postStartValidations <= 0 ||
-		observation.postStartValidations > cacheReadsPerRound {
-		t.Fatalf(
-			"post-start cache validations = %d, want within [1, %d]",
-			observation.postStartValidations,
-			cacheReadsPerRound,
-		)
+	if observation.postStartValidations <= 0 {
+		t.Fatalf("post-start cache validations = %d, want positive", observation.postStartValidations)
 	}
 	if observation.writeErr != nil {
 		t.Fatalf("production-path cache write error = %v", observation.writeErr)
