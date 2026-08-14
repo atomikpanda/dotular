@@ -20,6 +20,19 @@ type cacheWriteOps struct {
 	replace    func(string, string) error
 }
 
+func writeCacheFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	return writeCacheFileWithOps(path, data, cacheWriteOps{
+		createTemp: func(dir string, pattern string) (cacheTempFile, error) {
+			return os.CreateTemp(dir, pattern)
+		},
+		replace: replaceCacheFile,
+	})
+}
+
 func writeCacheFileWithOps(path string, data []byte, ops cacheWriteOps) error {
 	tempPattern := "." + filepath.Base(path) + ".tmp-*"
 	tempFile, err := ops.createTemp(filepath.Dir(path), tempPattern)
