@@ -148,7 +148,7 @@ func TestUnusedCacheEntries(t *testing.T) {
 	}
 }
 
-func TestResolveRejectsDriftWithoutRepin(t *testing.T) {
+func TestResolveRejectsDriftWithoutMutation(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ref := serveTestModule(t, func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, replacementModuleYAML)
@@ -205,7 +205,7 @@ func TestResolveRejectsDriftWithoutRepin(t *testing.T) {
 	}
 }
 
-func TestResolveDoesNotExposeRepinMutationToOtherCallers(t *testing.T) {
+func TestResolveKeepsAllOrdinaryCallFormsImmutable(t *testing.T) {
 	type caller func(
 		context.Context,
 		string,

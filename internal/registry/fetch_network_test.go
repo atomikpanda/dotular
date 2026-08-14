@@ -20,15 +20,9 @@ import (
 func TestFetchOptionContract(t *testing.T) {
 	t.Parallel()
 
-	opts := FetchOptions{
-		NoCache: true,
-		Repin:   true,
-	}
+	opts := FetchOptions{NoCache: true}
 	if !opts.NoCache {
 		t.Fatal("FetchOptions.NoCache = false; want true")
-	}
-	if !opts.Repin {
-		t.Fatal("FetchOptions.Repin = false; want true")
 	}
 }
 
@@ -522,74 +516,6 @@ func TestFetchRejectsPinnedMismatchBeforeYAMLParsing(t *testing.T) {
 		t.Fatalf("Fetch() error = %q, want checksum rejection before YAML parsing", err)
 	}
 	requireLockEntryUnchanged(t, before, lock.Registry[ref])
-	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("network requests = %d, want 1", got)
-	}
-}
-
-func TestFetchRepinInvalidYAMLLeavesPinUnchanged(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	var requests atomic.Int32
-	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		fmt.Fprint(w, invalidModuleYAML)
-	})
-	original := LockEntry{
-		SHA256: testModuleChecksum(testModuleYAML),
-		URL:    ParseRef(ref).FetchURL,
-	}
-	lockPath, lock := persistedTestLock(t, ref, &original)
-	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
-		t.Fatal(err)
-	}
-	before := lock.Registry[ref]
-
-	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: true, Repin: true})
-	if err == nil {
-		t.Fatal("Fetch() = nil error, want a YAML parse error")
-	}
-	if !strings.Contains(err.Error(), "parse registry module") {
-		t.Fatalf("Fetch() error = %q, want a YAML parse error", err)
-	}
-	requireLockEntryUnchanged(t, before, lock.Registry[ref])
-	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
-	if got := requests.Load(); got != 1 {
-		t.Fatalf("network requests = %d, want 1", got)
-	}
-	cached, readErr := os.ReadFile(moduleCachePath(ref))
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(cached) != testModuleYAML {
-		t.Fatalf("cache changed to invalid bytes: %q", cached)
-	}
-}
-
-func TestFetchRepinMovesExistingPin(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	var requests atomic.Int32
-	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		fmt.Fprint(w, replacementModuleYAML)
-	})
-	original := LockEntry{
-		SHA256: testModuleChecksum(testModuleYAML),
-		URL:    ParseRef(ref).FetchURL,
-	}
-	lockPath, lock := persistedTestLock(t, ref, &original)
-	before := lock.Registry[ref]
-
-	mod, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: true, Repin: true})
-	if err != nil {
-		t.Fatalf("Fetch() error = %v", err)
-	}
-	if mod.Name != "replacement-mod" {
-		t.Fatalf("module name = %q, want %q", mod.Name, "replacement-mod")
-	}
-	if got, want := lock.Registry[ref].SHA256, testModuleChecksum(replacementModuleYAML); got != want {
-		t.Fatalf("in-memory checksum = %q, want %q", got, want)
-	}
 	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("network requests = %d, want 1", got)

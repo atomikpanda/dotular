@@ -25,7 +25,6 @@ var httpClient = httputil.Client
 
 type FetchOptions struct {
 	NoCache bool
-	Repin   bool
 }
 
 // Fetch retrieves a remote module by its reference string, using the cache
@@ -64,11 +63,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 			FetchedAt: time.Now().UTC(),
 			URL:       ref.FetchURL,
 		}
-		var expected *LockEntry
-		if !opts.Repin {
-			expected = &entry
-		}
-		if err := verifyPinnedChecksum(rawRef, expected, replacement.SHA256); err != nil {
+		if err := verifyPinnedChecksum(rawRef, &entry, replacement.SHA256); err != nil {
 			return nil, ref.Trust, err
 		}
 		mod, err = parseModule(data)
@@ -77,7 +72,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 		}
 	} else {
 		var expected *LockEntry
-		if inLock && !opts.Repin {
+		if inLock {
 			expected = &entry
 		}
 		var trust TrustLevel
@@ -87,7 +82,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 		}
 	}
 
-	if !inLock || entry.SHA256 != replacement.SHA256 {
+	if !inLock {
 		lock.Registry[rawRef] = replacement
 	}
 

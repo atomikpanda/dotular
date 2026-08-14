@@ -834,7 +834,7 @@ func TestRegistryUpdateIsTheOnlyPinMutationCommand(t *testing.T) {
 	}
 }
 
-func TestOrdinaryCommandNoCacheDoesNotEnableRepin(t *testing.T) {
+func TestOrdinaryCommandNoCacheRejectsDrift(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var replacement atomic.Bool
 	var requests atomic.Int32

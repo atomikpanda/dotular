@@ -11,7 +11,6 @@ import (
 
 type ResolveOptions struct {
 	NoCache bool
-	Repin   bool
 }
 
 // Resolve processes every module in cfg. Modules with a From field are
@@ -39,7 +38,6 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, opts Res
 		beforeEntry, beforeFound := lock.Registry[mod.From]
 		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{
 			NoCache: opts.NoCache,
-			Repin:   opts.Repin,
 		}, u)
 		if err != nil {
 			return config.Config{}, err

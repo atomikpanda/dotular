@@ -18,15 +18,9 @@ import (
 func TestResolveOptionContract(t *testing.T) {
 	t.Parallel()
 
-	opts := ResolveOptions{
-		NoCache: true,
-		Repin:   true,
-	}
+	opts := ResolveOptions{NoCache: true}
 	if !opts.NoCache {
 		t.Fatal("ResolveOptions.NoCache = false; want true")
-	}
-	if !opts.Repin {
-		t.Fatal("ResolveOptions.Repin = false; want true")
 	}
 }
 
@@ -198,7 +192,7 @@ func TestResolveSaveLockFailureIsFatal(t *testing.T) {
 	}
 }
 
-func TestResolveNoCacheDoesNotRepin(t *testing.T) {
+func TestResolveNoCacheRejectsDrift(t *testing.T) {
 	tests := []struct {
 		name        string
 		networkYAML string
