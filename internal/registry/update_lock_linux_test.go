@@ -10,40 +10,64 @@ import (
 	"time"
 )
 
-func TestRegistryUpdateLockPathUsesCanonicalConfigIdentityInUserCache(t *testing.T) {
+func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityInUserCache(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheRoot)
 	repository := t.TempDir()
-	configPath := filepath.Join(repository, "dotular.yaml")
-	if err := os.WriteFile(configPath, []byte("modules: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	aliasPath := filepath.Join(t.TempDir(), "config-alias.yaml")
-	if err := os.Symlink(configPath, aliasPath); err != nil {
-		t.Fatal(err)
-	}
-
-	path, err := registryUpdateLockPath(configPath)
-	if err != nil {
-		t.Fatalf("registryUpdateLockPath() error = %v", err)
-	}
-	alias, err := registryUpdateLockPath(aliasPath)
-	if err != nil {
-		t.Fatalf("registryUpdateLockPath(alias) error = %v", err)
+	configA := filepath.Join(repository, "a.yaml")
+	configB := filepath.Join(repository, "b.yaml")
+	for _, path := range []string{configA, configB} {
+		if err := os.WriteFile(path, []byte("modules: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	if alias != path {
-		t.Fatalf("alias lock path = %q, want canonical path %q", alias, path)
+	pathA, err := registryUpdateLockPath(configA)
+	if err != nil {
+		t.Fatalf("registryUpdateLockPath(a) error = %v", err)
 	}
+	pathB, err := registryUpdateLockPath(configB)
+	if err != nil {
+		t.Fatalf("registryUpdateLockPath(b) error = %v", err)
+	}
+	if pathB != pathA {
+		t.Fatalf("same-directory config lock paths differ: a=%q b=%q", pathA, pathB)
+	}
+
+	parentAlias := filepath.Join(t.TempDir(), "repository-alias")
+	if err := os.Symlink(repository, parentAlias); err != nil {
+		t.Fatal(err)
+	}
+	aliasPath, err := registryUpdateLockPath(filepath.Join(parentAlias, filepath.Base(configA)))
+	if err != nil {
+		t.Fatalf("registryUpdateLockPath(parent alias) error = %v", err)
+	}
+	if aliasPath != pathA {
+		t.Fatalf("parent-alias lock path = %q, want canonical path %q", aliasPath, pathA)
+	}
+
+	configAliasDir := t.TempDir()
+	configAlias := filepath.Join(configAliasDir, "config-alias.yaml")
+	if err := os.Symlink(configA, configAlias); err != nil {
+		t.Fatal(err)
+	}
+	configAliasPath, err := registryUpdateLockPath(configAlias)
+	if err != nil {
+		t.Fatalf("registryUpdateLockPath(config alias) error = %v", err)
+	}
+	if configAliasPath == pathA {
+		t.Fatalf("config-file alias in distinct lockfile directory reused %q", pathA)
+	}
+
 	wantDir := filepath.Join(cacheRoot, "dotular", "registry", "update-locks")
-	if filepath.Dir(path) != wantDir {
-		t.Fatalf("lock directory = %q, want %q", filepath.Dir(path), wantDir)
+	if filepath.Dir(pathA) != wantDir {
+		t.Fatalf("lock directory = %q, want %q", filepath.Dir(pathA), wantDir)
 	}
-	if filepath.Ext(path) != ".lock" || len(strings.TrimSuffix(filepath.Base(path), ".lock")) != 64 {
-		t.Fatalf("lock filename = %q, want SHA-256 key with .lock suffix", filepath.Base(path))
+	if filepath.Ext(pathA) != ".lock" || len(strings.TrimSuffix(filepath.Base(pathA), ".lock")) != 64 {
+		t.Fatalf("lock filename = %q, want SHA-256 key with .lock suffix", filepath.Base(pathA))
 	}
-	if filepath.Dir(path) == repository {
-		t.Fatalf("lock path %q leaves an artifact in repository %q", path, repository)
+	if filepath.Dir(pathA) == repository {
+		t.Fatalf("lock path %q leaves an artifact in repository %q", pathA, repository)
 	}
 }
 
@@ -62,12 +86,16 @@ func TestNormalizeRegistryUpdateIdentityFoldsCaseForCaseInsensitivePlatforms(t *
 func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheRoot)
-	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
-	if err := os.WriteFile(configPath, []byte("modules: []\n"), 0o644); err != nil {
-		t.Fatal(err)
+	configDir := t.TempDir()
+	configA := filepath.Join(configDir, "a.yaml")
+	configB := filepath.Join(configDir, "b.yaml")
+	for _, path := range []string{configA, configB} {
+		if err := os.WriteFile(path, []byte("modules: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	releaseFirst, err := acquireRegistryUpdateLock(configPath)
+	releaseFirst, err := acquireRegistryUpdateLock(configA)
 	if err != nil {
 		t.Fatalf("first acquireRegistryUpdateLock() error = %v", err)
 	}
@@ -83,7 +111,7 @@ func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
 	errs := make(chan error, 1)
 	go func() {
 		close(attempted)
-		release, err := acquireRegistryUpdateLock(configPath)
+		release, err := acquireRegistryUpdateLock(configB)
 		if err != nil {
 			errs <- err
 			return
@@ -116,7 +144,7 @@ func TestAcquireRegistryUpdateLockProvidesMutualExclusion(t *testing.T) {
 		t.Fatal("second acquisition remained blocked after first release")
 	}
 
-	lockPath, err := registryUpdateLockPath(configPath)
+	lockPath, err := registryUpdateLockPath(configA)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,15 +21,19 @@ func acquireRegistryUpdateLock(configPath string) (func() error, error) {
 }
 
 func registryUpdateLockPath(configPath string) (string, error) {
-	absolutePath, err := filepath.Abs(configPath)
+	lockPath := LockPath(configPath)
+	absoluteDir, err := filepath.Abs(filepath.Dir(lockPath))
 	if err != nil {
-		return "", fmt.Errorf("resolve registry config path: %w", err)
+		return "", fmt.Errorf("resolve registry lockfile directory: %w", err)
 	}
-	canonicalPath, err := filepath.EvalSymlinks(absolutePath)
+	canonicalDir, err := filepath.EvalSymlinks(absoluteDir)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize registry config path: %w", err)
+		return "", fmt.Errorf("canonicalize registry lockfile directory: %w", err)
 	}
-	identity := normalizeRegistryUpdateIdentity(canonicalPath, runtime.GOOS)
+	identity := normalizeRegistryUpdateIdentity(
+		filepath.Join(canonicalDir, filepath.Base(lockPath)),
+		runtime.GOOS,
+	)
 	key := fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
