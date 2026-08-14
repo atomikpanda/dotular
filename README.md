@@ -407,6 +407,14 @@ dotular registry update         # re-fetch modules and update their pins
 every module in the official index. `--cached` needs no network: it reads
 `dotular.lock.yaml` and prints each pinned ref with its trust level and fetch time.
 
+`registry update` stages every unique active registry ref before making changes,
+then prints one tab-separated `REF OLD NEW` row per ref in lexical ref order. A
+missing old checksum is printed as `none`. Once staging succeeds, all rows are
+printed even if a later cache-path collision, cache preparation, lock save, or
+cache publication fails; a staging failure prints no rows. Inactive pins and
+their cache paths are preserved. A cache-path collision involving an active ref
+fails without migrating either ref.
+
 ### Global flags
 
 | Flag          | Description |
@@ -509,8 +517,9 @@ Bare names (e.g. `neovim`) expand to `github.com/atomikpanda/dotular/modules/neo
 ### Cache
 
 Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` to
-re-fetch while preserving and verifying existing pins. `dotular registry update`
-is the sole command that explicitly authorizes replacing them.
+re-fetch while preserving and verifying existing pins. Ordinary resolution
+continues to reject checksum drift; `dotular registry update` is the sole
+command that explicitly authorizes replacing existing pins.
 
 ---
 

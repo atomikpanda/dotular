@@ -42,6 +42,8 @@ var (
 	noCache    bool
 )
 
+var updateRegistryPins = registry.UpdatePins
+
 // Exit statuses. 2 is the conventional status for a caller who invoked the CLI
 // wrongly, so scripts can tell a typo from a genuine failure.
 const (
@@ -847,21 +849,29 @@ func registryCmd() *cobra.Command {
 			Short: "Re-fetch all registry modules referenced in the config",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ctx := context.Background()
-				// Force re-fetch and authorize updating the immutable pin.
 				cfg, err := loadConfig()
 				if err != nil {
 					return err
 				}
-				u := ui.New(os.Stdout, os.Stderr)
-				_, err = registry.Resolve(ctx, cfg, configFile, registry.ResolveOptions{
-					NoCache: true,
-					Repin:   true,
-				}, u)
-				if err != nil {
-					return err
+				out := cmd.OutOrStdout()
+				u := ui.New(out, cmd.ErrOrStderr())
+				changes, err := updateRegistryPins(ctx, cfg, configFile, u)
+				for _, change := range changes {
+					old := change.OldSHA256
+					if old == "" {
+						old = "none"
+					}
+					if _, writeErr := fmt.Fprintf(
+						out,
+						"%s\t%s\t%s\n",
+						change.Ref,
+						old,
+						change.NewSHA256,
+					); writeErr != nil {
+						return writeErr
+					}
 				}
-				u.Success("registry modules updated")
-				return nil
+				return err
 			},
 		},
 	)

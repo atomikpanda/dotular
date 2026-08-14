@@ -607,6 +607,233 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 	}
 }
 
+const (
+	registryUpdateRefA = "example.invalid/a.yaml"
+	registryUpdateRefM = "example.invalid/m.yaml"
+	registryUpdateRefZ = "example.invalid/z.yaml"
+	registryUpdateNewA = "new-a"
+	registryUpdateOldM = "old-m"
+	registryUpdateNewM = "new-m"
+	registryUpdateOldZ = "old-z"
+	registryUpdateNewZ = "new-z"
+)
+
+func registryUpdateChanges() []registry.PinChange {
+	return []registry.PinChange{
+		{
+			Ref:       registryUpdateRefA,
+			NewSHA256: registryUpdateNewA,
+			Status:    registry.PinStatusMissing,
+		},
+		{
+			Ref:       registryUpdateRefM,
+			OldSHA256: registryUpdateOldM,
+			NewSHA256: registryUpdateNewM,
+			Status:    registry.PinStatusMatch,
+		},
+		{
+			Ref:       registryUpdateRefZ,
+			OldSHA256: registryUpdateOldZ,
+			NewSHA256: registryUpdateNewZ,
+			Status:    registry.PinStatusDrift,
+		},
+	}
+}
+
+func registryUpdateOutput() string {
+	return strings.Join([]string{
+		registryUpdateRefA + "\tnone\t" + registryUpdateNewA,
+		registryUpdateRefM + "\t" + registryUpdateOldM + "\t" + registryUpdateNewM,
+		registryUpdateRefZ + "\t" + registryUpdateOldZ + "\t" + registryUpdateNewZ,
+		"",
+	}, "\n")
+}
+
+func stubRegistryUpdatePins(
+	t *testing.T,
+	stub func(context.Context, config.Config, string, *ui.UI) ([]registry.PinChange, error),
+) {
+	t.Helper()
+	previous := updateRegistryPins
+	updateRegistryPins = stub
+	t.Cleanup(func() { updateRegistryPins = previous })
+}
+
+func executeRegistryUpdate(t *testing.T, path string) (string, error) {
+	t.Helper()
+	var stdout bytes.Buffer
+	root := buildRoot()
+	root.SetOut(&stdout)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"registry", "update", "--config", path})
+	err := root.Execute()
+	return stdout.String(), err
+}
+
+func TestRegistryUpdatePrintsSortedRowsWithExactNoneRendering(t *testing.T) {
+	stubRegistryUpdatePins(t, func(
+		context.Context,
+		config.Config,
+		string,
+		*ui.UI,
+	) ([]registry.PinChange, error) {
+		return registryUpdateChanges(), nil
+	})
+
+	got, err := executeRegistryUpdate(t, writeTestConfig(t, "modules: []\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := registryUpdateOutput()
+	if got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"REF", "STATUS", "(none)"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("stdout contains forbidden %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestRegistryUpdatePrintsAllRowsBeforePostStagingError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "collision", err: errors.New("collision")},
+		{name: "preparation", err: errors.New("preparation")},
+		{name: "save-lock", err: errors.New("save lock")},
+		{name: "publication", err: errors.New("publication")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stubRegistryUpdatePins(t, func(
+				context.Context,
+				config.Config,
+				string,
+				*ui.UI,
+			) ([]registry.PinChange, error) {
+				return registryUpdateChanges(), tt.err
+			})
+
+			got, err := executeRegistryUpdate(t, writeTestConfig(t, "modules: []\n"))
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("error = %v, want %v", err, tt.err)
+			}
+			if want := registryUpdateOutput(); got != want {
+				t.Fatalf("stdout = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRegistryUpdatePrintsNoRowsOnStagingFailure(t *testing.T) {
+	errStage := errors.New("staging")
+	stubRegistryUpdatePins(t, func(
+		context.Context,
+		config.Config,
+		string,
+		*ui.UI,
+	) ([]registry.PinChange, error) {
+		return nil, errStage
+	})
+
+	got, err := executeRegistryUpdate(t, writeTestConfig(t, "modules: []\n"))
+	if !errors.Is(err, errStage) {
+		t.Fatalf("error = %v, want %v", err, errStage)
+	}
+	if got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}
+
+func TestRegistryUpdateInvokesUpdatePinsOnceForCompleteConfiguration(t *testing.T) {
+	var (
+		calls          int
+		receivedConfig config.Config
+		receivedPath   string
+	)
+	stubRegistryUpdatePins(t, func(
+		_ context.Context,
+		cfg config.Config,
+		configPath string,
+		u *ui.UI,
+	) ([]registry.PinChange, error) {
+		calls++
+		receivedConfig = cfg
+		receivedPath = configPath
+		if u == nil {
+			t.Fatal("UpdatePins received nil UI")
+		}
+		return nil, nil
+	})
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: local
+    items:
+      - package: git
+  - from: %q
+  - from: %q
+  - from: %q
+`, registryUpdateRefA, registryUpdateRefA, registryUpdateRefZ))
+
+	if _, err := executeRegistryUpdate(t, path); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("UpdatePins calls = %d, want 1", calls)
+	}
+	if receivedPath != path {
+		t.Fatalf("config path = %q, want %q", receivedPath, path)
+	}
+	if len(receivedConfig.Modules) != 4 {
+		t.Fatalf("loaded modules = %d, want 4", len(receivedConfig.Modules))
+	}
+	wantRefs := []string{"", registryUpdateRefA, registryUpdateRefA, registryUpdateRefZ}
+	for i, want := range wantRefs {
+		if got := receivedConfig.Modules[i].From; got != want {
+			t.Fatalf("module %d ref = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestRegistryUpdateIsTheOnlyPinMutationCommand(t *testing.T) {
+	root := buildRoot()
+	registryCommand, _, err := root.Find([]string{"registry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateCommand, _, err := root.Find([]string{"registry", "update"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allowed := map[string]bool{"clear": true, "list": true, "update": true}
+	updateCount := 0
+	for _, command := range registryCommand.Commands() {
+		if !allowed[command.Name()] {
+			t.Fatalf("unexpected registry mutation command %q", command.Name())
+		}
+		if command.Name() == "update" {
+			updateCount++
+		}
+	}
+	if len(registryCommand.Commands()) != len(allowed) {
+		t.Fatalf("registry commands = %d, want %d", len(registryCommand.Commands()), len(allowed))
+	}
+	if updateCount != 1 {
+		t.Fatalf("registry update commands = %d, want 1", updateCount)
+	}
+	for _, flagName := range []string{"check", "repin"} {
+		if updateCommand.Flags().Lookup(flagName) != nil ||
+			updateCommand.PersistentFlags().Lookup(flagName) != nil ||
+			updateCommand.InheritedFlags().Lookup(flagName) != nil {
+			t.Fatalf("registry update exposes forbidden --%s flag", flagName)
+		}
+	}
+}
+
 func TestOrdinaryCommandNoCacheDoesNotEnableRepin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var replacement atomic.Bool
@@ -659,7 +886,7 @@ func TestOrdinaryCommandNoCacheDoesNotEnableRepin(t *testing.T) {
 	}
 }
 
-func TestRegistryUpdateExplicitRepinMovesPin(t *testing.T) {
+func TestRegistryUpdateMovesExistingPin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	var replacement atomic.Bool
 	var requests atomic.Int32
