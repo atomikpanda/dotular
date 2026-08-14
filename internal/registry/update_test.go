@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 func TestPinStatusValues(t *testing.T) {
@@ -873,6 +874,146 @@ func TestUpdatePinsSuccessfulOrderingIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestStageActiveRefsCarriesTrustLevel(t *testing.T) {
+	data := moduleYAML("module", "package")
+	fixture := newUpdateFixture(t, nil)
+	officialRef := "github.com/atomikpanda/dotular/modules/official@main"
+	githubRef := "github.com/example/project@main"
+	externalRef := fixture.ref("/external")
+	fixture.configure(externalRef, githubRef, officialRef)
+	fixture.persistLock(nil)
+	fixture.swapTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(data)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	}))
+
+	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+
+	if err != nil {
+		t.Fatalf("stageActiveRefs() error = %v", err)
+	}
+	wantTrust := map[string]TrustLevel{
+		officialRef: Official,
+		githubRef:   GitHub,
+		externalRef: External,
+	}
+	for _, got := range staged {
+		if got.trust != wantTrust[got.ref] {
+			t.Fatalf("trust for %q = %s, want %s", got.ref, got.trust, wantTrust[got.ref])
+		}
+	}
+}
+
+func TestUpdatePinsWarnsOncePerUniqueExternalRefInLexicalOrderAfterStaging(t *testing.T) {
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/a": moduleYAML("module-a", "a"),
+		"/z": moduleYAML("module-z", "z"),
+	})
+	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
+	fixture.configure(refZ, refA, refZ, refA)
+	fixture.persistLock(nil)
+	recorder := newUpdateRecorder(fixture.lock)
+	warningsBeforePreparation := false
+	recorder.beforeFirstRead = func() {
+		warningsBeforePreparation = slices.Equal(recorder.warnings, []string{
+			fmt.Sprintf("[external] %s", refA),
+			fmt.Sprintf("[external] %s", refZ),
+		}) &&
+			fixture.requestCount(refA) == 1 &&
+			fixture.requestCount(refZ) == 1
+	}
+
+	_, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
+
+	if err != nil {
+		t.Fatalf("updatePinsWithOps() error = %v", err)
+	}
+	want := []string{
+		fmt.Sprintf("[external] %s", refA),
+		fmt.Sprintf("[external] %s", refZ),
+	}
+	if !slices.Equal(recorder.warnings, want) {
+		t.Fatalf("warnings = %q, want %q", recorder.warnings, want)
+	}
+	if !warningsBeforePreparation {
+		t.Fatalf("warnings were not emitted after complete staging and before preparation: events=%q", recorder.events)
+	}
+}
+
+func TestUpdatePinsDoesNotWarnForOfficialOrGitHubRefs(t *testing.T) {
+	data := moduleYAML("module", "package")
+	fixture := newUpdateFixture(t, nil)
+	officialRef := "github.com/atomikpanda/dotular/modules/official@main"
+	githubRef := "github.com/example/project@main"
+	fixture.configure(githubRef, officialRef)
+	fixture.persistLock(nil)
+	fixture.swapTransport(roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(data)),
+			Header:     make(http.Header),
+			Request:    req,
+		}, nil
+	}))
+	recorder := newUpdateRecorder(fixture.lock)
+
+	_, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
+
+	if err != nil {
+		t.Fatalf("updatePinsWithOps() error = %v", err)
+	}
+	if len(recorder.warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", recorder.warnings)
+	}
+}
+
+func TestUpdatePinsStagingFailureEmitsNoPartialExternalWarnings(t *testing.T) {
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/a": moduleYAML("module-a", "a"),
+		"/z": []byte("name: [unterminated\n"),
+	})
+	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
+	fixture.configure(refZ, refA)
+	fixture.persistLock(nil)
+	recorder := newUpdateRecorder(fixture.lock)
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
+
+	if err == nil {
+		t.Fatal("updatePinsWithOps() error = nil, want staging failure")
+	}
+	if changes != nil {
+		t.Fatalf("changes = %#v, want nil", changes)
+	}
+	if len(recorder.warnings) != 0 {
+		t.Fatalf("warnings = %q, want none for incomplete staging", recorder.warnings)
+	}
+	recorder.requireNoMutationOps(t)
+}
+
+func TestUpdatePinsProductionWarningUsesUI(t *testing.T) {
+	data := moduleYAML("external", "external")
+	fixture := newUpdateFixture(t, map[string][]byte{"/external": data})
+	ref := fixture.ref("/external")
+	fixture.configure(ref)
+	fixture.persistLock(nil)
+	var warningOutput bytes.Buffer
+	u := ui.New(io.Discard, &warningOutput)
+
+	_, err := UpdatePins(context.Background(), fixture.cfg, fixture.configPath, u)
+
+	if err != nil {
+		t.Fatalf("UpdatePins() error = %v", err)
+	}
+	if !strings.Contains(warningOutput.String(), "[external] "+ref) {
+		t.Fatalf("warning output = %q, want external warning for %q", warningOutput.String(), ref)
+	}
+}
+
 type updateRecorder struct {
 	source          *LockFile
 	durable         LockFile
@@ -885,6 +1026,7 @@ type updateRecorder struct {
 	reads           []string
 	removes         []string
 	publications    []string
+	warnings        []string
 	saveAttempts    []*LockFile
 	events          []string
 	beforeFirstRead func()
@@ -957,6 +1099,10 @@ func (r *updateRecorder) ops() updateOps {
 			}
 			r.files[path] = append([]byte(nil), data...)
 			return nil
+		},
+		warn: func(message string) {
+			r.warnings = append(r.warnings, message)
+			r.events = append(r.events, "warn:"+message)
 		},
 	}
 }

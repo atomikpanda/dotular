@@ -36,6 +36,7 @@ type stagedRef struct {
 	oldPresent     bool
 	proposedSHA256 string
 	module         RemoteModule
+	trust          TrustLevel
 	status         PinStatus
 	data           []byte
 	replacement    LockEntry
@@ -63,7 +64,7 @@ func stageActiveRefs(ctx context.Context, cfg config.Config, lock *LockFile) ([]
 }
 
 func stageOneRef(ctx context.Context, ref string, lock *LockFile) (stagedRef, error) {
-	data, module, replacement, _, err := fetchNoWrite(ctx, ref, nil)
+	data, module, replacement, trust, err := fetchNoWrite(ctx, ref, nil)
 	if err != nil {
 		return stagedRef{}, err
 	}
@@ -83,6 +84,7 @@ func stageOneRef(ctx context.Context, ref string, lock *LockFile) (stagedRef, er
 		oldPresent:     oldPresent,
 		proposedSHA256: replacement.SHA256,
 		module:         *module,
+		trust:          trust,
 		status:         status,
 		data:           data,
 		replacement:    replacement,
@@ -120,6 +122,7 @@ type updateOps struct {
 	readFile  func(string) ([]byte, error)
 	remove    func(string) error
 	publish   func(string, []byte) error
+	warn      func(string)
 }
 
 func rejectModuleCachePathCollisions(
@@ -205,6 +208,7 @@ func UpdatePins(
 		readFile:  os.ReadFile,
 		remove:    os.Remove,
 		publish:   writeCacheFile,
+		warn:      u.Warn,
 	})
 }
 
@@ -222,6 +226,12 @@ func updatePinsWithOps(
 	staged, err := stageActiveRefs(ctx, cfg, lock)
 	if err != nil {
 		return nil, err
+	}
+
+	for _, ref := range staged {
+		if ref.trust == External {
+			ops.warn(fmt.Sprintf("[external] %s", ref.ref))
+		}
 	}
 
 	changes := changesFromStaged(staged)
