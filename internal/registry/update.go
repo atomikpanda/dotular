@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
@@ -23,6 +24,8 @@ const (
 	PinStatusMatch   PinStatus = "match"
 	PinStatusDrift   PinStatus = "drift"
 )
+
+const maxAggregateStagedBytes = 4 * httputil.MaxBodySize
 
 // PinChange describes the pre-command and proposed checksums for one active ref.
 type PinChange struct {
@@ -44,7 +47,12 @@ type stagedRef struct {
 	replacement    LockEntry
 }
 
-func stageActiveRefs(ctx context.Context, cfg config.Config, lock *LockFile) ([]stagedRef, error) {
+func stageActiveRefs(
+	ctx context.Context,
+	cfg config.Config,
+	lock *LockFile,
+	maxStagedBytes int,
+) ([]stagedRef, error) {
 	refs := make([]string, 0, len(cfg.Modules))
 	for _, module := range cfg.Modules {
 		if module.From != "" {
@@ -55,11 +63,20 @@ func stageActiveRefs(ctx context.Context, cfg config.Config, lock *LockFile) ([]
 	refs = slices.Compact(refs)
 
 	staged := make([]stagedRef, 0, len(refs))
+	stagedBytes := 0
 	for _, ref := range refs {
 		entry, err := stageOneRef(ctx, ref, lock)
 		if err != nil {
 			return nil, fmt.Errorf("stage registry ref %q: %w", ref, err)
 		}
+		if stagedBytes > maxStagedBytes || len(entry.data) > maxStagedBytes-stagedBytes {
+			return nil, fmt.Errorf(
+				"stage registry ref %q: aggregate staged response data exceeds the %d byte limit",
+				ref,
+				maxStagedBytes,
+			)
+		}
+		stagedBytes += len(entry.data)
 		staged = append(staged, entry)
 	}
 
@@ -138,14 +155,15 @@ func replacementLock(lock *LockFile, staged []stagedRef) *LockFile {
 }
 
 type updateOps struct {
-	goos      string
-	acquire   func() (func() error, error)
-	loadLock  func() (LockFile, error)
-	saveLock  func(LockFile) error
-	cachePath func(string) string
-	readFile  func(string) ([]byte, error)
-	publish   func(string, []byte) error
-	warn      func(string)
+	goos           string
+	maxStagedBytes int
+	acquire        func() (func() error, error)
+	loadLock       func() (LockFile, error)
+	saveLock       func(LockFile) error
+	cachePath      func(string) string
+	readFile       func(string) ([]byte, error)
+	publish        func(string, []byte) error
+	warn           func(string)
 }
 
 func moduleCacheCollisionKey(goos, path string) string {
@@ -214,7 +232,8 @@ func UpdatePins(
 ) ([]PinChange, error) {
 	lockPath := LockPath(configPath)
 	return updatePinsWithOps(ctx, cfg, updateOps{
-		goos: runtime.GOOS,
+		goos:           runtime.GOOS,
+		maxStagedBytes: maxAggregateStagedBytes,
 		acquire: func() (func() error, error) {
 			return acquireRegistryUpdateLock(configPath)
 		},
@@ -260,7 +279,7 @@ func updatePinsWithOps(
 	}
 	lock := &loaded
 
-	staged, err := stageActiveRefs(ctx, cfg, lock)
+	staged, err := stageActiveRefs(ctx, cfg, lock, ops.maxStagedBytes)
 	if err != nil {
 		return nil, err
 	}

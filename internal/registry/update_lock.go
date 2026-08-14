@@ -39,7 +39,7 @@ func registryUpdateLockPath(configPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("locate user cache directory: %w", err)
 	}
-	return filepath.Join(cacheDir, "dotular", "registry", "update-locks", key+".lock"), nil
+	return filepath.Join(cacheDir, "dotular", "update-locks", key+".lock"), nil
 }
 
 func normalizeRegistryUpdateIdentity(path, goos string) string {

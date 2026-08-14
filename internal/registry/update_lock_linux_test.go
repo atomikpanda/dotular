@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityInUserCache(t *testing.T) {
+func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityOutsideRegistryCache(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheRoot)
 	repository := t.TempDir()
@@ -31,7 +31,7 @@ func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityInUserCache(t *testi
 		t.Fatalf("registryUpdateLockPath(b) error = %v", err)
 	}
 	if pathB != pathA {
-		t.Fatalf("same-directory config lock paths differ: a=%q b=%q", pathA, pathB)
+		t.Fatalf("same lockfile destination produced different paths: a=%q b=%q", pathA, pathB)
 	}
 
 	parentAlias := filepath.Join(t.TempDir(), "repository-alias")
@@ -59,9 +59,17 @@ func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityInUserCache(t *testi
 		t.Fatalf("config-file alias in distinct lockfile directory reused %q", pathA)
 	}
 
-	wantDir := filepath.Join(cacheRoot, "dotular", "registry", "update-locks")
+	wantDir := filepath.Join(cacheRoot, "dotular", "update-locks")
 	if filepath.Dir(pathA) != wantDir {
 		t.Fatalf("lock directory = %q, want %q", filepath.Dir(pathA), wantDir)
+	}
+	registryCacheDir := filepath.Join(cacheRoot, "dotular", "registry")
+	relativeToRegistry, err := filepath.Rel(registryCacheDir, pathA)
+	if err != nil {
+		t.Fatalf("resolve lock path relative to registry cache: %v", err)
+	}
+	if relativeToRegistry != ".." && !strings.HasPrefix(relativeToRegistry, ".."+string(filepath.Separator)) {
+		t.Fatalf("lock path %q is inside deletable registry cache tree %q", pathA, registryCacheDir)
 	}
 	if filepath.Ext(pathA) != ".lock" || len(strings.TrimSuffix(filepath.Base(pathA), ".lock")) != 64 {
 		t.Fatalf("lock filename = %q, want SHA-256 key with .lock suffix", filepath.Base(pathA))

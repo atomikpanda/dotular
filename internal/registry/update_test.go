@@ -57,7 +57,7 @@ func TestStageActiveRefsReturnsCompleteSortedUniqueRecordsWithoutWrites(t *testi
 	fixture.seedCache(refZ, []byte("old cache z"))
 	fixture.snapshotDurableState()
 
-	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	if err != nil {
 		t.Fatalf("stageActiveRefs() error = %v", err)
 	}
@@ -131,6 +131,80 @@ func TestStageActiveRefsReturnsCompleteSortedUniqueRecordsWithoutWrites(t *testi
 	fixture.requireDurableStateUnchanged()
 }
 
+func TestStageActiveRefsAllowsExactAggregateByteLimit(t *testing.T) {
+	dataA := moduleYAML("module-a", "a")
+	dataZ := moduleYAML("module-z", "z")
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/a": dataA,
+		"/z": dataZ,
+	})
+	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
+	fixture.configure(refZ, refA)
+	fixture.persistLock(nil)
+	fixture.snapshotDurableState()
+
+	staged, err := stageActiveRefs(
+		context.Background(),
+		fixture.cfg,
+		fixture.lock,
+		len(dataA)+len(dataZ),
+	)
+	if err != nil {
+		t.Fatalf("stageActiveRefs() error = %v", err)
+	}
+	if got, want := refsFromStaged(staged), []string{refA, refZ}; !slices.Equal(got, want) {
+		t.Fatalf("staged refs = %q, want %q", got, want)
+	}
+	for _, ref := range []string{refA, refZ} {
+		if got := fixture.requestCount(ref); got != 1 {
+			t.Fatalf("requests for %q = %d, want 1", ref, got)
+		}
+	}
+	fixture.requireDurableStateUnchanged()
+}
+
+func TestUpdatePinsAggregateByteLimitReturnsNoRowsOrMutation(t *testing.T) {
+	dataA := moduleYAML("module-a", "a")
+	dataZ := moduleYAML("module-z", "z")
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/a": dataA,
+		"/z": dataZ,
+	})
+	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
+	fixture.configure(refZ, refA, refZ)
+	fixture.persistLock(nil)
+	fixture.snapshotDurableState()
+	recorder := newUpdateRecorder(fixture.lock)
+	ops := recorder.ops()
+	ops.maxStagedBytes = len(dataA) + len(dataZ) - 1
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, ops)
+
+	if err == nil {
+		t.Fatal("updatePinsWithOps() error = nil, want aggregate staged-data limit error")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf(
+		"stage registry ref %q: aggregate staged response data exceeds the %d byte limit",
+		refZ,
+		ops.maxStagedBytes,
+	)) {
+		t.Fatalf("updatePinsWithOps() error = %q, want staged ref and aggregate byte-limit context", err)
+	}
+	if changes != nil {
+		t.Fatalf("changes = %#v, want nil", changes)
+	}
+	for _, ref := range []string{refA, refZ} {
+		if got := fixture.requestCount(ref); got != 1 {
+			t.Fatalf("requests for %q = %d, want 1", ref, got)
+		}
+	}
+	if len(recorder.warnings) != 0 {
+		t.Fatalf("warnings = %q, want none", recorder.warnings)
+	}
+	recorder.requireNoMutationOps(t)
+	fixture.requireDurableStateUnchanged()
+}
+
 func TestStageActiveRefsReturnsMissingMatchAndDrift(t *testing.T) {
 	dataA := moduleYAML("module-a", "a")
 	dataM := moduleYAML("module-m", "m")
@@ -149,7 +223,7 @@ func TestStageActiveRefsReturnsMissingMatchAndDrift(t *testing.T) {
 	})
 	fixture.snapshotDurableState()
 
-	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	if err != nil {
 		t.Fatalf("stageActiveRefs() error = %v", err)
 	}
@@ -195,7 +269,7 @@ func TestStageActiveRefsLaterFailureReturnsNoPartialRecordsWithoutWrites(t *test
 	fixture.seedCache(refZ, []byte("old cache z"))
 	fixture.snapshotDurableState()
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	fixture.requireWrappedStageError(err, refZ, "parse registry module")
 	if got != nil {
 		t.Fatalf("stageActiveRefs() = %#v, want nil records after a later failure", got)
@@ -218,7 +292,7 @@ func TestStageActiveRefsDownloadFailureHasNoWrites(t *testing.T) {
 		return nil, cause
 	}))
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	fixture.requireStageError(err, cause, ref)
 	if got != nil {
 		t.Fatalf("stageActiveRefs() = %#v, want nil records", got)
@@ -242,7 +316,7 @@ func TestStageActiveRefsBodyReadFailureHasNoWrites(t *testing.T) {
 		}, nil
 	}))
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	fixture.requireStageError(err, cause, ref)
 	if got != nil {
 		t.Fatalf("stageActiveRefs() = %#v, want nil records", got)
@@ -255,7 +329,7 @@ func TestStageActiveRefsMalformedYAMLHasNoWrites(t *testing.T) {
 	ref := fixture.ref("/a")
 	fixture.prepareFailure(ref)
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	fixture.requireWrappedStageError(err, ref, "parse registry module")
 	if got != nil {
 		t.Fatalf("stageActiveRefs() = %#v, want nil records", got)
@@ -269,7 +343,7 @@ func TestStageActiveRefsYAMLTypeFailureHasNoWrites(t *testing.T) {
 	ref := fixture.ref("/a")
 	fixture.prepareFailure(ref)
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 	fixture.requireWrappedStageError(err, ref, "must be a string or a macos/windows/linux mapping")
 	if !strings.Contains(err.Error(), "parse registry module") {
 		t.Fatalf("stageActiveRefs() error = %q, want stable parse context", err)
@@ -309,7 +383,7 @@ func TestStageActiveRefsValidatesEverySharedRefUsageAfterUniqueFetchesWithoutWri
 	fixture.seedCache(otherRef, []byte("old other cache"))
 	fixture.snapshotDurableState()
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 
 	fixture.requireWrappedStageError(err, sharedRef, `module "invalid-shared-usage"`)
 	if !strings.Contains(err.Error(), "unmarshal rendered item") {
@@ -1034,7 +1108,7 @@ func TestStageActiveRefsCarriesTrustLevel(t *testing.T) {
 		}, nil
 	}))
 
-	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+	staged, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 
 	if err != nil {
 		t.Fatalf("stageActiveRefs() error = %v", err)
@@ -1515,7 +1589,8 @@ func (r *updateRecorder) path(ref string) string {
 
 func (r *updateRecorder) ops() updateOps {
 	return updateOps{
-		goos: r.goos,
+		goos:           r.goos,
+		maxStagedBytes: maxAggregateStagedBytes,
 		acquire: func() (func() error, error) {
 			return func() error { return nil }, nil
 		},
