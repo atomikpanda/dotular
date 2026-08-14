@@ -36,12 +36,18 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, opts Res
 			continue
 		}
 
+		beforeEntry, beforeFound := lock.Registry[mod.From]
 		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{
 			NoCache: opts.NoCache,
 			Repin:   opts.Repin,
 		}, u)
 		if err != nil {
 			return config.Config{}, err
+		}
+		afterEntry, afterFound := lock.Registry[mod.From]
+		entryChanged := beforeFound != afterFound || beforeEntry != afterEntry
+		if entryChanged {
+			lockDirty = true
 		}
 
 		switch trust {
@@ -70,12 +76,11 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, opts Res
 			ExcludeTags: mod.ExcludeTags,
 			Hooks:       mod.Hooks,
 		})
-		lockDirty = true
 	}
 
 	if lockDirty {
 		if err := SaveLock(lockPath, lock); err != nil {
-			u.Warn(fmt.Sprintf("could not save lockfile: %v", err))
+			return config.Config{}, fmt.Errorf("save lockfile: %w", err)
 		}
 	}
 

@@ -3,17 +3,24 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/httputil"
+	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/testutil"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 // Commands that apply items write the audit log, and the tag commands write
@@ -30,6 +37,50 @@ func writeTestConfig(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+const (
+	commandRegistryModuleA = "name: command-module-a\nitems:\n  - package: neovim\n    via: brew\n"
+	commandRegistryModuleB = "name: command-module-b\nitems:\n  - package: helix\n    via: brew\n"
+)
+
+func commandRegistryChecksum(data string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+}
+
+func serveCommandRegistryModule(t *testing.T, replacement *atomic.Bool, requests *atomic.Int32) string {
+	t.Helper()
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		body := commandRegistryModuleA
+		if replacement.Load() {
+			body = commandRegistryModuleB
+		}
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	previousTransport := httputil.Client.Transport
+	httputil.Client.Transport = srv.Client().Transport
+	t.Cleanup(func() { httputil.Client.Transport = previousTransport })
+
+	return strings.TrimPrefix(srv.URL, "https://") + "/module.yaml"
+}
+
+func seedCommandRegistryCache(t *testing.T, ref string, lock *registry.LockFile, requests *atomic.Int32) {
+	t.Helper()
+
+	if _, _, err := registry.Fetch(
+		context.Background(),
+		ref,
+		lock,
+		registry.FetchOptions{},
+		ui.New(io.Discard, io.Discard),
+	); err != nil {
+		t.Fatalf("seed registry cache: %v", err)
+	}
+	requests.Store(0)
 }
 
 func TestBuildRoot(t *testing.T) {
@@ -553,6 +604,94 @@ func TestRegistryUpdateCmdExecute(t *testing.T) {
 	root.SetArgs([]string{"registry", "update", "--config", path})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOrdinaryCommandNoCacheDoesNotEnableRepin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf("modules:\n  - from: %q\n", ref))
+	lockPath := registry.LockPath(path)
+	original := registry.LockEntry{
+		SHA256: commandRegistryChecksum(commandRegistryModuleA),
+		URL:    registry.ParseRef(ref).FetchURL,
+	}
+	lock := &registry.LockFile{Registry: map[string]registry.LockEntry{ref: original}}
+	if err := registry.SaveLock(lockPath, lock); err != nil {
+		t.Fatal(err)
+	}
+	seedCommandRegistryCache(t, ref, lock, &requests)
+
+	matching := buildRoot()
+	matching.SetArgs([]string{"list", "--no-cache", "--config", path})
+	if err := matching.Execute(); err != nil {
+		t.Fatalf("ordinary matching --no-cache command: %v", err)
+	}
+	persisted, err := registry.LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Registry[ref]; got != original {
+		t.Fatalf("matching --no-cache changed durable pin\nbefore: %#v\nafter:  %#v", original, got)
+	}
+
+	replacement.Store(true)
+	differing := buildRoot()
+	differing.SetArgs([]string{"list", "--no-cache", "--config", path})
+	err = differing.Execute()
+	if err == nil {
+		t.Fatal("ordinary differing --no-cache command succeeded, want checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("ordinary differing --no-cache error = %q, want visible checksum mismatch text", err)
+	}
+	persisted, loadErr := registry.LoadLock(lockPath)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if got := persisted.Registry[ref]; got != original {
+		t.Fatalf("differing --no-cache changed durable pin\nbefore: %#v\nafter:  %#v", original, got)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("ordinary --no-cache network requests = %d, want 2", got)
+	}
+}
+
+func TestRegistryUpdateExplicitRepinMovesPin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf("modules:\n  - from: %q\n", ref))
+	lockPath := registry.LockPath(path)
+	original := registry.LockEntry{
+		SHA256: commandRegistryChecksum(commandRegistryModuleA),
+		URL:    registry.ParseRef(ref).FetchURL,
+	}
+	lock := &registry.LockFile{Registry: map[string]registry.LockEntry{ref: original}}
+	if err := registry.SaveLock(lockPath, lock); err != nil {
+		t.Fatal(err)
+	}
+	seedCommandRegistryCache(t, ref, lock, &requests)
+	replacement.Store(true)
+
+	root := buildRoot()
+	root.SetArgs([]string{"registry", "update", "--config", path})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("registry update: %v", err)
+	}
+
+	persisted, err := registry.LoadLock(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := persisted.Registry[ref].SHA256, commandRegistryChecksum(commandRegistryModuleB); got != want {
+		t.Fatalf("updated durable checksum = %q, want %q", got, want)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("registry update network requests = %d, want 1 to prove cache bypass", got)
 	}
 }
 
