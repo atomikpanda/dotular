@@ -156,3 +156,85 @@ func TestNormalizeMoveFileExPathLongForms(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeMoveFileExPathMixedPrefixes(t *testing.T) {
+	longTail := strings.Repeat(`nested\`, 40) + "cache.json"
+	devicePath := `//./C:\` + longTail
+	deviceWant, err := filepath.Abs(devicePath)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q) error = %v", devicePath, err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "mixed extended separators",
+			path: `\\?/C:\` + longTail,
+			want: `\\?/C:\` + longTail,
+		},
+		{
+			name: "forward extended separators",
+			path: `//?/C:\` + longTail,
+			want: `//?/C:\` + longTail,
+		},
+		{
+			name: "mixed device separators",
+			path: devicePath,
+			want: deviceWant,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeMoveFileExPath(test.path)
+			if err != nil {
+				t.Fatalf("normalizeMoveFileExPath(%q) error = %v", test.path, err)
+			}
+			if got != test.want {
+				t.Fatalf("normalizeMoveFileExPath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeMoveFileExPathExtendsLongUncleanSpelling(t *testing.T) {
+	longElement := strings.Repeat("a", 260)
+	absolutePath := `C:\` + longElement + `\..\cache.json`
+	relativePath := longElement + `\..\cache.json`
+	absoluteRelativePath, err := filepath.Abs(relativePath)
+	if err != nil {
+		t.Fatalf("filepath.Abs(%q) error = %v", relativePath, err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "absolute",
+			path: absolutePath,
+			want: `\\?\C:\cache.json`,
+		},
+		{
+			name: "relative",
+			path: relativePath,
+			want: `\\?\` + absoluteRelativePath,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeMoveFileExPath(test.path)
+			if err != nil {
+				t.Fatalf("normalizeMoveFileExPath(%q) error = %v", test.path, err)
+			}
+			if got != test.want {
+				t.Fatalf("normalizeMoveFileExPath(%q) = %q, want %q", test.path, got, test.want)
+			}
+		})
+	}
+}

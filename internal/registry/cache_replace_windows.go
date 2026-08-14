@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -53,25 +52,54 @@ func replaceCacheFile(tempPath string, path string) error {
 }
 
 func normalizeMoveFileExPath(path string) (string, error) {
-	if strings.HasPrefix(path, `\\?\`) || strings.HasPrefix(path, `\??\`) {
+	if len(path) >= 4 {
+		if path[:4] == `\??\` {
+			return path, nil
+		}
+		if os.IsPathSeparator(path[0]) &&
+			os.IsPathSeparator(path[1]) &&
+			path[2] == '?' &&
+			os.IsPathSeparator(path[3]) {
+			return path, nil
+		}
+	}
+
+	pathLength := len(path)
+	if !filepath.IsAbs(path) {
+		workingDirectory, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("get working directory: %w", err)
+		}
+		pathLength += len(workingDirectory) + 1
+	}
+	if pathLength < windowsLongPathThreshold {
 		return path, nil
 	}
-	if filepath.IsAbs(path) && len(path) < windowsLongPathThreshold {
-		return path, nil
+
+	isUNC := false
+	isDevice := false
+	if len(path) >= 2 &&
+		os.IsPathSeparator(path[0]) &&
+		os.IsPathSeparator(path[1]) {
+		if len(path) >= 4 &&
+			path[2] == '.' &&
+			os.IsPathSeparator(path[3]) {
+			isDevice = true
+		} else {
+			isUNC = true
+		}
 	}
 
 	absolutePath, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolve absolute path: %w", err)
 	}
-	if len(absolutePath) < windowsLongPathThreshold {
-		return path, nil
-	}
-	if strings.HasPrefix(absolutePath, `\\.\`) {
-		return absolutePath, nil
-	}
-	if strings.HasPrefix(absolutePath, `\\`) {
+	switch {
+	case isUNC:
 		return `\\?\UNC\` + absolutePath[2:], nil
+	case isDevice:
+		return absolutePath, nil
+	default:
+		return `\\?\` + absolutePath, nil
 	}
-	return `\\?\` + absolutePath, nil
 }
