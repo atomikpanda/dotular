@@ -200,7 +200,7 @@ func TestResolveSaveLockFailureIsFatal(t *testing.T) {
 
 func TestResolveNoCacheDoesNotRepin(t *testing.T) {
 	tests := []struct {
-		name       string
+		name        string
 		networkYAML string
 		cacheYAML   string
 		wantErr     bool
