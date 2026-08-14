@@ -1258,6 +1258,104 @@ func TestUpdatePinsNoActiveRefsPreservesExistingInactiveLockAndCache(t *testing.
 	fixture.requireDurableStateUnchanged()
 }
 
+func TestUpdatePinsWithOpsEmptyAndLocalOnlyConfigsSkipEveryOperation(t *testing.T) {
+	tests := map[string]config.Config{
+		"empty": {},
+		"local only": {
+			Modules: []config.Module{{Name: "local"}},
+		},
+	}
+	for name, cfg := range tests {
+		t.Run(name, func(t *testing.T) {
+			errLoad := errors.New("load must not run")
+			loadCalls := 0
+			ops := updateOps{
+				loadLock: func() (LockFile, error) {
+					loadCalls++
+					return LockFile{}, errLoad
+				},
+				saveLock: func(LockFile) error {
+					t.Fatal("saveLock called for no-active config")
+					return nil
+				},
+				cachePath: func(string) string {
+					t.Fatal("cachePath called for no-active config")
+					return ""
+				},
+				readFile: func(string) ([]byte, error) {
+					t.Fatal("readFile called for no-active config")
+					return nil, nil
+				},
+				remove: func(string) error {
+					t.Fatal("remove called for no-active config")
+					return nil
+				},
+				publish: func(string, []byte) error {
+					t.Fatal("publish called for no-active config")
+					return nil
+				},
+				warn: func(string) {
+					t.Fatal("warn called for no-active config")
+				},
+			}
+
+			changes, err := updatePinsWithOps(context.Background(), cfg, ops)
+
+			if err != nil {
+				t.Fatalf("updatePinsWithOps() error = %v, want nil without loading lock", err)
+			}
+			if len(changes) != 0 {
+				t.Fatalf("changes = %#v, want empty", changes)
+			}
+			if loadCalls != 0 {
+				t.Fatalf("loadLock calls = %d, want 0", loadCalls)
+			}
+		})
+	}
+}
+
+func TestUpdatePinsEmptyAndLocalOnlyConfigsIgnoreMalformedLock(t *testing.T) {
+	tests := map[string]config.Config{
+		"empty": {},
+		"local only": {
+			Modules: []config.Module{{Name: "local"}},
+		},
+	}
+	for name, cfg := range tests {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			configPath := filepath.Join(home, "dotular.yaml")
+			lockPath := LockPath(configPath)
+			malformed := []byte("registry: [unterminated\n")
+			if err := os.WriteFile(lockPath, malformed, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var warningOutput bytes.Buffer
+			u := ui.New(io.Discard, &warningOutput)
+
+			changes, err := UpdatePins(context.Background(), cfg, configPath, u)
+
+			if err != nil {
+				t.Fatalf("UpdatePins() error = %v, want nil without loading malformed lock", err)
+			}
+			if len(changes) != 0 {
+				t.Fatalf("changes = %#v, want empty", changes)
+			}
+			got, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, malformed) {
+				t.Fatalf("lockfile = %q, want unchanged %q", got, malformed)
+			}
+			if warningOutput.Len() != 0 {
+				t.Fatalf("warning output = %q, want empty", warningOutput.String())
+			}
+		})
+	}
+}
+
 type updateRecorder struct {
 	source          *LockFile
 	durable         LockFile

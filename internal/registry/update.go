@@ -252,6 +252,10 @@ func updatePinsWithOps(
 	cfg config.Config,
 	ops updateOps,
 ) ([]PinChange, error) {
+	if len(CollectActiveRefs(cfg)) == 0 {
+		return []PinChange{}, nil
+	}
+
 	loaded, err := ops.loadLock()
 	if err != nil {
 		return nil, err
@@ -264,9 +268,6 @@ func updatePinsWithOps(
 	}
 
 	changes := changesFromStaged(staged)
-	if len(staged) == 0 {
-		return changes, nil
-	}
 
 	for _, ref := range staged {
 		if ref.trust == External {
