@@ -571,3 +571,35 @@ func TestFetchRejectsCachePathCollisionBeforeIO(t *testing.T) {
 		t.Fatalf("cache changed: got %q, want %q", gotCache, cached)
 	}
 }
+
+func TestFetchAllowsNonCollidingLockEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	activeRef := serveTestModule(t, func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	lockedRef := "locked.example/other"
+	if activePath, lockedPath := moduleCachePath(activeRef), moduleCachePath(lockedRef); activePath == lockedPath {
+		t.Fatalf("test refs unexpectedly collide at %q", activePath)
+	}
+	entry := LockEntry{
+		SHA256: "locked-checksum",
+		URL:    ParseRef(lockedRef).FetchURL,
+	}
+	lock := &LockFile{Registry: map[string]LockEntry{lockedRef: entry}}
+
+	mod, _, err := fetchWithOptionsForTest(t, activeRef, lock, FetchOptions{})
+
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if mod.Name != "test-mod" {
+		t.Fatalf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+	if len(lock.Registry) != 2 {
+		t.Fatalf("lock entries = %d, want 2", len(lock.Registry))
+	}
+	requireLockEntryUnchanged(t, entry, lock.Registry[lockedRef])
+	if _, exists := lock.Registry[activeRef]; !exists {
+		t.Fatalf("Fetch() did not add noncolliding ref %q to lock", activeRef)
+	}
+}
