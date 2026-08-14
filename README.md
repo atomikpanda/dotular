@@ -400,7 +400,7 @@ the 50 most recent entries; `--module` filters by module name.
 dotular registry list           # fetch and print the remote module index
 dotular registry list --cached  # print the modules pinned in dotular.lock.yaml
 dotular registry clear          # remove all cached modules
-dotular registry update         # re-fetch all modules from the network
+dotular registry update         # re-fetch modules and update their pins
 ```
 
 `registry list` reaches the network by default and prints the name and version of
@@ -415,7 +415,7 @@ every module in the official index. `--cached` needs no network: it reads
 | `--dry-run`   | Print actions without executing |
 | `--verbose`   | Show skipped items and extra output |
 | `--no-atomic` | Disable snapshot/rollback per module |
-| `--no-cache`  | Re-fetch registry modules from the network |
+| `--no-cache`  | Re-fetch registry modules without changing existing pins |
 
 ---
 
@@ -492,7 +492,9 @@ modules:
 1. dotular fetches the remote YAML module definition.
 2. Parameters from `with:` (merged with module defaults) are applied via Go templates.
 3. `override:` items are merged by `(type, primary-value)` — unmatched overrides are appended.
-4. A lockfile (`dotular.lock.yaml`) records SHA-256 checksums for reproducible fetches.
+4. On the first successful fetch, a lockfile (`dotular.lock.yaml`) records the module's
+   SHA-256 checksum before resolution succeeds. Ordinary commands enforce that pin,
+   including with `--no-cache`.
 
 ### Trust levels
 
@@ -506,7 +508,9 @@ Bare names (e.g. `neovim`) expand to `github.com/atomikpanda/dotular/modules/neo
 
 ### Cache
 
-Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` or `dotular registry update` to re-fetch.
+Remote modules are cached at `~/.cache/dotular/registry/`. Use `--no-cache` to
+re-fetch while preserving and verifying existing pins. `dotular registry update`
+is the sole command that explicitly authorizes replacing them.
 
 ---
 

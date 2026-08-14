@@ -11,15 +11,39 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
-const testModuleYAML = "name: test-mod\nitems:\n  - package: neovim\n    via: brew\n"
+func TestFetchOptionContract(t *testing.T) {
+	t.Parallel()
+
+	opts := FetchOptions{
+		NoCache: true,
+		Repin:   true,
+	}
+	if !opts.NoCache {
+		t.Fatal("FetchOptions.NoCache = false; want true")
+	}
+	if !opts.Repin {
+		t.Fatal("FetchOptions.Repin = false; want true")
+	}
+}
+
+const (
+	testModuleYAML        = "name: test-mod\nitems:\n  - package: neovim\n    via: brew\n"
+	replacementModuleYAML = "name: replacement-mod\nitems:\n  - package: helix\n    via: brew\n"
+	invalidModuleYAML     = "name: [unterminated\n"
+)
+
+func testModuleChecksum(data string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(data)))
+}
 
 func testModuleSum() string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(testModuleYAML)))
+	return testModuleChecksum(testModuleYAML)
 }
 
 // serveTestModule starts a TLS server running handler and points httpClient at
@@ -55,18 +79,50 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func newTestLock(t *testing.T) *LockFile {
+func loadTestLock(t *testing.T, path string) *LockFile {
 	t.Helper()
-	lock, err := LoadLock(filepath.Join(t.TempDir(), "dotular.lock.yaml"))
+	lock, err := LoadLock(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return lock
 }
 
+func newTestLock(t *testing.T) *LockFile {
+	t.Helper()
+	return loadTestLock(t, filepath.Join(t.TempDir(), "dotular.lock.yaml"))
+}
+
+func persistedTestLock(t *testing.T, ref string, entry *LockEntry) (string, *LockFile) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "dotular.lock.yaml")
+	lock := &LockFile{Registry: make(map[string]LockEntry)}
+	if entry != nil {
+		lock.Registry[ref] = *entry
+	}
+	if err := SaveLock(path, lock); err != nil {
+		t.Fatal(err)
+	}
+	return path, loadTestLock(t, path)
+}
+
+func fetchWithOptionsForTest(t *testing.T, ref string, lock *LockFile, opts FetchOptions) (*RemoteModule, TrustLevel, error) {
+	t.Helper()
+	return Fetch(context.Background(), ref, lock, opts, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+}
+
 func fetchForTest(t *testing.T, ref string, lock *LockFile, noCache bool) (*RemoteModule, TrustLevel, error) {
 	t.Helper()
-	return Fetch(context.Background(), ref, lock, noCache, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+	return fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: noCache})
+}
+
+func requireLockEntryUnchanged(t *testing.T, before, after LockEntry) {
+	t.Helper()
+
+	if before != after {
+		t.Fatalf("lock entry changed\nbefore: %#v\nafter:  %#v", before, after)
+	}
 }
 
 // TestFetchFromNetwork covers the integrity gate on the network path: the
@@ -106,14 +162,11 @@ func TestFetchFromNetwork(t *testing.T) {
 			wantErr: "HTTP 404",
 		},
 		{
-			// Current --no-cache behaviour, deliberately documented rather than
-			// changed: verification is skipped and the entry is re-pinned. See
-			// issue #11 for whether that is the policy we want.
-			name:     "--no-cache skips verification and re-pins",
-			handler:  ok,
-			lockSum:  "0000000000000000000000000000000000000000000000000000000000000000",
-			noCache:  true,
-			wantName: "test-mod",
+			name:    "--no-cache does not bypass verification",
+			handler: ok,
+			lockSum: "0000000000000000000000000000000000000000000000000000000000000000",
+			noCache: true,
+			wantErr: "checksum mismatch",
 		},
 	}
 
@@ -283,5 +336,262 @@ func TestFetchRefetchesWhenCacheFileMissing(t *testing.T) {
 	}
 	if mod.Name != "test-mod" {
 		t.Errorf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+}
+
+func TestFetchPinnedCacheMatchPreservesLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, replacementModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	before := lock.Registry[ref]
+
+	mod, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if mod.Name != "test-mod" {
+		t.Fatalf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+	requireLockEntryUnchanged(t, before, lock.Registry[ref])
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("network requests = %d, want 0", got)
+	}
+}
+
+func TestFetchRejectsPinnedCacheMismatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, testModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	if err := writeCacheFile(moduleCachePath(ref), []byte(replacementModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	before := lock.Registry[ref]
+
+	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want a checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("Fetch() error = %q, want it to contain %q", err, "checksum mismatch")
+	}
+	requireLockEntryUnchanged(t, before, lock.Registry[ref])
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("network requests = %d, want 0", got)
+	}
+}
+
+func TestFetchPinnedNetworkMatchPreservesLock(t *testing.T) {
+	tests := []struct {
+		name      string
+		opts      FetchOptions
+		seedCache bool
+	}{
+		{name: "cache miss"},
+		{name: "no cache", opts: FetchOptions{NoCache: true}, seedCache: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			var requests atomic.Int32
+			ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				fmt.Fprint(w, testModuleYAML)
+			})
+			original := LockEntry{
+				SHA256: testModuleChecksum(testModuleYAML),
+				URL:    ParseRef(ref).FetchURL,
+			}
+			lockPath, lock := persistedTestLock(t, ref, &original)
+			if tt.seedCache {
+				if err := writeCacheFile(moduleCachePath(ref), []byte(replacementModuleYAML)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := lock.Registry[ref]
+
+			mod, _, err := fetchWithOptionsForTest(t, ref, lock, tt.opts)
+			if err != nil {
+				t.Fatalf("Fetch() error = %v", err)
+			}
+			if mod.Name != "test-mod" {
+				t.Fatalf("module name = %q, want %q", mod.Name, "test-mod")
+			}
+			requireLockEntryUnchanged(t, before, lock.Registry[ref])
+			requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("network requests = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestFetchNoCacheRejectsPinnedNetworkMismatch(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, replacementModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	before := lock.Registry[ref]
+
+	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: true})
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want a checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("Fetch() error = %q, want it to contain %q", err, "checksum mismatch")
+	}
+	requireLockEntryUnchanged(t, before, lock.Registry[ref])
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("network requests = %d, want 1", got)
+	}
+}
+
+func TestFetchCreatesInitialPinInMemoryOnly(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, testModuleYAML)
+	})
+	lockPath, lock := persistedTestLock(t, ref, nil)
+
+	mod, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if mod.Name != "test-mod" {
+		t.Fatalf("module name = %q, want %q", mod.Name, "test-mod")
+	}
+	if got, want := lock.Registry[ref].SHA256, testModuleChecksum(testModuleYAML); got != want {
+		t.Fatalf("in-memory checksum = %q, want %q", got, want)
+	}
+	if _, ok := loadTestLock(t, lockPath).Registry[ref]; ok {
+		t.Fatal("Fetch() persisted an initial lock entry")
+	}
+}
+
+func TestFetchRejectsPinnedMismatchBeforeYAMLParsing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, invalidModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	before := lock.Registry[ref]
+
+	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want a checksum mismatch")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("Fetch() error = %q, want checksum rejection before YAML parsing", err)
+	}
+	requireLockEntryUnchanged(t, before, lock.Registry[ref])
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("network requests = %d, want 1", got)
+	}
+}
+
+func TestFetchRepinInvalidYAMLLeavesPinUnchanged(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, invalidModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	before := lock.Registry[ref]
+
+	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: true, Repin: true})
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want a YAML parse error")
+	}
+	if !strings.Contains(err.Error(), "parse registry module") {
+		t.Fatalf("Fetch() error = %q, want a YAML parse error", err)
+	}
+	requireLockEntryUnchanged(t, before, lock.Registry[ref])
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("network requests = %d, want 1", got)
+	}
+	cached, readErr := os.ReadFile(moduleCachePath(ref))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(cached) != testModuleYAML {
+		t.Fatalf("cache changed to invalid bytes: %q", cached)
+	}
+}
+
+func TestFetchRepinMovesExistingPin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		fmt.Fprint(w, replacementModuleYAML)
+	})
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lockPath, lock := persistedTestLock(t, ref, &original)
+	before := lock.Registry[ref]
+
+	mod, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{NoCache: true, Repin: true})
+	if err != nil {
+		t.Fatalf("Fetch() error = %v", err)
+	}
+	if mod.Name != "replacement-mod" {
+		t.Fatalf("module name = %q, want %q", mod.Name, "replacement-mod")
+	}
+	if got, want := lock.Registry[ref].SHA256, testModuleChecksum(replacementModuleYAML); got != want {
+		t.Fatalf("in-memory checksum = %q, want %q", got, want)
+	}
+	requireLockEntryUnchanged(t, before, loadTestLock(t, lockPath).Registry[ref])
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("network requests = %d, want 1", got)
 	}
 }
