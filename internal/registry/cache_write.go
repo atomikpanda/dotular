@@ -29,7 +29,7 @@ func writeCacheFile(path string, data []byte) error {
 		createTemp: func(dir string, pattern string) (cacheTempFile, error) {
 			return os.CreateTemp(dir, pattern)
 		},
-		replace: replaceCacheFile,
+		replace: replaceFile,
 	})
 }
 

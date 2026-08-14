@@ -1,12 +1,19 @@
 package registry
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/testutil"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 // The registry cache lives under the home directory, so the whole suite needs a
@@ -16,12 +23,99 @@ func TestMain(m *testing.M) {
 }
 
 func TestModuleCachePath(t *testing.T) {
-	got := moduleCachePath("github.com/atomikpanda/dotular/modules/neovim@main")
-	if got == "" {
-		t.Error("expected non-empty cache path")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Should not contain slashes or @ in the filename part.
-	// The path replacer should have sanitized them.
+	cacheRoot := filepath.Join(home, ".cache", "dotular", "registry")
+
+	type testCase struct {
+		name     string
+		ref      string
+		filename string
+	}
+	tests := []testCase{
+		{
+			name:     "ordinary ref retains its cache name",
+			ref:      "github.com/atomikpanda/dotular/modules/neovim@main",
+			filename: "github_com_atomikpanda_dotular_modules_neovim_main.yaml",
+		},
+		{
+			name:     "query ref is sanitized",
+			ref:      "github.com/atomikpanda/dotular@main?raw=true",
+			filename: "github_com_atomikpanda_dotular_main_raw=true.yaml",
+		},
+		{
+			name:     "backslash is sanitized",
+			ref:      `github.com\atomikpanda\dotular\modules\neovim@main`,
+			filename: "github_com_atomikpanda_dotular_modules_neovim_main.yaml",
+		},
+		{
+			name:     "mixed traversal separators are sanitized",
+			ref:      `github.com/atomikpanda/dotular\..\..\neovim@main`,
+			filename: "github_com_atomikpanda_dotular_______neovim_main.yaml",
+		},
+		{
+			name:     "non-reserved device prefix retains its cache name",
+			ref:      "com0",
+			filename: "com0.yaml",
+		},
+		{
+			name:     "non-reserved superscript device prefix retains its cache name",
+			ref:      "CoM⁴",
+			filename: "CoM⁴.yaml",
+		},
+	}
+
+	for _, invalid := range `<>:"/\|?*` {
+		tests = append(tests, testCase{
+			name:     fmt.Sprintf("Windows-invalid character U+%04X is sanitized", invalid),
+			ref:      "ref" + string(invalid) + "name",
+			filename: "ref_name.yaml",
+		})
+	}
+	for invalid := rune(0); invalid < ' '; invalid++ {
+		tests = append(tests, testCase{
+			name:     fmt.Sprintf("control character U+%04X is sanitized", invalid),
+			ref:      "ref" + string(invalid) + "name",
+			filename: "ref_name.yaml",
+		})
+	}
+
+	reserved := []string{
+		"con", "PRN", "Aux", "nUl",
+		"CoM¹", "cOm²", "Com³",
+		"lPt¹", "LpT²", "lPT³",
+	}
+	for i := 1; i <= 9; i++ {
+		reserved = append(reserved, fmt.Sprintf("CoM%d", i), fmt.Sprintf("lPt%d", i))
+	}
+	for _, ref := range reserved {
+		tests = append(tests, testCase{
+			name:     "reserved device name " + ref + " is made safe",
+			ref:      ref,
+			filename: ref + "_.yaml",
+		})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := moduleCachePath(tt.ref)
+			if dir := filepath.Dir(got); dir != cacheRoot {
+				t.Errorf("cache directory = %q, want %q", dir, cacheRoot)
+			}
+			if filename := filepath.Base(got); filename != tt.filename {
+				t.Errorf("cache filename = %q, want %q", filename, tt.filename)
+			}
+			relative, err := filepath.Rel(cacheRoot, got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if relative != filepath.Base(got) {
+				t.Errorf("cache path does not name one file beneath root: %q", got)
+			}
+		})
+	}
 }
 
 func TestCachedRefs(t *testing.T) {
@@ -114,12 +208,31 @@ func TestWriteCacheFile(t *testing.T) {
 	}
 }
 
-func TestClearCache(t *testing.T) {
-	// ClearCache removes ~/.cache/dotular/registry.
-	// Just verify it doesn't panic.
-	err := ClearCache()
+func TestClearCacheRemovesRegistryCacheButRetainsMutationLock(t *testing.T) {
+	cacheDir, err := registryCacheDir()
 	if err != nil {
 		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "nested", "cached.yaml")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ClearCache(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("stat cleared cache directory error = %v, want not exist", err)
+	}
+	lockPath, err := registryUpdateLockPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("stat registry mutation lock after ClearCache: %v", err)
 	}
 }
 
@@ -138,5 +251,158 @@ func TestUnusedCacheEntries(t *testing.T) {
 	}
 	if unused[0] != "ref2" {
 		t.Errorf("unused = %q", unused[0])
+	}
+}
+
+func TestResolveRejectsDriftWithoutMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ref := serveTestModule(t, func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, replacementModuleYAML)
+	})
+	const missingRef = "example.invalid/missing.yaml"
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	original := LockEntry{
+		SHA256: testModuleChecksum(testModuleYAML),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lock := &LockFile{Registry: map[string]LockEntry{ref: original}}
+	if err := SaveLock(LockPath(configPath), lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Modules: []config.Module{
+		{From: ref},
+		{From: missingRef},
+	}}
+
+	_, err := Resolve(
+		context.Background(),
+		cfg,
+		configPath,
+		ResolveOptions{NoCache: true},
+		ui.New(io.Discard, io.Discard),
+	)
+	if err == nil {
+		t.Fatal("Resolve() succeeded, want checksum drift rejection")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("Resolve() error = %q, want checksum mismatch", err)
+	}
+
+	persisted := loadTestLock(t, LockPath(configPath))
+	if len(persisted.Registry) != 1 {
+		t.Fatalf("persisted registry entries = %d, want 1", len(persisted.Registry))
+	}
+	requireLockEntryUnchanged(t, original, persisted.Registry[ref])
+	if _, ok := persisted.Registry[missingRef]; ok {
+		t.Fatalf("missing ref %q was pinned after drift failure", missingRef)
+	}
+	cached, readErr := os.ReadFile(moduleCachePath(ref))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(cached) != testModuleYAML {
+		t.Fatalf("cache changed after drift failure: %q", cached)
+	}
+	if _, statErr := os.Stat(moduleCachePath(missingRef)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("missing ref cache error = %v, want not exist", statErr)
+	}
+}
+
+func TestResolveKeepsAllOrdinaryCallFormsImmutable(t *testing.T) {
+	type caller func(
+		context.Context,
+		string,
+		config.Config,
+		string,
+		*LockFile,
+		*ui.UI,
+	) error
+	tests := []struct {
+		name         string
+		call         caller
+		wantMismatch bool
+	}{
+		{
+			name: "Fetch cached",
+			call: func(ctx context.Context, ref string, _ config.Config, _ string, lock *LockFile, u *ui.UI) error {
+				_, _, err := Fetch(ctx, ref, lock, FetchOptions{}, u)
+				return err
+			},
+		},
+		{
+			name: "Fetch no-cache",
+			call: func(ctx context.Context, ref string, _ config.Config, _ string, lock *LockFile, u *ui.UI) error {
+				_, _, err := Fetch(ctx, ref, lock, FetchOptions{NoCache: true}, u)
+				return err
+			},
+			wantMismatch: true,
+		},
+		{
+			name: "Resolve cached",
+			call: func(ctx context.Context, _ string, cfg config.Config, configPath string, _ *LockFile, u *ui.UI) error {
+				_, err := Resolve(ctx, cfg, configPath, ResolveOptions{}, u)
+				return err
+			},
+		},
+		{
+			name: "Resolve no-cache",
+			call: func(ctx context.Context, _ string, cfg config.Config, configPath string, _ *LockFile, u *ui.UI) error {
+				_, err := Resolve(ctx, cfg, configPath, ResolveOptions{NoCache: true}, u)
+				return err
+			},
+			wantMismatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			ref := serveTestModule(t, func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, replacementModuleYAML)
+			})
+			configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+			original := LockEntry{
+				SHA256: testModuleChecksum(testModuleYAML),
+				URL:    ParseRef(ref).FetchURL,
+			}
+			lock := &LockFile{Registry: map[string]LockEntry{ref: original}}
+			if err := SaveLock(LockPath(configPath), lock); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{Modules: []config.Module{{From: ref}}}
+
+			err := tt.call(
+				context.Background(),
+				ref,
+				cfg,
+				configPath,
+				lock,
+				ui.New(io.Discard, io.Discard),
+			)
+			if tt.wantMismatch {
+				if err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+					t.Fatalf("%s error = %v, want checksum mismatch", tt.name, err)
+				}
+			} else if err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+
+			requireLockEntryUnchanged(t, original, lock.Registry[ref])
+			persisted := loadTestLock(t, LockPath(configPath))
+			requireLockEntryUnchanged(t, original, persisted.Registry[ref])
+			cached, readErr := os.ReadFile(moduleCachePath(ref))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(cached) != testModuleYAML {
+				t.Fatalf("%s changed cache: %q", tt.name, cached)
+			}
+		})
 	}
 }

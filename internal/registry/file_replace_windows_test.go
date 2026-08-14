@@ -11,10 +11,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
-	originalMoveCacheFileEx := moveCacheFileEx
+func TestReplaceFileWindowsMoveFileExFlags(t *testing.T) {
+	originalMoveFileEx := moveFileEx
 	t.Cleanup(func() {
-		moveCacheFileEx = originalMoveCacheFileEx
+		moveFileEx = originalMoveFileEx
 	})
 
 	tests := []struct {
@@ -38,8 +38,8 @@ func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, "cache.json")
-			tempPath := filepath.Join(dir, ".cache.json.tmp-platform")
+			path := filepath.Join(dir, "dotular.lock.yaml")
+			tempPath := path + ".tmp"
 
 			if test.seedDestination {
 				if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
@@ -48,7 +48,7 @@ func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
 			}
 
 			var gotFlags uint32
-			moveCacheFileEx = func(
+			moveFileEx = func(
 				existingFileName *uint16,
 				newFileName *uint16,
 				flags uint32,
@@ -65,8 +65,8 @@ func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
 				return nil
 			}
 
-			if err := replaceCacheFile(tempPath, path); err != nil {
-				t.Fatalf("replaceCacheFile() error = %v", err)
+			if err := replaceFile(tempPath, path); err != nil {
+				t.Fatalf("replaceFile() error = %v", err)
 			}
 			if gotFlags != test.wantFlags {
 				t.Fatalf("MoveFileEx flags = %#x, want exactly %#x", gotFlags, test.wantFlags)
@@ -78,10 +78,10 @@ func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
 	}
 }
 
-func TestReplaceCacheFileWindowsExtendsLongLocalPaths(t *testing.T) {
-	originalMoveCacheFileEx := moveCacheFileEx
+func TestReplaceFileWindowsExtendsLongLocalPaths(t *testing.T) {
+	originalMoveFileEx := moveFileEx
 	t.Cleanup(func() {
-		moveCacheFileEx = originalMoveCacheFileEx
+		moveFileEx = originalMoveFileEx
 	})
 
 	longDir := filepath.Join(t.TempDir(), strings.Repeat(`nested\`, 40))
@@ -93,7 +93,7 @@ func TestReplaceCacheFileWindowsExtendsLongLocalPaths(t *testing.T) {
 	}
 
 	moveCalled := false
-	moveCacheFileEx = func(
+	moveFileEx = func(
 		existingFileName *uint16,
 		newFileName *uint16,
 		_ uint32,
@@ -112,8 +112,8 @@ func TestReplaceCacheFileWindowsExtendsLongLocalPaths(t *testing.T) {
 		return nil
 	}
 
-	if err := replaceCacheFile(tempPath, path); err != nil {
-		t.Fatalf("replaceCacheFile() error = %v", err)
+	if err := replaceFile(tempPath, path); err != nil {
+		t.Fatalf("replaceFile() error = %v", err)
 	}
 	if !moveCalled {
 		t.Fatal("MoveFileEx was not called")

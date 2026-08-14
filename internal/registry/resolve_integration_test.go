@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
@@ -18,15 +20,56 @@ import (
 func TestResolveOptionContract(t *testing.T) {
 	t.Parallel()
 
-	opts := ResolveOptions{
-		NoCache: true,
-		Repin:   true,
-	}
+	opts := ResolveOptions{NoCache: true}
 	if !opts.NoCache {
 		t.Fatal("ResolveOptions.NoCache = false; want true")
 	}
-	if !opts.Repin {
-		t.Fatal("ResolveOptions.Repin = false; want true")
+}
+
+func TestResolveRejectsActiveCachePathCollisionBeforeMutation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	leftRef := "github.com/user/repo?x"
+	rightRef := "github.com/user/repo:x"
+	if leftPath, rightPath := moduleCachePath(leftRef), moduleCachePath(rightRef); leftPath != rightPath {
+		t.Fatalf("test refs do not collide: %q != %q", leftPath, rightPath)
+	}
+
+	var requests atomic.Int32
+	swapClient(t, &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return nil, os.ErrPermission
+	})})
+	cfg := config.Config{Modules: []config.Module{
+		{From: leftRef},
+		{From: rightRef},
+	}}
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+
+	_, err := Resolve(
+		context.Background(),
+		cfg,
+		configPath,
+		ResolveOptions{},
+		ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+	)
+
+	if err == nil || !strings.Contains(err.Error(), "module cache path collision") {
+		t.Fatalf("Resolve() error = %v, want cache path collision", err)
+	}
+	for _, ref := range []string{leftRef, rightRef} {
+		if !strings.Contains(err.Error(), ref) {
+			t.Errorf("Resolve() error = %q, want ref %q", err, ref)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("network requests = %d, want 0", got)
+	}
+	if _, statErr := os.Stat(LockPath(configPath)); !os.IsNotExist(statErr) {
+		t.Fatalf("lockfile stat error = %v, want not-exist", statErr)
+	}
+	cacheRoot := filepath.Dir(moduleCachePath(leftRef))
+	if _, statErr := os.Stat(cacheRoot); !os.IsNotExist(statErr) {
+		t.Fatalf("cache root stat error = %v, want not-exist", statErr)
 	}
 }
 
@@ -52,6 +95,9 @@ func TestResolveLocalModules(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
+	if err := os.WriteFile(LockPath(configPath), []byte("{{invalid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := Resolve(context.Background(), cfg, configPath, ResolveOptions{}, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
@@ -163,6 +209,76 @@ func TestResolvePersistsInitialPin(t *testing.T) {
 	}
 }
 
+func TestResolveWaitsForMutationLockBeforeLoadingAndPreservesConcurrentUpdate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	requestStarted := make(chan struct{})
+	allowResponse := make(chan struct{})
+	var allowResponseOnce sync.Once
+	t.Cleanup(func() { allowResponseOnce.Do(func() { close(allowResponse) }) })
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-allowResponse
+		w.Write([]byte(testModuleYAML))
+	})
+	configPath, lockPath := writeResolveRegistryConfig(t, ref, nil)
+
+	lockHeld := make(chan struct{})
+	releaseHeld := make(chan struct{})
+	var releaseHeldOnce sync.Once
+	releaseHolder := func() { releaseHeldOnce.Do(func() { close(releaseHeld) }) }
+	t.Cleanup(releaseHolder)
+	withMutationLock := func(callback func() error) error {
+		close(lockHeld)
+		<-releaseHeld
+		return callback()
+	}
+
+	resolveDone := make(chan error, 1)
+	go func() {
+		_, err := resolveWithMutationLock(
+			context.Background(),
+			config.Config{Modules: []config.Module{{From: ref}}},
+			configPath,
+			ResolveOptions{},
+			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+			withMutationLock,
+		)
+		resolveDone <- err
+	}()
+
+	select {
+	case <-requestStarted:
+		t.Fatal("Resolve reached Fetch while the mutation lock was held")
+	default:
+	}
+
+	updatedRef := "github.com/example/updated@main"
+	updated := loadTestLock(t, lockPath)
+	updated.Registry[updatedRef] = LockEntry{SHA256: "update-pin"}
+	if err := SaveLock(lockPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	releaseHolder()
+
+	select {
+	case <-requestStarted:
+		allowResponseOnce.Do(func() { close(allowResponse) })
+	case <-time.After(time.Second):
+		t.Fatal("Resolve did not reach Fetch after the mutation lock was released")
+	}
+	if err := <-resolveDone; err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	durable := loadTestLock(t, lockPath)
+	if _, ok := durable.Registry[updatedRef]; !ok {
+		t.Fatal("ordinary Resolve save overwrote the update pin")
+	}
+	if _, ok := durable.Registry[ref]; !ok {
+		t.Fatal("Resolve did not persist its fetched registry pin")
+	}
+}
+
 func TestResolveSaveLockFailureIsFatal(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +314,7 @@ func TestResolveSaveLockFailureIsFatal(t *testing.T) {
 	}
 }
 
-func TestResolveNoCacheDoesNotRepin(t *testing.T) {
+func TestResolveNoCacheRejectsDrift(t *testing.T) {
 	tests := []struct {
 		name        string
 		networkYAML string
