@@ -136,8 +136,8 @@ func runCacheObservationRound(
 	t.Helper()
 
 	type observationResult struct {
-		writeErr            error
-		observationErr      error
+		writeErr             error
+		observationErr       error
 		postStartValidations int
 	}
 
@@ -147,8 +147,8 @@ func runCacheObservationRound(
 	}
 
 	initialValidation := make(chan error, 1)
-	writeStarted := make(chan struct{})
 	observerReady := make(chan struct{})
+	writerEntered := make(chan struct{})
 	writeDone := make(chan error, 1)
 	result := make(chan observationResult, 1)
 
@@ -159,11 +159,11 @@ func runCacheObservationRound(
 			return
 		}
 
-		<-writeStarted
+		close(observerReady)
+		<-writerEntered
 
 		postStartValidations := 1
 		observationErr := observe()
-		close(observerReady)
 		if observationErr != nil {
 			result <- observationResult{
 				writeErr:             <-writeDone,
@@ -204,7 +204,7 @@ func runCacheObservationRound(
 			}
 		default:
 			result <- observationResult{
-				writeErr:             <-writeDone,
+				writeErr: <-writeDone,
 				observationErr: fmt.Errorf(
 					"writer did not complete within %d post-start validations",
 					cacheReadsPerRound,
@@ -219,8 +219,8 @@ func runCacheObservationRound(
 	}
 
 	go func() {
-		close(writeStarted)
 		<-observerReady
+		close(writerEntered)
 		writeDone <- write()
 	}()
 
