@@ -1,11 +1,16 @@
 package registry
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"slices"
 
 	"github.com/atomikpanda/dotular/internal/config"
+	"github.com/atomikpanda/dotular/internal/ui"
 )
 
 // PinStatus classifies an active registry ref against its pre-command pin.
@@ -106,4 +111,171 @@ func replacementLock(lock *LockFile, staged []stagedRef) *LockFile {
 		replacement.Registry[ref.ref] = ref.replacement
 	}
 	return replacement
+}
+
+type updateOps struct {
+	loadLock  func() (LockFile, error)
+	saveLock  func(LockFile) error
+	cachePath func(string) string
+	readFile  func(string) ([]byte, error)
+	remove    func(string) error
+	publish   func(string, []byte) error
+}
+
+func rejectModuleCachePathCollisions(
+	activeRefs []string,
+	lockedRefs []string,
+	pathFor func(string) string,
+) error {
+	active := make(map[string]struct{}, len(activeRefs))
+	for _, ref := range activeRefs {
+		active[ref] = struct{}{}
+	}
+
+	refs := append(append([]string(nil), activeRefs...), lockedRefs...)
+	slices.Sort(refs)
+	refs = slices.Compact(refs)
+	for i, left := range refs {
+		for _, right := range refs[i+1:] {
+			_, leftActive := active[left]
+			_, rightActive := active[right]
+			if !leftActive && !rightActive {
+				continue
+			}
+
+			leftPath := pathFor(left)
+			rightPath := pathFor(right)
+			if leftPath == rightPath {
+				return fmt.Errorf(
+					"module cache path collision: refs %q and %q both map to %q",
+					left,
+					right,
+					leftPath,
+				)
+			}
+		}
+	}
+
+	return nil
+}
+
+func prepareActiveTarget(
+	path string,
+	want []byte,
+	readFile func(string) ([]byte, error),
+	remove func(string) error,
+) (bool, error) {
+	got, err := readFile(path)
+	if err == nil && bytes.Equal(got, want) {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	if removeErr := remove(path); removeErr != nil &&
+		!errors.Is(removeErr, fs.ErrNotExist) {
+		return false, fmt.Errorf("remove registry cache %q: %w", path, removeErr)
+	}
+
+	return false, nil
+}
+
+// UpdatePins stages every active registry ref before coordinating the lock and
+// cache transition for the complete command.
+func UpdatePins(
+	ctx context.Context,
+	cfg config.Config,
+	configPath string,
+	u *ui.UI,
+) ([]PinChange, error) {
+	lockPath := LockPath(configPath)
+	return updatePinsWithOps(ctx, cfg, updateOps{
+		loadLock: func() (LockFile, error) {
+			lock, err := LoadLock(lockPath)
+			if err != nil {
+				return LockFile{}, err
+			}
+			return *lock, nil
+		},
+		saveLock: func(lock LockFile) error {
+			return SaveLock(lockPath, &lock)
+		},
+		cachePath: moduleCachePath,
+		readFile:  os.ReadFile,
+		remove:    os.Remove,
+		publish:   writeCacheFile,
+	})
+}
+
+func updatePinsWithOps(
+	ctx context.Context,
+	cfg config.Config,
+	ops updateOps,
+) ([]PinChange, error) {
+	loaded, err := ops.loadLock()
+	if err != nil {
+		return nil, err
+	}
+	lock := &loaded
+
+	staged, err := stageActiveRefs(ctx, cfg, lock)
+	if err != nil {
+		return nil, err
+	}
+
+	changes := changesFromStaged(staged)
+	nextLock := replacementLock(lock, staged)
+
+	if err := rejectModuleCachePathCollisions(
+		activeRefsFromStaged(staged),
+		lockRefs(lock),
+		ops.cachePath,
+	); err != nil {
+		return changes, err
+	}
+
+	retained := make([]bool, len(staged))
+	for i, ref := range staged {
+		retained[i], err = prepareActiveTarget(
+			ops.cachePath(ref.ref),
+			ref.data,
+			ops.readFile,
+			ops.remove,
+		)
+		if err != nil {
+			return changes, err
+		}
+	}
+
+	if err := ops.saveLock(*nextLock); err != nil {
+		return changes, err
+	}
+
+	for i, ref := range staged {
+		if retained[i] {
+			continue
+		}
+		if err := ops.publish(ops.cachePath(ref.ref), ref.data); err != nil {
+			return changes, err
+		}
+	}
+
+	return changes, nil
+}
+
+func activeRefsFromStaged(staged []stagedRef) []string {
+	refs := make([]string, len(staged))
+	for i := range staged {
+		refs[i] = staged[i].ref
+	}
+	return refs
+}
+
+func lockRefs(lock *LockFile) []string {
+	refs := make([]string, 0, len(lock.Registry))
+	for ref := range lock.Registry {
+		refs = append(refs, ref)
+	}
+	return refs
 }
