@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -173,6 +175,78 @@ func (i Item) EffectiveDirection() string {
 	}
 }
 
+// ItemValidationOptions controls validation for item data at different
+// configuration boundaries.
+type ItemValidationOptions struct {
+	AllowDirectionTemplates bool
+}
+
+// ValidateDirection checks a non-empty explicit transfer direction.
+func ValidateDirection(direction string) error {
+	switch direction {
+	case "push", "pull", "sync":
+		return nil
+	default:
+		return fmt.Errorf("direction %q must be push, pull, or sync", direction)
+	}
+}
+
+// ValidateItems checks primary-field cardinality and explicit directions in
+// declaration order.
+func ValidateItems(items []Item, opts ItemValidationOptions) error {
+	for itemIndex, item := range items {
+		fields := [...]struct{ name, value string }{
+			{"package", item.Package},
+			{"script", item.Script},
+			{"setting", item.Setting},
+			{"file", item.File},
+			{"directory", item.Directory},
+			{"binary", item.Binary},
+			{"run", item.Run},
+		}
+		names := make([]string, 0, 2)
+		for _, field := range fields {
+			if field.value != "" {
+				names = append(names, field.name)
+			}
+		}
+		if len(names) != 1 {
+			found := "none"
+			if len(names) != 0 {
+				found = strings.Join(names, ", ")
+			}
+			return fmt.Errorf("item %d: expected exactly one primary field; found %s", itemIndex+1, found)
+		}
+		if item.Direction != "" &&
+			!(opts.AllowDirectionTemplates && strings.Contains(item.Direction, "{{")) {
+			if err := ValidateDirection(item.Direction); err != nil {
+				return fmt.Errorf("item %d: %w", itemIndex+1, err)
+			}
+		}
+	}
+	return nil
+}
+
+// Validate checks local modules and registry overrides in declaration order.
+func (c Config) Validate() error {
+	for moduleIndex, mod := range c.Modules {
+		module := fmt.Sprintf("module %d", moduleIndex+1)
+		if mod.Name != "" {
+			module += fmt.Sprintf(" (%q)", mod.Name)
+		}
+		if mod.From != "" && len(mod.Items) != 0 {
+			return fmt.Errorf("%s: from and items are mutually exclusive", module)
+		}
+		if err := ValidateItems(mod.Items, ItemValidationOptions{}); err != nil {
+			return fmt.Errorf("%s: items: %w", module, err)
+		}
+		if err := ValidateItems(mod.Override, ItemValidationOptions{}); err != nil {
+			return fmt.Errorf("%s: override: %w", module, err)
+		}
+	}
+	return nil
+}
+
 // PlatformMap holds a per-OS value. It accepts two YAML forms:
 //
 //   - Scalar: a single string applied to all platforms.
@@ -214,8 +288,10 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 	case yaml.MappingNode:
 		// Walk key/value pairs manually so that YAML null values (bare ~)
 		// are preserved as the literal string "~" — important for paths.
+		var seenMacOS, seenWindows, seenLinux bool
 		for i := 0; i+1 < len(value.Content); i += 2 {
-			key := value.Content[i].Value
+			keyNode := value.Content[i]
+			key := keyNode.Value
 			val := value.Content[i+1]
 			v := val.Value
 			// YAML reads "~" as null, but as a path it means the home
@@ -227,11 +303,25 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 			}
 			switch key {
 			case "macos":
+				if seenMacOS {
+					return fmt.Errorf("line %d: duplicate platform key %q", keyNode.Line, key)
+				}
+				seenMacOS = true
 				p.MacOS = v
 			case "windows":
+				if seenWindows {
+					return fmt.Errorf("line %d: duplicate platform key %q", keyNode.Line, key)
+				}
+				seenWindows = true
 				p.Windows = v
 			case "linux":
+				if seenLinux {
+					return fmt.Errorf("line %d: duplicate platform key %q", keyNode.Line, key)
+				}
+				seenLinux = true
 				p.Linux = v
+			default:
+				return fmt.Errorf("line %d: unknown platform key %q (want macos, linux, or windows)", keyNode.Line, key)
 			}
 		}
 		return nil
@@ -276,19 +366,24 @@ func Load(path string) (Config, error) {
 	doc := root.Content[0]
 	var cfg Config
 
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	switch doc.Kind {
 	case yaml.MappingNode:
-		if err := doc.Decode(&cfg); err != nil {
+		if err := decoder.Decode(&cfg); err != nil {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	case yaml.SequenceNode:
-		if err := doc.Decode(&cfg.Modules); err != nil {
+		if err := decoder.Decode(&cfg.Modules); err != nil {
 			return Config{}, fmt.Errorf("parse config (legacy format): %w", err)
 		}
 	default:
 		return Config{}, fmt.Errorf("config root must be a mapping with a \"modules\" key, or a bare sequence of modules; got %s", nodeKindName(doc.Kind))
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return Config{}, fmt.Errorf("validate config: %w", err)
+	}
 	return cfg, nil
 }
 
@@ -319,6 +414,9 @@ func (c Config) Module(name string) *Module {
 
 // Save marshals the config and writes it to path using the mapping format.
 func Save(path string, cfg Config) error {
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validate config: %w", err)
+	}
 	data, err := yaml.Marshal(&cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
