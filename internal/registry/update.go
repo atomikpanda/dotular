@@ -163,6 +163,7 @@ type updateOps struct {
 	cachePath      func(string) string
 	readFile       func(string) ([]byte, error)
 	publish        func(string, []byte) error
+	remove         func(string) error
 	warn           func(string)
 }
 
@@ -234,9 +235,7 @@ func UpdatePins(
 	return updatePinsWithOps(ctx, cfg, updateOps{
 		goos:           runtime.GOOS,
 		maxStagedBytes: maxAggregateStagedBytes,
-		acquire: func() (func() error, error) {
-			return acquireRegistryUpdateLock(configPath)
-		},
+		acquire:        acquireRegistryUpdateLock,
 		loadLock: func() (LockFile, error) {
 			lock, err := LoadLock(lockPath)
 			if err != nil {
@@ -250,6 +249,7 @@ func UpdatePins(
 		cachePath: moduleCachePath,
 		readFile:  os.ReadFile,
 		publish:   writeCacheFile,
+		remove:    os.Remove,
 		warn:      u.Warn,
 	})
 }
@@ -320,7 +320,25 @@ func updatePinsWithOps(
 			continue
 		}
 		if err := ops.publish(ops.cachePath(ref.ref), ref.data); err != nil {
-			return changes, err
+			publishErr := err
+			for cleanupIndex := i; cleanupIndex < len(staged); cleanupIndex++ {
+				if retained[cleanupIndex] {
+					continue
+				}
+				cleanupRef := staged[cleanupIndex]
+				if removeErr := ops.remove(ops.cachePath(cleanupRef.ref)); removeErr != nil &&
+					!errors.Is(removeErr, os.ErrNotExist) {
+					publishErr = errors.Join(
+						publishErr,
+						fmt.Errorf(
+							"remove unpublished registry cache for %q: %w",
+							cleanupRef.ref,
+							removeErr,
+						),
+					)
+				}
+			}
+			return changes, publishErr
 		}
 	}
 

@@ -1,27 +1,25 @@
 package registry
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 )
 
-// WithRegistryMutationLock serializes lockfile and registry cache mutation for
-// the config's lockfile destination.
-func WithRegistryMutationLock(configPath string, callback func() error) error {
-	return withRegistryMutationLock(configPath, acquireRegistryUpdateLock, callback)
+const registryMutationLockFilename = "registry-mutation.lock"
+
+// WithRegistryMutationLock serializes every mutation of the global registry
+// cache and its corresponding durable lockfiles.
+func WithRegistryMutationLock(callback func() error) error {
+	return withRegistryMutationLock(acquireRegistryUpdateLock, callback)
 }
 
 func withRegistryMutationLock(
-	configPath string,
-	acquire func(string) (func() error, error),
+	acquire func() (func() error, error),
 	callback func() error,
 ) (err error) {
-	release, err := acquire(configPath)
+	release, err := acquire()
 	if err != nil {
 		return err
 	}
@@ -31,8 +29,8 @@ func withRegistryMutationLock(
 	return callback()
 }
 
-func acquireRegistryUpdateLock(configPath string) (func() error, error) {
-	path, err := registryUpdateLockPath(configPath)
+func acquireRegistryUpdateLock() (func() error, error) {
+	path, err := registryUpdateLockPath()
 	if err != nil {
 		return nil, err
 	}
@@ -42,32 +40,10 @@ func acquireRegistryUpdateLock(configPath string) (func() error, error) {
 	return lockRegistryUpdateFile(path)
 }
 
-func registryUpdateLockPath(configPath string) (string, error) {
-	lockPath := LockPath(configPath)
-	absoluteDir, err := filepath.Abs(filepath.Dir(lockPath))
-	if err != nil {
-		return "", fmt.Errorf("resolve registry lockfile directory: %w", err)
-	}
-	canonicalDir, err := filepath.EvalSymlinks(absoluteDir)
-	if err != nil {
-		return "", fmt.Errorf("canonicalize registry lockfile directory: %w", err)
-	}
-	identity := normalizeRegistryUpdateIdentity(
-		filepath.Join(canonicalDir, filepath.Base(lockPath)),
-		runtime.GOOS,
-	)
-	key := fmt.Sprintf("%x", sha256.Sum256([]byte(identity)))
+func registryUpdateLockPath() (string, error) {
 	registryDir, err := registryCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("locate user cache directory: %w", err)
 	}
-	return filepath.Join(filepath.Dir(registryDir), "update-locks", key+".lock"), nil
-}
-
-func normalizeRegistryUpdateIdentity(path, goos string) string {
-	identity := filepath.Clean(path)
-	if goos == "windows" || goos == "darwin" {
-		identity = strings.ToLower(identity)
-	}
-	return identity
+	return filepath.Join(filepath.Dir(registryDir), registryMutationLockFilename), nil
 }

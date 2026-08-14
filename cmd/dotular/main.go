@@ -340,7 +340,7 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 	entries, err := registry.FetchIndex(ctx, u)
 	if err == nil && len(entries) > 0 {
 		var modules []registry.RemoteModule
-		lockErr := registry.WithRegistryMutationLock(configFile, func() error {
+		lockErr := registry.WithRegistryMutationLock(func() error {
 			lock, err := registry.LoadLock(registry.LockPath(configFile))
 			if err != nil {
 				return err
@@ -952,7 +952,7 @@ modules to add to your dotular.yaml.`,
 
 			// 2. Fetch all module definitions.
 			var modules []registry.RemoteModule
-			err = registry.WithRegistryMutationLock(configFile, func() error {
+			err = registry.WithRegistryMutationLock(func() error {
 				lockPath := registry.LockPath(configFile)
 				lock, err := registry.LoadLock(lockPath)
 				if err != nil {

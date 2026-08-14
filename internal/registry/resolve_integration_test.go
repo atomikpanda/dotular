@@ -227,7 +227,7 @@ func TestResolveWaitsForMutationLockBeforeLoadingAndPreservesConcurrentUpdate(t 
 	var releaseHeldOnce sync.Once
 	releaseHolder := func() { releaseHeldOnce.Do(func() { close(releaseHeld) }) }
 	t.Cleanup(releaseHolder)
-	withMutationLock := func(_ string, callback func() error) error {
+	withMutationLock := func(callback func() error) error {
 		close(lockHeld)
 		<-releaseHeld
 		return callback()

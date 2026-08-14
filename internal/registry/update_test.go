@@ -1009,6 +1009,9 @@ func TestUpdatePinsSaveLockFailureReturnsAllRowsAndPreservesEveryCacheByte(t *te
 	if len(recorder.publications) != 0 {
 		t.Fatalf("publications = %q, want none", recorder.publications)
 	}
+	if len(recorder.removals) != 0 {
+		t.Fatalf("removals = %q, want none before durable lock save", recorder.removals)
+	}
 	if !reflect.DeepEqual(&recorder.durable, before) {
 		t.Fatalf("durable lock changed\nbefore: %#v\nafter:  %#v", before, recorder.durable)
 	}
@@ -1020,27 +1023,36 @@ func TestUpdatePinsSaveLockFailureReturnsAllRowsAndPreservesEveryCacheByte(t *te
 	}
 }
 
-func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesAtomicOldOrNewBytes(t *testing.T) {
+func TestUpdatePinsPublicationFailureRemovesCurrentAndLaterUnpublishedCaches(t *testing.T) {
+	dataA := moduleYAML("module-a", "a")
+	dataB := moduleYAML("module-b", "b")
+	dataC := moduleYAML("module-c", "c")
+	dataD := moduleYAML("module-d", "d")
 	fixture := newUpdateFixture(t, map[string][]byte{
-		"/a": moduleYAML("module-a", "a"),
-		"/z": moduleYAML("module-z", "z"),
+		"/a": dataA,
+		"/b": dataB,
+		"/c": dataC,
+		"/d": dataD,
 	})
-	refA, refZ := fixture.ref("/a"), fixture.ref("/z")
-	fixture.configure(refZ, refA)
+	refA, refB, refC, refD := fixture.ref("/a"), fixture.ref("/b"), fixture.ref("/c"), fixture.ref("/d")
+	fixture.configure(refD, refC, refB, refA)
 	fixture.persistLock(nil)
 	recorder := newUpdateRecorder(fixture.lock)
-	pathZ := recorder.path(refZ)
-	oldZ := []byte("stale-z")
-	recorder.files[pathZ] = append([]byte(nil), oldZ...)
+	pathA, pathB := recorder.path(refA), recorder.path(refB)
+	pathC, pathD := recorder.path(refC), recorder.path(refD)
+	recorder.files[pathA] = []byte("stale-a")
+	recorder.files[pathB] = []byte("stale-b")
+	recorder.files[pathC] = []byte("stale-c")
+	recorder.files[pathD] = append([]byte(nil), dataD...)
 	errPublish := errors.New("publish failed")
-	recorder.publishErrors[pathZ] = errPublish
+	recorder.publishErrors[pathB] = errPublish
 
 	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
 
 	if !errors.Is(err, errPublish) {
 		t.Fatalf("error = %v, want it to wrap %v", err, errPublish)
 	}
-	requireChangeRefs(t, changes, refA, refZ)
+	requireChangeRefs(t, changes, refA, refB, refC, refD)
 	if len(recorder.saveAttempts) != 1 {
 		t.Fatalf("save attempts = %d, want 1", len(recorder.saveAttempts))
 	}
@@ -1049,11 +1061,64 @@ func TestUpdatePinsPublicationFailureReturnsAllRowsAndLeavesAtomicOldOrNewBytes(
 			t.Fatalf("durable checksum for %q = %q, want %q", change.Ref, got, change.NewSHA256)
 		}
 	}
-	if got := recorder.files[recorder.path(refA)]; !bytes.Equal(got, responseForRef(t, fixture, refA)) {
-		t.Fatalf("published target %q = %q, want exact staged bytes", refA, got)
+	if got := recorder.files[pathA]; !bytes.Equal(got, dataA) {
+		t.Fatalf("earlier published target = %q, want %q", got, dataA)
 	}
-	if got := recorder.files[pathZ]; !bytes.Equal(got, oldZ) {
-		t.Fatalf("failed atomic replacement target %q = %q, want unchanged %q", pathZ, got, oldZ)
+	for _, path := range []string{pathB, pathC} {
+		if _, ok := recorder.files[path]; ok {
+			t.Fatalf("unpublished target %q remains after publication failure", path)
+		}
+	}
+	if got := recorder.files[pathD]; !bytes.Equal(got, dataD) {
+		t.Fatalf("retained target = %q, want %q", got, dataD)
+	}
+	if got, want := recorder.publications, []string{pathA, pathB}; !slices.Equal(got, want) {
+		t.Fatalf("publications = %q, want %q", got, want)
+	}
+	if got, want := recorder.removals, []string{pathB, pathC}; !slices.Equal(got, want) {
+		t.Fatalf("removals = %q, want %q", got, want)
+	}
+}
+
+func TestUpdatePinsPublicationFailureJoinsContextualCleanupErrors(t *testing.T) {
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/a": moduleYAML("module-a", "a"),
+		"/b": moduleYAML("module-b", "b"),
+		"/c": moduleYAML("module-c", "c"),
+	})
+	refA, refB, refC := fixture.ref("/a"), fixture.ref("/b"), fixture.ref("/c")
+	fixture.configure(refC, refB, refA)
+	fixture.persistLock(nil)
+	recorder := newUpdateRecorder(fixture.lock)
+	pathA, pathB, pathC := recorder.path(refA), recorder.path(refB), recorder.path(refC)
+	recorder.files[pathA] = []byte("stale-a")
+	recorder.files[pathC] = []byte("stale-c")
+	errPublish := errors.New("publish failed")
+	errCleanupA := errors.New("cleanup a failed")
+	errCleanupC := errors.New("cleanup c failed")
+	recorder.publishErrors[pathA] = errPublish
+	recorder.removeErrors[pathA] = errCleanupA
+	recorder.removeErrors[pathB] = fs.ErrNotExist
+	recorder.removeErrors[pathC] = errCleanupC
+
+	changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
+
+	if !errors.Is(err, errPublish) ||
+		!errors.Is(err, errCleanupA) ||
+		!errors.Is(err, errCleanupC) {
+		t.Fatalf("error = %v, want publication and both cleanup errors", err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("error = %v, want not-exist cleanup error ignored", err)
+	}
+	if !strings.Contains(err.Error(), "remove unpublished registry cache") ||
+		!strings.Contains(err.Error(), refA) ||
+		!strings.Contains(err.Error(), refC) {
+		t.Fatalf("error = %q, want cleanup context for %q and %q", err, refA, refC)
+	}
+	requireChangeRefs(t, changes, refA, refB, refC)
+	if got, want := recorder.removals, []string{pathA, pathB, pathC}; !slices.Equal(got, want) {
+		t.Fatalf("removals = %q, want %q", got, want)
 	}
 }
 
@@ -1327,8 +1392,12 @@ func TestUpdatePinsWithOpsJoinsPublicationAndReleaseFailures(t *testing.T) {
 		t.Fatalf("updatePinsWithOps() error = %v, want joined %v and %v", err, errPublish, errRelease)
 	}
 	requireChangeRefs(t, changes, ref)
-	wantTail := []string{"publish:" + recorder.path(ref), "release"}
-	if got := recorder.events[len(recorder.events)-2:]; !slices.Equal(got, wantTail) {
+	wantTail := []string{
+		"publish:" + recorder.path(ref),
+		"remove:" + recorder.path(ref),
+		"release",
+	}
+	if got := recorder.events[len(recorder.events)-len(wantTail):]; !slices.Equal(got, wantTail) {
 		t.Fatalf("event tail = %q, want %q; events=%q", got, wantTail, recorder.events)
 	}
 }
@@ -1404,6 +1473,87 @@ func TestUpdatePinsWithOpsSerializesLoadThroughPublication(t *testing.T) {
 	}
 	if err := <-secondDone; err != nil {
 		t.Fatalf("second update error = %v", err)
+	}
+}
+
+func TestUpdatePinsFromDifferentConfigDirectoriesShareMutationLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	firstRequested := make(chan struct{})
+	allowFirst := make(chan struct{})
+	secondRequested := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/first":
+			close(firstRequested)
+			<-allowFirst
+			_, _ = w.Write(moduleYAML("first", "first"))
+		case "/second":
+			close(secondRequested)
+			_, _ = w.Write(moduleYAML("second", "second"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	var allowFirstOnce sync.Once
+	releaseFirst := func() { allowFirstOnce.Do(func() { close(allowFirst) }) }
+	t.Cleanup(releaseFirst)
+	swapClient(t, server.Client())
+
+	refBase := strings.TrimPrefix(server.URL, "https://")
+	firstConfigPath := filepath.Join(t.TempDir(), "first", "dotular.yaml")
+	secondConfigPath := filepath.Join(t.TempDir(), "second", "dotular.yaml")
+	for _, path := range []string{firstConfigPath, secondConfigPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	firstConfig := config.Config{Modules: []config.Module{{From: refBase + "/first"}}}
+	secondConfig := config.Config{Modules: []config.Module{{From: refBase + "/second"}}}
+	u := ui.New(io.Discard, io.Discard)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := UpdatePins(context.Background(), firstConfig, firstConfigPath, u)
+		firstDone <- err
+	}()
+	select {
+	case <-firstRequested:
+	case err := <-firstDone:
+		t.Fatalf("first UpdatePins returned before its response was released: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("first UpdatePins did not request its module")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := UpdatePins(context.Background(), secondConfig, secondConfigPath, u)
+		secondDone <- err
+	}()
+	<-secondStarted
+	select {
+	case <-secondRequested:
+		t.Fatal("second UpdatePins bypassed the mutation lock held by a different config directory")
+	case err := <-secondDone:
+		t.Fatalf("second UpdatePins returned while first held the mutation lock: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first UpdatePins() error = %v", err)
+	}
+	select {
+	case <-secondRequested:
+	case err := <-secondDone:
+		t.Fatalf("second UpdatePins returned without requesting its module: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("second UpdatePins remained blocked after first update completed")
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second UpdatePins() error = %v", err)
 	}
 }
 
@@ -1558,9 +1708,11 @@ type updateRecorder struct {
 	files           map[string][]byte
 	readErrors      map[string]error
 	publishErrors   map[string]error
+	removeErrors    map[string]error
 	saveError       error
 	reads           []string
 	publications    []string
+	removals        []string
 	warnings        []string
 	saveAttempts    []*LockFile
 	events          []string
@@ -1577,6 +1729,7 @@ func newUpdateRecorder(lock *LockFile) *updateRecorder {
 		files:         make(map[string][]byte),
 		readErrors:    make(map[string]error),
 		publishErrors: make(map[string]error),
+		removeErrors:  make(map[string]error),
 	}
 }
 
@@ -1635,6 +1788,18 @@ func (r *updateRecorder) ops() updateOps {
 			r.files[path] = append([]byte(nil), data...)
 			return nil
 		},
+		remove: func(path string) error {
+			r.removals = append(r.removals, path)
+			r.events = append(r.events, "remove:"+path)
+			if err := r.removeErrors[path]; err != nil {
+				return err
+			}
+			if _, ok := r.files[path]; !ok {
+				return fs.ErrNotExist
+			}
+			delete(r.files, path)
+			return nil
+		},
 		warn: func(message string) {
 			r.warnings = append(r.warnings, message)
 			r.events = append(r.events, "warn:"+message)
@@ -1644,21 +1809,29 @@ func (r *updateRecorder) ops() updateOps {
 
 func (r *updateRecorder) requireNoMutationOps(t *testing.T) {
 	t.Helper()
-	if len(r.reads) != 0 || len(r.saveAttempts) != 0 || len(r.publications) != 0 {
+	if len(r.reads) != 0 || len(r.saveAttempts) != 0 ||
+		len(r.publications) != 0 || len(r.removals) != 0 {
 		t.Fatalf(
-			"reads = %q, saves = %d, publications = %q, want none",
+			"reads = %q, saves = %d, publications = %q, removals = %q, want none",
 			r.reads,
 			len(r.saveAttempts),
 			r.publications,
+			r.removals,
 		)
 	}
 }
 
 func (r *updateRecorder) requirePathUntouched(t *testing.T, path string) {
 	t.Helper()
-	for _, paths := range [][]string{r.reads, r.publications} {
+	for _, paths := range [][]string{r.reads, r.publications, r.removals} {
 		if slices.Contains(paths, path) {
-			t.Fatalf("inactive path %q was accessed: reads=%q publications=%q", path, r.reads, r.publications)
+			t.Fatalf(
+				"inactive path %q was accessed: reads=%q publications=%q removals=%q",
+				path,
+				r.reads,
+				r.publications,
+				r.removals,
+			)
 		}
 	}
 }
@@ -1952,13 +2125,9 @@ func (r updateErrReader) Read([]byte) (int, error) {
 
 func TestWithRegistryMutationLockExecutesCallback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
-	if err := os.WriteFile(configPath, []byte("modules: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	called := false
-	if err := WithRegistryMutationLock(configPath, func() error {
+	if err := WithRegistryMutationLock(func() error {
 		called = true
 		return nil
 	}); err != nil {
@@ -1975,9 +2144,8 @@ func TestWithRegistryMutationLockJoinsCallbackAndReleaseErrors(t *testing.T) {
 	var events []string
 
 	err := withRegistryMutationLock(
-		"dotular.yaml",
-		func(configPath string) (func() error, error) {
-			events = append(events, "acquire "+configPath)
+		func() (func() error, error) {
+			events = append(events, "acquire")
 			return func() error {
 				events = append(events, "release")
 				return releaseErr
@@ -1992,7 +2160,7 @@ func TestWithRegistryMutationLockJoinsCallbackAndReleaseErrors(t *testing.T) {
 	if !errors.Is(err, callbackErr) || !errors.Is(err, releaseErr) {
 		t.Fatalf("withRegistryMutationLock() error = %v, want callback and release errors", err)
 	}
-	wantEvents := []string{"acquire dotular.yaml", "callback", "release"}
+	wantEvents := []string{"acquire", "callback", "release"}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %q, want %q", events, wantEvents)
 	}

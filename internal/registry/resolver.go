@@ -30,7 +30,7 @@ func resolveWithMutationLock(
 	configPath string,
 	opts ResolveOptions,
 	u *ui.UI,
-	withMutationLock func(string, func() error) error,
+	withMutationLock func(func() error) error,
 ) (config.Config, error) {
 	activeRefSet := CollectActiveRefs(cfg)
 	if len(activeRefSet) == 0 {
@@ -46,7 +46,7 @@ func resolveWithMutationLock(
 	}
 
 	var result config.Config
-	err := withMutationLock(configPath, func() error {
+	err := withMutationLock(func() error {
 		lockPath := LockPath(configPath)
 		lock, err := LoadLock(lockPath)
 		if err != nil {

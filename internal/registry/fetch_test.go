@@ -208,12 +208,31 @@ func TestWriteCacheFile(t *testing.T) {
 	}
 }
 
-func TestClearCache(t *testing.T) {
-	// ClearCache removes ~/.cache/dotular/registry.
-	// Just verify it doesn't panic.
-	err := ClearCache()
+func TestClearCacheRemovesRegistryCacheButRetainsMutationLock(t *testing.T) {
+	cacheDir, err := registryCacheDir()
 	if err != nil {
 		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "nested", "cached.yaml")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ClearCache(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("stat cleared cache directory error = %v, want not exist", err)
+	}
+	lockPath, err := registryUpdateLockPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("stat registry mutation lock after ClearCache: %v", err)
 	}
 }
 

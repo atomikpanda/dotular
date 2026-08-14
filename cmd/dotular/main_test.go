@@ -170,7 +170,7 @@ func TestDirectRegistryFetchLoopsWaitForMutationLock(t *testing.T) {
 			t.Cleanup(releaseHolder)
 			holderDone := make(chan error, 1)
 			go func() {
-				holderDone <- registry.WithRegistryMutationLock(configFile, func() error {
+				holderDone <- registry.WithRegistryMutationLock(func() error {
 					close(lockHeld)
 					<-releaseHeld
 					return nil

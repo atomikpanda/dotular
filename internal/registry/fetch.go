@@ -210,13 +210,16 @@ func moduleCachePath(rawRef string) string {
 	return filepath.Join(cacheDir, safe+".yaml")
 }
 
-// ClearCache removes the local registry cache directory.
+// ClearCache removes the local registry cache directory while holding the
+// process-independent registry mutation lock.
 func ClearCache() error {
 	cacheDir, err := registryCacheDir()
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(cacheDir)
+	return WithRegistryMutationLock(func() error {
+		return os.RemoveAll(cacheDir)
+	})
 }
 
 // CachedRefs returns the references currently in the cache directory.

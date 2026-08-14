@@ -5,174 +5,95 @@ package registry
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
-func TestRegistryUpdateLockPathUsesCanonicalLockfileIdentityOutsideRegistryCache(t *testing.T) {
+func TestRegistryUpdateLockPathIsGlobalAndOutsideRegistryCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache", "dotular", "registry"))
-	repository := t.TempDir()
-	configA := filepath.Join(repository, "a.yaml")
-	configB := filepath.Join(repository, "b.yaml")
-	for _, path := range []string{configA, configB} {
-		if err := os.WriteFile(path, []byte("modules: []\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
 
-	pathA, err := registryUpdateLockPath(configA)
+	path, err := registryUpdateLockPath()
 	if err != nil {
-		t.Fatalf("registryUpdateLockPath(a) error = %v", err)
+		t.Fatalf("registryUpdateLockPath() error = %v", err)
 	}
-	pathB, err := registryUpdateLockPath(configB)
-	if err != nil {
-		t.Fatalf("registryUpdateLockPath(b) error = %v", err)
-	}
-	if pathB != pathA {
-		t.Fatalf("same lockfile destination produced different paths: a=%q b=%q", pathA, pathB)
-	}
-
-	parentAlias := filepath.Join(t.TempDir(), "repository-alias")
-	if err := os.Symlink(repository, parentAlias); err != nil {
-		t.Fatal(err)
-	}
-	aliasPath, err := registryUpdateLockPath(filepath.Join(parentAlias, filepath.Base(configA)))
-	if err != nil {
-		t.Fatalf("registryUpdateLockPath(parent alias) error = %v", err)
-	}
-	if aliasPath != pathA {
-		t.Fatalf("parent-alias lock path = %q, want canonical path %q", aliasPath, pathA)
-	}
-
-	configAliasDir := t.TempDir()
-	configAlias := filepath.Join(configAliasDir, "config-alias.yaml")
-	if err := os.Symlink(configA, configAlias); err != nil {
-		t.Fatal(err)
-	}
-	configAliasPath, err := registryUpdateLockPath(configAlias)
-	if err != nil {
-		t.Fatalf("registryUpdateLockPath(config alias) error = %v", err)
-	}
-	if configAliasPath == pathA {
-		t.Fatalf("config-file alias in distinct lockfile directory reused %q", pathA)
-	}
-
-	wantDir := filepath.Join(home, ".cache", "dotular", "update-locks")
-	if filepath.Dir(pathA) != wantDir {
-		t.Fatalf("lock directory = %q, want %q", filepath.Dir(pathA), wantDir)
-	}
-	registryCacheDir := filepath.Join(home, ".cache", "dotular", "registry")
-	relativeToRegistry, err := filepath.Rel(registryCacheDir, pathA)
-	if err != nil {
-		t.Fatalf("resolve lock path relative to registry cache: %v", err)
-	}
-	if relativeToRegistry != ".." && !strings.HasPrefix(relativeToRegistry, ".."+string(filepath.Separator)) {
-		t.Fatalf("lock path %q is inside deletable registry cache tree %q", pathA, registryCacheDir)
-	}
-	if filepath.Ext(pathA) != ".lock" || len(strings.TrimSuffix(filepath.Base(pathA), ".lock")) != 64 {
-		t.Fatalf("lock filename = %q, want SHA-256 key with .lock suffix", filepath.Base(pathA))
-	}
-	if filepath.Dir(pathA) == repository {
-		t.Fatalf("lock path %q leaves an artifact in repository %q", pathA, repository)
+	want := filepath.Join(home, ".cache", "dotular", "registry-mutation.lock")
+	if path != want {
+		t.Fatalf("registry update lock path = %q, want %q", path, want)
 	}
 }
 
-func TestNormalizeRegistryUpdateIdentityFoldsCaseForCaseInsensitivePlatforms(t *testing.T) {
-	path := filepath.Join(string(filepath.Separator), "Users", "Example", "Dotular.yaml")
-	for _, goos := range []string{"darwin", "windows"} {
-		if got, want := normalizeRegistryUpdateIdentity(path, goos), strings.ToLower(filepath.Clean(path)); got != want {
-			t.Fatalf("normalizeRegistryUpdateIdentity(%q, %q) = %q, want %q", path, goos, got, want)
-		}
-	}
-	if got, want := normalizeRegistryUpdateIdentity(path, "linux"), filepath.Clean(path); got != want {
-		t.Fatalf("normalizeRegistryUpdateIdentity(%q, linux) = %q, want %q", path, got, want)
-	}
-}
-
-func TestClearCachePreservesHeldRegistryUpdateLock(t *testing.T) {
+func TestClearCacheWaitsForRegistryMutationLockAndPreservesLockFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache", "dotular", "registry"))
-	configDir := t.TempDir()
-	configA := filepath.Join(configDir, "a.yaml")
-	configB := filepath.Join(configDir, "b.yaml")
-	for _, path := range []string{configA, configB} {
-		if err := os.WriteFile(path, []byte("modules: []\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+	cacheDir, err := registryCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(cacheDir, "cached.yaml")
+	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, []byte("cached"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	releaseFirst, err := acquireRegistryUpdateLock(configA)
+	release, err := acquireRegistryUpdateLock()
 	if err != nil {
-		t.Fatalf("first acquireRegistryUpdateLock() error = %v", err)
+		t.Fatalf("acquireRegistryUpdateLock() error = %v", err)
 	}
-	firstReleased := false
+	released := false
 	t.Cleanup(func() {
-		if !firstReleased {
-			_ = releaseFirst()
+		if !released {
+			_ = release()
 		}
 	})
-
-	lockPath, err := registryUpdateLockPath(configA)
+	lockPath, err := registryUpdateLockPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ClearCache(); err != nil {
-		t.Fatalf("ClearCache() error = %v", err)
-	}
-	if _, err := os.Stat(lockPath); err != nil {
-		t.Fatalf("stat lock file after ClearCache: %v", err)
+	before, err := os.Stat(lockPath)
+	if err != nil {
+		t.Fatalf("stat held lock file: %v", err)
 	}
 
-	attempted := make(chan struct{})
-	acquired := make(chan func() error, 1)
-	errs := make(chan error, 1)
+	clearStarted := make(chan struct{})
+	clearDone := make(chan error, 1)
 	go func() {
-		close(attempted)
-		release, err := acquireRegistryUpdateLock(configB)
-		if err != nil {
-			errs <- err
-			return
-		}
-		acquired <- release
+		close(clearStarted)
+		clearDone <- ClearCache()
 	}()
-	<-attempted
+	<-clearStarted
 
 	select {
-	case release := <-acquired:
-		_ = release()
-		t.Fatal("second acquisition succeeded while first lock was held")
-	case err := <-errs:
-		t.Fatalf("second acquireRegistryUpdateLock() error = %v", err)
+	case err := <-clearDone:
+		t.Fatalf("ClearCache returned while mutation lock was held: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
-
-	if err := releaseFirst(); err != nil {
-		t.Fatalf("release first registry update lock: %v", err)
+	if _, err := os.Stat(cachePath); err != nil {
+		t.Fatalf("cache changed while mutation lock was held: %v", err)
 	}
-	firstReleased = true
+
+	if err := release(); err != nil {
+		t.Fatalf("release registry update lock: %v", err)
+	}
+	released = true
 	select {
-	case release := <-acquired:
-		if err := release(); err != nil {
-			t.Fatalf("release second registry update lock: %v", err)
+	case err := <-clearDone:
+		if err != nil {
+			t.Fatalf("ClearCache() error = %v", err)
 		}
-	case err := <-errs:
-		t.Fatalf("second acquireRegistryUpdateLock() error = %v", err)
 	case <-time.After(time.Second):
-		t.Fatal("second acquisition remained blocked after first release")
+		t.Fatal("ClearCache remained blocked after mutation lock release")
 	}
-
-	retainedPath, err := registryUpdateLockPath(configA)
+	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+		t.Fatalf("stat cleared cache directory error = %v, want not exist", err)
+	}
+	after, err := os.Stat(lockPath)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if retainedPath != lockPath {
-		t.Fatalf("lock path changed after release: got %q, want %q", retainedPath, lockPath)
-	}
-	if _, err := os.Stat(retainedPath); err != nil {
 		t.Fatalf("stat retained lock file: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatalf("ClearCache replaced registry mutation lock file %q", lockPath)
 	}
 }
