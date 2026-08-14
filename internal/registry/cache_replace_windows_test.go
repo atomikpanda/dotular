@@ -5,6 +5,7 @@ package registry
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -72,6 +73,85 @@ func TestReplaceCacheFileWindowsMoveFileExFlags(t *testing.T) {
 			}
 			if gotFlags&windows.MOVEFILE_COPY_ALLOWED != 0 {
 				t.Fatalf("MoveFileEx flags = %#x, MOVEFILE_COPY_ALLOWED must not be set", gotFlags)
+			}
+		})
+	}
+}
+
+func TestReplaceCacheFileWindowsExtendsLongLocalPaths(t *testing.T) {
+	originalMoveCacheFileEx := moveCacheFileEx
+	t.Cleanup(func() {
+		moveCacheFileEx = originalMoveCacheFileEx
+	})
+
+	longDir := filepath.Join(t.TempDir(), strings.Repeat(`nested\`, 40))
+	tempPath := filepath.Join(longDir, ".cache.json.tmp-platform")
+	path := filepath.Join(longDir, "cache.json")
+
+	if !filepath.IsAbs(tempPath) || !filepath.IsAbs(path) {
+		t.Fatalf("test paths must be absolute: temp = %q, destination = %q", tempPath, path)
+	}
+
+	moveCalled := false
+	moveCacheFileEx = func(
+		existingFileName *uint16,
+		newFileName *uint16,
+		_ uint32,
+	) error {
+		moveCalled = true
+		gotTempPath := windows.UTF16PtrToString(existingFileName)
+		gotPath := windows.UTF16PtrToString(newFileName)
+		wantTempPath := `\\?\` + tempPath
+		wantPath := `\\?\` + path
+		if gotTempPath != wantTempPath {
+			t.Fatalf("MoveFileEx long source = %q, want %q", gotTempPath, wantTempPath)
+		}
+		if gotPath != wantPath {
+			t.Fatalf("MoveFileEx long destination = %q, want %q", gotPath, wantPath)
+		}
+		return nil
+	}
+
+	if err := replaceCacheFile(tempPath, path); err != nil {
+		t.Fatalf("replaceCacheFile() error = %v", err)
+	}
+	if !moveCalled {
+		t.Fatal("MoveFileEx was not called")
+	}
+}
+
+func TestNormalizeMoveFileExPathLongForms(t *testing.T) {
+	longTail := strings.Repeat(`nested\`, 40) + "cache.json"
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "drive path",
+			path: `C:\` + longTail,
+			want: `\\?\C:\` + longTail,
+		},
+		{
+			name: "UNC path",
+			path: `\\server\share\` + longTail,
+			want: `\\?\UNC\server\share\` + longTail,
+		},
+		{
+			name: "already extended path",
+			path: `\\?\C:\` + longTail,
+			want: `\\?\C:\` + longTail,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := normalizeMoveFileExPath(test.path)
+			if err != nil {
+				t.Fatalf("normalizeMoveFileExPath(%q) error = %v", test.path, err)
+			}
+			if got != test.want {
+				t.Fatalf("normalizeMoveFileExPath(%q) = %q, want %q", test.path, got, test.want)
 			}
 		})
 	}
