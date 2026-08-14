@@ -213,6 +213,17 @@ managed store and records it in the config YAML.`,
 			if ctx == nil {
 				ctx = context.Background()
 			}
+			if err := config.ValidateDirection(direction); err != nil {
+				return usageErrorf("invalid --direction: %v", err)
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					return err
+				}
+				cfg = config.Config{}
+			}
+
 			srcPath := platform.ExpandPath(args[0])
 			var moduleName string
 			if len(args) >= 2 {
@@ -281,12 +292,6 @@ managed store and records it in the config YAML.`,
 				pmap.Windows = srcParent
 			case "linux":
 				pmap.Linux = srcParent
-			}
-
-			// Load the existing config (or start fresh if it doesn't exist).
-			cfg, err := loadConfig()
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
 			}
 
 			// Build the new item. Leave Direction unset at the default so the

@@ -1713,30 +1713,177 @@ func TestAddCmdWithLink(t *testing.T) {
 	}
 }
 
-func TestAddCmdWithDirection(t *testing.T) {
+func TestAddCmdRejectsInvalidDirectionBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "dotular.yaml")
-	os.WriteFile(cfgPath, []byte("modules: []\n"), 0o644)
-
-	srcFile := filepath.Join(dir, "syncme.txt")
-	os.WriteFile(srcFile, []byte("data"), 0o644)
+	before := []byte("modules: []\n")
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	root := buildRoot()
-	root.SetArgs([]string{"add", "--config", cfgPath, "--direction", "sync", srcFile, "syncmod"})
-	if err := root.Execute(); err != nil {
+	root.SetArgs([]string{"add", sourcePath, "shell", "--config", cfgPath, "--direction", "pul"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exitCode(%v) = %d, want %d", err, got, exitUsage)
+	}
+	if !strings.Contains(err.Error(), "--direction") || !strings.Contains(err.Error(), "pul") {
+		t.Fatalf("error = %q, want --direction and pul", err)
+	}
+	after, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config changed\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "shell")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("module directory stat error = %v, want fs.ErrNotExist", statErr)
+	}
+}
+
+func TestAddCmdValidatesConfigBeforeCopy(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dotular.yaml")
+	before := []byte("modules:\n  - name: shell\n    items:\n      - packge: git\n")
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := loadConfigFrom(cfgPath)
-	if err != nil {
-		t.Fatal(err)
+	root := buildRoot()
+	root.SetArgs([]string{"add", sourcePath, "shell", "--config", cfgPath})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	err := root.Execute()
+	if got := exitCode(err); got != exitFailure {
+		t.Fatalf("exitCode(%v) = %d, want %d", err, got, exitFailure)
 	}
-	mod := cfg.Module("syncmod")
-	if mod == nil {
-		t.Fatal("module not found")
+	after, readErr := os.ReadFile(cfgPath)
+	if readErr != nil {
+		t.Fatal(readErr)
 	}
-	if mod.Items[0].Direction != "sync" {
-		t.Errorf("direction = %q, want sync", mod.Items[0].Direction)
+	if !bytes.Equal(after, before) {
+		t.Fatalf("config changed\nbefore: %q\nafter:  %q", before, after)
+	}
+	moduleDir := filepath.Join(dir, "shell")
+	if _, statErr := os.Stat(moduleDir); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("module directory stat error = %v, want fs.ErrNotExist", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(moduleDir, filepath.Base(sourcePath))); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("copied destination stat error = %v, want fs.ErrNotExist", statErr)
+	}
+}
+
+func TestAddCmdWithDirection(t *testing.T) {
+	tests := []struct {
+		name          string
+		direction     string
+		wantDirection string
+		wantYAML      string
+	}{
+		{name: "default push"},
+		{name: "explicit pull", direction: "pull", wantDirection: "pull", wantYAML: "direction: pull\n"},
+		{name: "explicit sync", direction: "sync", wantDirection: "sync", wantYAML: "direction: sync\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "dotular.yaml")
+			if err := os.WriteFile(cfgPath, []byte("modules: []\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			sourcePath := filepath.Join(dir, "direction.txt")
+			if err := os.WriteFile(sourcePath, []byte("data"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			args := []string{"add", sourcePath, "directions", "--config", cfgPath}
+			if tt.direction != "" {
+				args = append(args, "--direction", tt.direction)
+			}
+			root := buildRoot()
+			root.SetArgs(args)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+
+			stdout, writer, pipeErr := os.Pipe()
+			if pipeErr != nil {
+				t.Fatal(pipeErr)
+			}
+			previousStdout := os.Stdout
+			os.Stdout = writer
+			executeErr := root.Execute()
+			os.Stdout = previousStdout
+			if closeErr := writer.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			output, readErr := io.ReadAll(stdout)
+			if closeErr := stdout.Close(); closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if executeErr != nil {
+				t.Fatal(executeErr)
+			}
+
+			cfg, err := loadConfigFrom(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mod := cfg.Module("directions")
+			if mod == nil {
+				t.Fatal("module not found")
+			}
+			if len(mod.Items) != 1 {
+				t.Fatalf("items = %d, want 1", len(mod.Items))
+			}
+			item := mod.Items[0]
+			if item.Direction != tt.wantDirection {
+				t.Errorf("direction = %q, want %q", item.Direction, tt.wantDirection)
+			}
+			if err := config.ValidateItems(mod.Items, config.ItemValidationOptions{}); err != nil {
+				t.Fatalf("stored item validation: %v", err)
+			}
+
+			saved, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.wantYAML == "" {
+				if strings.Contains(string(saved), "direction:") {
+					t.Errorf("default direction was serialized:\n%s", saved)
+				}
+			} else if got := strings.Count(string(saved), tt.wantYAML); got != 1 {
+				t.Errorf("serialized %q %d times, want exactly once:\n%s", tt.wantYAML, got, saved)
+			}
+
+			dest := filepath.Join(dir, "directions", filepath.Base(sourcePath))
+			for _, want := range []string{
+				`added file "direction.txt" to module "directions"`,
+				"store: " + dest,
+				"config: " + cfgPath,
+			} {
+				if !strings.Contains(string(output), want) {
+					t.Errorf("output missing %q:\n%s", want, output)
+				}
+			}
+			if stored, err := os.ReadFile(dest); err != nil || string(stored) != "data" {
+				t.Errorf("stored file = %q, %v", stored, err)
+			}
+		})
 	}
 }
 
@@ -1805,6 +1952,90 @@ func TestAddCmdDirectoryPreservesSymlinks(t *testing.T) {
 	}
 	if data, err := os.ReadFile(filepath.Join(stored, "target.txt")); err != nil || string(data) != "pointed at" {
 		t.Errorf("regular file alongside the links = %q, %v", data, err)
+	}
+}
+
+func TestConfigCommandsRejectMalformedInputBeforeWork(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "dotular.yaml")
+	markerPath := filepath.Join(dir, "action-reached")
+	before := []byte(fmt.Sprintf(`unexpected: true
+modules:
+  - name: guard
+    items:
+      - run: "touch %s"
+  - from: example.invalid/module.yaml
+`, markerPath))
+	if err := os.WriteFile(cfgPath, before, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var requests atomic.Int32
+	previousTransport := httputil.Client.Transport
+	httputil.Client.Transport = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		t.Errorf("unexpected network request: %s", req.URL)
+		return nil, errors.New("unexpected network request")
+	})
+	t.Cleanup(func() { httputil.Client.Transport = previousTransport })
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "apply", args: []string{"apply"}},
+		{name: "push", args: []string{"push"}},
+		{name: "pull", args: []string{"pull"}},
+		{name: "sync", args: []string{"sync"}},
+		{name: "list", args: []string{"list"}},
+		{name: "status", args: []string{"status"}},
+		{name: "verify", args: []string{"verify"}},
+		{name: "registry update", args: []string{"registry", "update"}},
+		{name: "registry check", args: []string{"registry", "update", "--check"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			root := buildRoot()
+			root.SetArgs(append(append([]string(nil), tt.args...), "--config", cfgPath))
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			err := root.Execute()
+			if err == nil {
+				t.Fatal("command succeeded, want config load error")
+			}
+			if !strings.Contains(err.Error(), "unexpected") {
+				t.Fatalf("error = %q, want unknown key", err)
+			}
+			for name, path := range map[string]string{
+				"action marker": markerPath,
+				"lockfile":      registry.LockPath(cfgPath),
+				"module store":  filepath.Join(dir, "guard"),
+			} {
+				if _, statErr := os.Stat(path); !errors.Is(statErr, fs.ErrNotExist) {
+					t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+				}
+			}
+			after, readErr := os.ReadFile(cfgPath)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !bytes.Equal(after, before) {
+				t.Errorf("config changed\nbefore: %q\nafter:  %q", before, after)
+			}
+			entries, readDirErr := os.ReadDir(home)
+			if readDirErr != nil {
+				t.Fatal(readDirErr)
+			}
+			if len(entries) != 0 {
+				t.Errorf("command wrote state under HOME: %v", entries)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Errorf("network requests = %d, want 0", got)
+			}
+		})
 	}
 }
 
