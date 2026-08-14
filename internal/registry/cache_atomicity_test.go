@@ -11,7 +11,7 @@ import (
 
 const (
 	cacheObservationRounds = 48
-	cacheReadsPerRound      = 24
+	cacheReadsPerRound     = 24
 )
 
 func TestWriteCacheFilePublishesWithoutTempLitter(t *testing.T) {
@@ -135,34 +135,108 @@ func runCacheObservationRound(
 ) {
 	t.Helper()
 
-	ready := make(chan struct{})
-	start := make(chan struct{})
-	result := make(chan error, 1)
+	type observationResult struct {
+		writeErr            error
+		observationErr      error
+		postStartValidations int
+	}
+
+	observe := func() error {
+		data, err := os.ReadFile(path)
+		return validate(data, err)
+	}
+
+	initialValidation := make(chan error, 1)
+	writeStarted := make(chan struct{})
+	observerReady := make(chan struct{})
+	writeDone := make(chan error, 1)
+	result := make(chan observationResult, 1)
 
 	go func() {
-		close(ready)
-		<-start
+		initialErr := observe()
+		initialValidation <- initialErr
+		if initialErr != nil {
+			return
+		}
 
-		for range cacheReadsPerRound {
-			data, err := os.ReadFile(path)
-			if validationErr := validate(data, err); validationErr != nil {
-				result <- validationErr
+		<-writeStarted
+
+		postStartValidations := 1
+		observationErr := observe()
+		close(observerReady)
+		if observationErr != nil {
+			result <- observationResult{
+				writeErr:             <-writeDone,
+				observationErr:       observationErr,
+				postStartValidations: postStartValidations,
+			}
+			return
+		}
+
+		for postStartValidations < cacheReadsPerRound {
+			select {
+			case writeErr := <-writeDone:
+				result <- observationResult{
+					writeErr:             writeErr,
+					postStartValidations: postStartValidations,
+				}
+				return
+			default:
+			}
+
+			observationErr = observe()
+			postStartValidations++
+			if observationErr != nil {
+				result <- observationResult{
+					writeErr:             <-writeDone,
+					observationErr:       observationErr,
+					postStartValidations: postStartValidations,
+				}
 				return
 			}
 		}
-		result <- nil
+
+		select {
+		case writeErr := <-writeDone:
+			result <- observationResult{
+				writeErr:             writeErr,
+				postStartValidations: postStartValidations,
+			}
+		default:
+			result <- observationResult{
+				writeErr:             <-writeDone,
+				observationErr: fmt.Errorf(
+					"writer did not complete within %d post-start validations",
+					cacheReadsPerRound,
+				),
+				postStartValidations: postStartValidations,
+			}
+		}
 	}()
 
-	<-ready
-	close(start)
-
-	writeErr := write()
-	observationErr := <-result
-
-	if writeErr != nil {
-		t.Fatalf("production-path cache write error = %v", writeErr)
+	if initialErr := <-initialValidation; initialErr != nil {
+		t.Fatalf("initial cache observation before write start: %v", initialErr)
 	}
-	if observationErr != nil {
-		t.Fatal(observationErr)
+
+	go func() {
+		close(writeStarted)
+		<-observerReady
+		writeDone <- write()
+	}()
+
+	observation := <-result
+	if observation.postStartValidations <= 0 ||
+		observation.postStartValidations > cacheReadsPerRound {
+		t.Fatalf(
+			"post-start cache validations = %d, want within [1, %d]",
+			observation.postStartValidations,
+			cacheReadsPerRound,
+		)
+	}
+	if observation.writeErr != nil {
+		t.Fatalf("production-path cache write error = %v", observation.writeErr)
+	}
+	if observation.observationErr != nil {
+		t.Fatal(observation.observationErr)
 	}
 }
