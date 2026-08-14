@@ -398,5 +398,5 @@ func readLine(r io.Reader) (string, error) {
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
-	return "", nil
+	return "", io.EOF
 }

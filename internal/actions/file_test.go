@@ -468,8 +468,7 @@ func TestFileActionEncryptedPushNoKey(t *testing.T) {
 }
 
 func TestFileActionRunSyncBothDifferent(t *testing.T) {
-	// When both exist and differ, resolveConflict is called which reads stdin.
-	// We can test the branch up to that point by verifying the error doesn't crash.
+	// When both exist and differ, explicitly choose the interactive skip option.
 	dir := t.TempDir()
 	src := filepath.Join(dir, "repo", "test.txt")
 	destDir := filepath.Join(dir, "system")
@@ -484,16 +483,15 @@ func TestFileActionRunSyncBothDifferent(t *testing.T) {
 		Destination: destDir + "/",
 		Direction:   "sync",
 	}
-	// This will try to read stdin for conflict resolution.
-	// With empty stdin, it should skip (default choice).
 	oldStdin := os.Stdin
 	r, w, _ := os.Pipe()
-	w.Close() // EOF
+	w.Write([]byte("s\n"))
+	w.Close()
 	os.Stdin = r
 	defer func() { os.Stdin = oldStdin }()
 
 	err := a.Run(context.Background(), false)
-	// Should not error — just skip on empty input.
+	// The explicit skip choice should not error.
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

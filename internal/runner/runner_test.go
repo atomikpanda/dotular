@@ -380,6 +380,67 @@ func TestApplyModuleDirectionSkipIsAudited(t *testing.T) {
 	}
 }
 
+func TestApplyModuleSyncConflictEOFIsFailure(t *testing.T) {
+	const (
+		moduleName = "eof-conflict"
+		fileName   = "test.txt"
+	)
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	repoFile := filepath.Join(dir, moduleName, fileName)
+	systemDir := filepath.Join(dir, "system")
+	systemFile := filepath.Join(systemDir, fileName)
+	write(t, repoFile, "repo version", 0o644)
+	write(t, systemFile, "system version", 0o644)
+
+	stdin, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		stdin.Close()
+	})
+
+	r := newTestRunner(config.Config{})
+	r.DryRun = false
+	r.Command = "sync"
+	mod := config.Module{
+		Name: moduleName,
+		Items: []config.Item{{
+			File:        fileName,
+			Destination: config.PlatformMap{MacOS: systemDir + string(os.PathSeparator)},
+			Direction:   "sync",
+		}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err == nil {
+		t.Fatal("expected unresolved conflict at EOF to fail")
+	}
+	if result.Applied != 0 || result.Skipped != 0 || result.Failed != 1 {
+		t.Errorf("applied/skipped/failed = %d/%d/%d, want 0/0/1",
+			result.Applied, result.Skipped, result.Failed)
+	}
+
+	entries, err := audit.Read(moduleName, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d audit entries, want 1", len(entries))
+	}
+	if entries[0].Outcome != "failure" {
+		t.Errorf("audit outcome = %q, want failure", entries[0].Outcome)
+	}
+}
+
 // Real modules list the same package once per manager (git via brew, apt, dnf,
 // winget, …), so most of them are platform-skipped on any given machine. Their
 // audit entries have to stay distinguishable.
