@@ -44,42 +44,51 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	cachePath := moduleCachePath(rawRef)
 	entry, inLock := lock.Registry[rawRef]
 
-	var data []byte
+	var (
+		data        []byte
+		mod         *RemoteModule
+		replacement LockEntry
+		err         error
+	)
 	fromCache := false
 	if !opts.NoCache && inLock {
-		if cachedData, err := os.ReadFile(cachePath); err == nil {
+		if cachedData, readErr := os.ReadFile(cachePath); readErr == nil {
 			data = cachedData
 			fromCache = true
 		}
 	}
 
-	if !fromCache {
-		var err error
-		data, err = download(ctx, ref.FetchURL)
-		if err != nil {
-			return nil, ref.Trust, fmt.Errorf("fetch %s: %w", rawRef, err)
-		}
-	}
-
-	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	if inLock && entry.SHA256 != sum && !opts.Repin {
-		return nil, ref.Trust, fmt.Errorf(
-			"registry: checksum mismatch for %s (expected %s, got %s)",
-			rawRef, entry.SHA256, sum,
-		)
-	}
-
-	mod, err := parseModule(data)
-	if err != nil {
-		return nil, ref.Trust, err
-	}
-
-	if !inLock || entry.SHA256 != sum {
-		lock.Registry[rawRef] = LockEntry{
-			SHA256:    sum,
+	if fromCache {
+		replacement = LockEntry{
+			SHA256:    fmt.Sprintf("%x", sha256.Sum256(data)),
 			FetchedAt: time.Now().UTC(),
 			URL:       ref.FetchURL,
 		}
+		var expected *LockEntry
+		if !opts.Repin {
+			expected = &entry
+		}
+		if err := verifyPinnedChecksum(rawRef, expected, replacement.SHA256); err != nil {
+			return nil, ref.Trust, err
+		}
+		mod, err = parseModule(data)
+		if err != nil {
+			return nil, ref.Trust, err
+		}
+	} else {
+		var expected *LockEntry
+		if inLock && !opts.Repin {
+			expected = &entry
+		}
+		var trust TrustLevel
+		data, mod, replacement, trust, err = fetchNoWrite(ctx, rawRef, expected)
+		if err != nil {
+			return nil, trust, err
+		}
+	}
+
+	if !inLock || entry.SHA256 != replacement.SHA256 {
+		lock.Registry[rawRef] = replacement
 	}
 
 	if !fromCache {
@@ -90,6 +99,46 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions
 	}
 
 	return mod, ref.Trust, nil
+}
+
+// fetchNoWrite downloads, checksums, and parses a registry module without
+// consulting or mutating the lockfile or cache. An optional expected entry
+// preserves Fetch's immutable-pin check before parsing untrusted bytes.
+func fetchNoWrite(ctx context.Context, rawRef string, expected *LockEntry) ([]byte, *RemoteModule, LockEntry, TrustLevel, error) {
+	ref := ParseRef(rawRef)
+	if err := ref.checkVersionSupported(); err != nil {
+		return nil, nil, LockEntry{}, ref.Trust, err
+	}
+
+	data, err := download(ctx, ref.FetchURL)
+	if err != nil {
+		return nil, nil, LockEntry{}, ref.Trust, fmt.Errorf("fetch %s: %w", rawRef, err)
+	}
+
+	replacement := LockEntry{
+		SHA256:    fmt.Sprintf("%x", sha256.Sum256(data)),
+		FetchedAt: time.Now().UTC(),
+		URL:       ref.FetchURL,
+	}
+	if err := verifyPinnedChecksum(rawRef, expected, replacement.SHA256); err != nil {
+		return nil, nil, LockEntry{}, ref.Trust, err
+	}
+	mod, err := parseModule(data)
+	if err != nil {
+		return nil, nil, LockEntry{}, ref.Trust, err
+	}
+
+	return data, mod, replacement, ref.Trust, nil
+}
+
+func verifyPinnedChecksum(rawRef string, expected *LockEntry, got string) error {
+	if expected == nil || expected.SHA256 == got {
+		return nil
+	}
+	return fmt.Errorf(
+		"registry: checksum mismatch for %s (expected %s, got %s)",
+		rawRef, expected.SHA256, got,
+	)
 }
 
 func download(ctx context.Context, url string) ([]byte, error) {
