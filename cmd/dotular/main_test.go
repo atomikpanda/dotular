@@ -1067,12 +1067,16 @@ func TestRegistryUpdateCheckInvocation(t *testing.T) {
 		)
 	}
 
-	if _, err := executeRegistryArgs(
+	_, positionalErr := executeRegistryArgs(
 		t,
 		path,
 		[]string{"registry", "update", "check"},
-	); err == nil {
+	)
+	if positionalErr == nil {
 		t.Fatal("registry update check succeeded, want positional-argument error")
+	}
+	if got := exitCode(positionalErr); got != exitUsage {
+		t.Fatalf("registry update check exit = %d, want %d", got, exitUsage)
 	}
 	if checkCalls != 1 || updateCalls != 0 {
 		t.Fatalf(

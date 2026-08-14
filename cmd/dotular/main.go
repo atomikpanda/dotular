@@ -886,7 +886,12 @@ func registryCmd() *cobra.Command {
 	updateCmd := &cobra.Command{
 		Use:   "update",
 		Short: "Re-fetch all registry modules referenced in the config",
-		Args:  cobra.NoArgs,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if err := cobra.NoArgs(cmd, args); err != nil {
+				return &usageError{err: err}
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			cfg, err := loadConfig()
