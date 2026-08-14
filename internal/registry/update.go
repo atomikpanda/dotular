@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
@@ -59,6 +62,26 @@ func stageActiveRefs(ctx context.Context, cfg config.Config, lock *LockFile) ([]
 			return nil, fmt.Errorf("stage registry ref %q: %w", ref, err)
 		}
 		staged = append(staged, entry)
+	}
+
+	stagedModules := make(map[string]*RemoteModule, len(staged))
+	for i := range staged {
+		stagedModules[staged[i].ref] = &staged[i].module
+	}
+	for _, module := range cfg.Modules {
+		if !module.IsRegistry() {
+			continue
+		}
+
+		remote := stagedModules[module.From]
+		params := resolveParams(remote.Params, module.With)
+		if _, err := renderItems(remote.Items, params); err != nil {
+			name := module.Name
+			if name == "" {
+				name = remote.Name
+			}
+			return nil, fmt.Errorf("validate registry ref %q for module %q: %w", module.From, name, err)
+		}
 	}
 	return staged, nil
 }
@@ -116,6 +139,7 @@ func replacementLock(lock *LockFile, staged []stagedRef) *LockFile {
 }
 
 type updateOps struct {
+	goos      string
 	loadLock  func() (LockFile, error)
 	saveLock  func(LockFile) error
 	cachePath func(string) string
@@ -125,10 +149,19 @@ type updateOps struct {
 	warn      func(string)
 }
 
+func moduleCacheCollisionKey(goos, path string) string {
+	key := filepath.Clean(path)
+	if goos == "windows" || goos == "darwin" {
+		return strings.ToLower(key)
+	}
+	return key
+}
+
 func rejectModuleCachePathCollisions(
 	activeRefs []string,
 	lockedRefs []string,
 	pathFor func(string) string,
+	goos string,
 ) error {
 	active := make(map[string]struct{}, len(activeRefs))
 	for _, ref := range activeRefs {
@@ -148,12 +181,13 @@ func rejectModuleCachePathCollisions(
 
 			leftPath := pathFor(left)
 			rightPath := pathFor(right)
-			if leftPath == rightPath {
+			collisionKey := moduleCacheCollisionKey(goos, leftPath)
+			if collisionKey == moduleCacheCollisionKey(goos, rightPath) {
 				return fmt.Errorf(
 					"module cache path collision: refs %q and %q both map to %q",
 					left,
 					right,
-					leftPath,
+					collisionKey,
 				)
 			}
 		}
@@ -194,6 +228,7 @@ func UpdatePins(
 ) ([]PinChange, error) {
 	lockPath := LockPath(configPath)
 	return updatePinsWithOps(ctx, cfg, updateOps{
+		goos: runtime.GOOS,
 		loadLock: func() (LockFile, error) {
 			lock, err := LoadLock(lockPath)
 			if err != nil {
@@ -241,6 +276,7 @@ func updatePinsWithOps(
 		activeRefsFromStaged(staged),
 		lockRefs(lock),
 		ops.cachePath,
+		ops.goos,
 	); err != nil {
 		return changes, err
 	}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -279,6 +280,52 @@ func TestStageActiveRefsYAMLTypeFailureHasNoWrites(t *testing.T) {
 	fixture.requireDurableStateUnchanged()
 }
 
+func TestStageActiveRefsValidatesEverySharedRefUsageAfterUniqueFetchesWithoutWrites(t *testing.T) {
+	sharedData := []byte(
+		"name: shared\n" +
+			"params:\n" +
+			"  package:\n" +
+			"    default: safe\n" +
+			"items:\n" +
+			"  - package: '{{ .package }}'\n" +
+			"    via: brew\n",
+	)
+	otherData := moduleYAML("other", "other")
+	fixture := newUpdateFixture(t, map[string][]byte{
+		"/shared": sharedData,
+		"/other":  otherData,
+	})
+	sharedRef, otherRef := fixture.ref("/shared"), fixture.ref("/other")
+	fixture.configure(sharedRef, otherRef, sharedRef)
+	fixture.cfg.Modules[0].Name = "valid-shared-usage"
+	fixture.cfg.Modules[0].With = map[string]any{"package": "valid"}
+	fixture.cfg.Modules[2].Name = "invalid-shared-usage"
+	fixture.cfg.Modules[2].With = map[string]any{"package": "invalid'quote"}
+	fixture.persistLock(map[string]LockEntry{
+		sharedRef: {SHA256: strings.Repeat("a", sha256.Size*2)},
+		otherRef:  {SHA256: strings.Repeat("b", sha256.Size*2)},
+	})
+	fixture.seedCache(sharedRef, []byte("old shared cache"))
+	fixture.seedCache(otherRef, []byte("old other cache"))
+	fixture.snapshotDurableState()
+
+	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock)
+
+	fixture.requireWrappedStageError(err, sharedRef, `module "invalid-shared-usage"`)
+	if !strings.Contains(err.Error(), "unmarshal rendered item") {
+		t.Fatalf("stageActiveRefs() error = %q, want rendered item context", err)
+	}
+	if got != nil {
+		t.Fatalf("stageActiveRefs() = %#v, want nil records after validation failure", got)
+	}
+	for _, ref := range []string{sharedRef, otherRef} {
+		if requests := fixture.requestCount(ref); requests != 1 {
+			t.Fatalf("requests for %q = %d, want 1", ref, requests)
+		}
+	}
+	fixture.requireDurableStateUnchanged()
+}
+
 func TestReplacementLockPreservesInactiveEntriesAndDoesNotAliasOriginal(t *testing.T) {
 	activeA := "example.com/a"
 	activeZ := "example.com/z"
@@ -338,6 +385,125 @@ func TestReplacementLockPreservesInactiveEntriesAndDoesNotAliasOriginal(t *testi
 	delete(got.Registry, activeA)
 	if !reflect.DeepEqual(original, before) {
 		t.Fatalf("mutating replacement changed original\nbefore: %#v\nafter:  %#v", before, original)
+	}
+}
+
+func TestModuleCacheCollisionKeyUsesTargetOSCaseSensitivity(t *testing.T) {
+	tests := []struct {
+		name      string
+		goos      string
+		left      string
+		right     string
+		wantEqual bool
+	}{
+		{
+			name:      "windows case alias",
+			goos:      "windows",
+			left:      "/cache/Parent/../Module",
+			right:     "/cache/module",
+			wantEqual: true,
+		},
+		{
+			name:      "darwin case alias",
+			goos:      "darwin",
+			left:      "/cache/Parent/../Module",
+			right:     "/cache/module",
+			wantEqual: true,
+		},
+		{
+			name:      "linux case distinct",
+			goos:      "linux",
+			left:      "/cache/Parent/../Module",
+			right:     "/cache/module",
+			wantEqual: false,
+		},
+		{
+			name:      "linux cleaned alias",
+			goos:      "linux",
+			left:      "/cache/Parent/../module",
+			right:     "/cache/module",
+			wantEqual: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			left := moduleCacheCollisionKey(tt.goos, tt.left)
+			right := moduleCacheCollisionKey(tt.goos, tt.right)
+			if got := left == right; got != tt.wantEqual {
+				t.Fatalf(
+					"moduleCacheCollisionKey(%q, %q) == moduleCacheCollisionKey(%q, %q) = %t, want %t",
+					tt.goos,
+					tt.left,
+					tt.goos,
+					tt.right,
+					got,
+					tt.wantEqual,
+				)
+			}
+		})
+	}
+}
+
+func TestUpdatePinsHandlesCaseOnlyActiveCachePathsByTargetOS(t *testing.T) {
+	tests := []struct {
+		goos          string
+		wantCollision bool
+	}{
+		{goos: "windows", wantCollision: true},
+		{goos: "darwin", wantCollision: true},
+		{goos: "linux", wantCollision: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			dataUpper := moduleYAML("module-upper", "upper")
+			dataLower := moduleYAML("module-lower", "lower")
+			fixture := newUpdateFixture(t, map[string][]byte{
+				"/Module": dataUpper,
+				"/module": dataLower,
+			})
+			refUpper, refLower := fixture.ref("/Module"), fixture.ref("/module")
+			fixture.configure(refLower, refUpper)
+			fixture.persistLock(nil)
+			recorder := newUpdateRecorder(fixture.lock)
+			recorder.goos = tt.goos
+			recorder.paths[refUpper] = "/cache/Module"
+			recorder.paths[refLower] = "/cache/module"
+
+			changes, err := updatePinsWithOps(context.Background(), fixture.cfg, recorder.ops())
+
+			wantChanges := []PinChange{
+				{Ref: refUpper, NewSHA256: sha256Hex(dataUpper), Status: PinStatusMissing},
+				{Ref: refLower, NewSHA256: sha256Hex(dataLower), Status: PinStatusMissing},
+			}
+			if !reflect.DeepEqual(changes, wantChanges) {
+				t.Fatalf("changes = %#v, want %#v", changes, wantChanges)
+			}
+			if tt.wantCollision {
+				wantErr := fmt.Sprintf(
+					"module cache path collision: refs %q and %q both map to %q",
+					refUpper,
+					refLower,
+					"/cache/module",
+				)
+				if err == nil || err.Error() != wantErr {
+					t.Fatalf("error = %q, want %q", err, wantErr)
+				}
+				recorder.requireNoMutationOps(t)
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("updatePinsWithOps() error = %v", err)
+			}
+			if len(recorder.saveAttempts) != 1 {
+				t.Fatalf("save attempts = %d, want 1", len(recorder.saveAttempts))
+			}
+			if got, want := recorder.publications, []string{"/cache/Module", "/cache/module"}; !slices.Equal(got, want) {
+				t.Fatalf("publications = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
@@ -1017,6 +1183,7 @@ func TestUpdatePinsProductionWarningUsesUI(t *testing.T) {
 type updateRecorder struct {
 	source          *LockFile
 	durable         LockFile
+	goos            string
 	paths           map[string]string
 	files           map[string][]byte
 	readErrors      map[string]error
@@ -1036,6 +1203,7 @@ func newUpdateRecorder(lock *LockFile) *updateRecorder {
 	return &updateRecorder{
 		source:        lock,
 		durable:       *cloneTestLock(lock),
+		goos:          runtime.GOOS,
 		paths:         make(map[string]string),
 		files:         make(map[string][]byte),
 		readErrors:    make(map[string]error),
@@ -1053,6 +1221,7 @@ func (r *updateRecorder) path(ref string) string {
 
 func (r *updateRecorder) ops() updateOps {
 	return updateOps{
+		goos: r.goos,
 		loadLock: func() (LockFile, error) {
 			return *r.source, nil
 		},
