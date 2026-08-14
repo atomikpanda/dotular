@@ -174,7 +174,9 @@ func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
 		return config.Config{}, err
 	}
 	u := ui.New(os.Stdout, os.Stderr)
-	return registry.Resolve(ctx, cfg, configFile, noCache, u)
+	return registry.Resolve(ctx, cfg, configFile, registry.ResolveOptions{
+		NoCache: noCache,
+	}, u)
 }
 
 func newRunner(cfg config.Config) *runner.Runner {
@@ -340,7 +342,7 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 		if lockErr == nil {
 			var modules []registry.RemoteModule
 			for _, entry := range entries {
-				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
 				if fetchErr == nil {
 					modules = append(modules, *mod)
 				}
@@ -845,13 +847,16 @@ func registryCmd() *cobra.Command {
 			Short: "Re-fetch all registry modules referenced in the config",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ctx := context.Background()
-				// Force re-fetch by passing noCache=true.
+				// Force re-fetch and authorize updating the immutable pin.
 				cfg, err := loadConfig()
 				if err != nil {
 					return err
 				}
 				u := ui.New(os.Stdout, os.Stderr)
-				_, err = registry.Resolve(ctx, cfg, configFile, true, u)
+				_, err = registry.Resolve(ctx, cfg, configFile, registry.ResolveOptions{
+					NoCache: true,
+					Repin:   true,
+				}, u)
 				if err != nil {
 					return err
 				}
@@ -941,7 +946,7 @@ modules to add to your dotular.yaml.`,
 
 			var modules []registry.RemoteModule
 			for _, entry := range entries {
-				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, noCache, u)
+				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
 				if fetchErr != nil {
 					u.Warn(fmt.Sprintf("skipping %s: %v", entry.Name, fetchErr))
 					continue

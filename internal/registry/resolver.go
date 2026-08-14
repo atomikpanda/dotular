@@ -9,13 +9,18 @@ import (
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
+type ResolveOptions struct {
+	NoCache bool
+	Repin   bool
+}
+
 // Resolve processes every module in cfg. Modules with a From field are
 // fetched from the registry, parameterised, and have their overrides merged.
 // The returned Config has no From fields — all modules are fully materialised.
 //
 // configPath is the path to dotular.yaml and is used to locate the lockfile.
-// When noCache is true, all registry modules are re-fetched from the network.
-func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache bool, u *ui.UI) (config.Config, error) {
+// When opts.NoCache is true, all registry modules are re-fetched from the network.
+func Resolve(ctx context.Context, cfg config.Config, configPath string, opts ResolveOptions, u *ui.UI) (config.Config, error) {
 	lockPath := LockPath(configPath)
 	lock, err := LoadLock(lockPath)
 	if err != nil {
@@ -31,7 +36,10 @@ func Resolve(ctx context.Context, cfg config.Config, configPath string, noCache 
 			continue
 		}
 
-		remote, trust, err := Fetch(ctx, mod.From, lock, noCache, u)
+		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{
+			NoCache: opts.NoCache,
+			Repin:   opts.Repin,
+		}, u)
 		if err != nil {
 			return config.Config{}, err
 		}

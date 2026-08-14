@@ -16,6 +16,21 @@ import (
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
+func TestFetchOptionContract(t *testing.T) {
+	t.Parallel()
+
+	opts := FetchOptions{
+		NoCache: true,
+		Repin:   true,
+	}
+	if !opts.NoCache {
+		t.Fatal("FetchOptions.NoCache = false; want true")
+	}
+	if !opts.Repin {
+		t.Fatal("FetchOptions.Repin = false; want true")
+	}
+}
+
 const testModuleYAML = "name: test-mod\nitems:\n  - package: neovim\n    via: brew\n"
 
 func testModuleSum() string {
@@ -66,7 +81,7 @@ func newTestLock(t *testing.T) *LockFile {
 
 func fetchForTest(t *testing.T, ref string, lock *LockFile, noCache bool) (*RemoteModule, TrustLevel, error) {
 	t.Helper()
-	return Fetch(context.Background(), ref, lock, noCache, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+	return Fetch(context.Background(), ref, lock, FetchOptions{NoCache: noCache}, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 }
 
 // TestFetchFromNetwork covers the integrity gate on the network path: the

@@ -14,6 +14,21 @@ import (
 	"github.com/atomikpanda/dotular/internal/ui"
 )
 
+func TestResolveOptionContract(t *testing.T) {
+	t.Parallel()
+
+	opts := ResolveOptions{
+		NoCache: true,
+		Repin:   true,
+	}
+	if !opts.NoCache {
+		t.Fatal("ResolveOptions.NoCache = false; want true")
+	}
+	if !opts.Repin {
+		t.Fatal("ResolveOptions.Repin = false; want true")
+	}
+}
+
 func TestDownloadError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -37,7 +52,7 @@ func TestResolveLocalModules(t *testing.T) {
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
 
-	result, err := Resolve(context.Background(), cfg, configPath, false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+	result, err := Resolve(context.Background(), cfg, configPath, ResolveOptions{}, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +78,7 @@ func TestFetchRejectsVersionedExternalRefBeforeCache(t *testing.T) {
 	lock.Registry[rawRef] = LockEntry{SHA256: "not-consulted"}
 
 	u := ui.New(&bytes.Buffer{}, &bytes.Buffer{})
-	_, _, err = Fetch(context.Background(), rawRef, lock, false, u)
+	_, _, err = Fetch(context.Background(), rawRef, lock, FetchOptions{}, u)
 	if err == nil {
 		t.Fatal("Fetch() = nil error, want a rejection for a versioned external ref")
 	}
@@ -87,7 +102,7 @@ func TestResolvePreservesAge(t *testing.T) {
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
 
-	result, err := Resolve(context.Background(), cfg, configPath, false, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
+	result, err := Resolve(context.Background(), cfg, configPath, ResolveOptions{}, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,12 +23,17 @@ import (
 // a hostname.
 var httpClient = httputil.Client
 
+type FetchOptions struct {
+	NoCache bool
+	Repin   bool
+}
+
 // Fetch retrieves a remote module by its reference string, using the cache
-// when available. When noCache is true the network is always consulted.
+// when available. When opts.NoCache is true the network is always consulted.
 //
 // If the module is already in the lockfile, the cached copy's checksum is
 // verified against the recorded value; a mismatch is a fatal error.
-func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *ui.UI) (*RemoteModule, TrustLevel, error) {
+func Fetch(ctx context.Context, rawRef string, lock *LockFile, opts FetchOptions, u *ui.UI) (*RemoteModule, TrustLevel, error) {
 	ref := ParseRef(rawRef)
 	// Checked before the cache is consulted: an unhonourable version is a bad
 	// reference, not a stale download, so a warm cache must not mask it.
@@ -39,7 +44,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 	cachePath := moduleCachePath(rawRef)
 	entry, inLock := lock.Registry[rawRef]
 
-	if !noCache && inLock {
+	if !opts.NoCache && inLock {
 		// Validate cache file exists and checksum matches.
 		if data, err := os.ReadFile(cachePath); err == nil {
 			sum := fmt.Sprintf("%x", sha256.Sum256(data))
@@ -64,7 +69,7 @@ func Fetch(ctx context.Context, rawRef string, lock *LockFile, noCache bool, u *
 	// Verify against existing lockfile entry when using cache; skip when
 	// explicitly re-fetching so that updated modules are accepted.
 	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	if !noCache && inLock && entry.SHA256 != sum {
+	if !opts.NoCache && inLock && entry.SHA256 != sum {
 		return nil, ref.Trust, fmt.Errorf(
 			"registry: checksum mismatch for %s after re-fetch (lockfile: %s, got: %s)",
 			rawRef, entry.SHA256, sum,
