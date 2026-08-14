@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,13 +50,29 @@ func LoadLock(path string) (*LockFile, error) {
 
 // SaveLock writes the lockfile atomically.
 func SaveLock(path string, lf *LockFile) error {
+	return saveLockWithReplace(path, lf, replaceFile)
+}
+
+func saveLockWithReplace(
+	path string,
+	lf *LockFile,
+	replace func(string, string) error,
+) (err error) {
 	data, err := yaml.Marshal(lf)
 	if err != nil {
 		return err
 	}
+
 	tmp := path + ".tmp"
+	defer func() {
+		removeErr := os.Remove(tmp)
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("remove lockfile temporary file: %w", removeErr))
+		}
+	}()
+
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return fmt.Errorf("write lockfile: %w", err)
 	}
-	return os.Rename(tmp, path)
+	return replace(tmp, path)
 }

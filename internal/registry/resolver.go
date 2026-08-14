@@ -21,82 +21,106 @@ type ResolveOptions struct {
 // configPath is the path to dotular.yaml and is used to locate the lockfile.
 // When opts.NoCache is true, all registry modules are re-fetched from the network.
 func Resolve(ctx context.Context, cfg config.Config, configPath string, opts ResolveOptions, u *ui.UI) (config.Config, error) {
-	lockPath := LockPath(configPath)
-	lock, err := LoadLock(lockPath)
-	if err != nil {
-		return config.Config{}, fmt.Errorf("load lockfile: %w", err)
+	return resolveWithMutationLock(ctx, cfg, configPath, opts, u, WithRegistryMutationLock)
+}
+
+func resolveWithMutationLock(
+	ctx context.Context,
+	cfg config.Config,
+	configPath string,
+	opts ResolveOptions,
+	u *ui.UI,
+	withMutationLock func(string, func() error) error,
+) (config.Config, error) {
+	activeRefSet := CollectActiveRefs(cfg)
+	if len(activeRefSet) == 0 {
+		return config.Config{
+			Age:     cfg.Age,
+			Modules: append([]config.Module(nil), cfg.Modules...),
+		}, nil
 	}
 
-	activeRefSet := CollectActiveRefs(cfg)
 	activeRefs := make([]string, 0, len(activeRefSet))
 	for ref := range activeRefSet {
 		activeRefs = append(activeRefs, ref)
 	}
-	if err := rejectModuleCachePathCollisions(
-		activeRefs,
-		CachedRefs(lock),
-		moduleCachePath,
-		runtime.GOOS,
-	); err != nil {
+
+	var result config.Config
+	err := withMutationLock(configPath, func() error {
+		lockPath := LockPath(configPath)
+		lock, err := LoadLock(lockPath)
+		if err != nil {
+			return fmt.Errorf("load lockfile: %w", err)
+		}
+		if err := rejectModuleCachePathCollisions(
+			activeRefs,
+			CachedRefs(lock),
+			moduleCachePath,
+			runtime.GOOS,
+		); err != nil {
+			return err
+		}
+
+		result = config.Config{Age: cfg.Age}
+		lockDirty := false
+
+		for _, mod := range cfg.Modules {
+			if !mod.IsRegistry() {
+				result.Modules = append(result.Modules, mod)
+				continue
+			}
+
+			beforeEntry, beforeFound := lock.Registry[mod.From]
+			remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{
+				NoCache: opts.NoCache,
+			}, u)
+			if err != nil {
+				return err
+			}
+			afterEntry, afterFound := lock.Registry[mod.From]
+			entryChanged := beforeFound != afterFound || beforeEntry != afterEntry
+			if entryChanged {
+				lockDirty = true
+			}
+
+			switch trust {
+			case External:
+				u.Warn(fmt.Sprintf("[external] %s", mod.From))
+			}
+
+			params := resolveParams(remote.Params, mod.With)
+
+			renderedItems, err := renderItems(remote.Items, params)
+			if err != nil {
+				return fmt.Errorf("render %s: %w", mod.From, err)
+			}
+
+			mergedItems := mergeOverrides(renderedItems, mod.Override)
+
+			name := remote.Name
+			if mod.Name != "" {
+				name = mod.Name
+			}
+
+			result.Modules = append(result.Modules, config.Module{
+				Name:        name,
+				Items:       mergedItems,
+				OnlyTags:    mod.OnlyTags,
+				ExcludeTags: mod.ExcludeTags,
+				Hooks:       mod.Hooks,
+			})
+		}
+
+		if lockDirty {
+			if err := SaveLock(lockPath, lock); err != nil {
+				return fmt.Errorf("save lockfile: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return config.Config{}, err
 	}
-
-	result := config.Config{Age: cfg.Age}
-	lockDirty := false
-
-	for _, mod := range cfg.Modules {
-		if !mod.IsRegistry() {
-			result.Modules = append(result.Modules, mod)
-			continue
-		}
-
-		beforeEntry, beforeFound := lock.Registry[mod.From]
-		remote, trust, err := Fetch(ctx, mod.From, lock, FetchOptions{
-			NoCache: opts.NoCache,
-		}, u)
-		if err != nil {
-			return config.Config{}, err
-		}
-		afterEntry, afterFound := lock.Registry[mod.From]
-		entryChanged := beforeFound != afterFound || beforeEntry != afterEntry
-		if entryChanged {
-			lockDirty = true
-		}
-
-		switch trust {
-		case External:
-			u.Warn(fmt.Sprintf("[external] %s", mod.From))
-		}
-
-		params := resolveParams(remote.Params, mod.With)
-
-		renderedItems, err := renderItems(remote.Items, params)
-		if err != nil {
-			return config.Config{}, fmt.Errorf("render %s: %w", mod.From, err)
-		}
-
-		mergedItems := mergeOverrides(renderedItems, mod.Override)
-
-		name := remote.Name
-		if mod.Name != "" {
-			name = mod.Name
-		}
-
-		result.Modules = append(result.Modules, config.Module{
-			Name:        name,
-			Items:       mergedItems,
-			OnlyTags:    mod.OnlyTags,
-			ExcludeTags: mod.ExcludeTags,
-			Hooks:       mod.Hooks,
-		})
-	}
-
-	if lockDirty {
-		if err := SaveLock(lockPath, lock); err != nil {
-			return config.Config{}, fmt.Errorf("save lockfile: %w", err)
-		}
-	}
-
 	return result, nil
 }
 

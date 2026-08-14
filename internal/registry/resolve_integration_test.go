@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
@@ -93,6 +95,9 @@ func TestResolveLocalModules(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "dotular.yaml")
 	os.WriteFile(configPath, []byte("modules: []"), 0o644)
+	if err := os.WriteFile(LockPath(configPath), []byte("{{invalid"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := Resolve(context.Background(), cfg, configPath, ResolveOptions{}, ui.New(&bytes.Buffer{}, &bytes.Buffer{}))
 	if err != nil {
@@ -201,6 +206,76 @@ func TestResolvePersistsInitialPin(t *testing.T) {
 	}
 	if got, want := entry.SHA256, testModuleChecksum(testModuleYAML); got != want {
 		t.Fatalf("durable checksum = %q, want %q", got, want)
+	}
+}
+
+func TestResolveWaitsForMutationLockBeforeLoadingAndPreservesConcurrentUpdate(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	requestStarted := make(chan struct{})
+	allowResponse := make(chan struct{})
+	var allowResponseOnce sync.Once
+	t.Cleanup(func() { allowResponseOnce.Do(func() { close(allowResponse) }) })
+	ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-allowResponse
+		w.Write([]byte(testModuleYAML))
+	})
+	configPath, lockPath := writeResolveRegistryConfig(t, ref, nil)
+
+	lockHeld := make(chan struct{})
+	releaseHeld := make(chan struct{})
+	var releaseHeldOnce sync.Once
+	releaseHolder := func() { releaseHeldOnce.Do(func() { close(releaseHeld) }) }
+	t.Cleanup(releaseHolder)
+	withMutationLock := func(_ string, callback func() error) error {
+		close(lockHeld)
+		<-releaseHeld
+		return callback()
+	}
+
+	resolveDone := make(chan error, 1)
+	go func() {
+		_, err := resolveWithMutationLock(
+			context.Background(),
+			config.Config{Modules: []config.Module{{From: ref}}},
+			configPath,
+			ResolveOptions{},
+			ui.New(&bytes.Buffer{}, &bytes.Buffer{}),
+			withMutationLock,
+		)
+		resolveDone <- err
+	}()
+
+	select {
+	case <-requestStarted:
+		t.Fatal("Resolve reached Fetch while the mutation lock was held")
+	default:
+	}
+
+	updatedRef := "github.com/example/updated@main"
+	updated := loadTestLock(t, lockPath)
+	updated.Registry[updatedRef] = LockEntry{SHA256: "update-pin"}
+	if err := SaveLock(lockPath, updated); err != nil {
+		t.Fatal(err)
+	}
+	releaseHolder()
+
+	select {
+	case <-requestStarted:
+		allowResponseOnce.Do(func() { close(allowResponse) })
+	case <-time.After(time.Second):
+		t.Fatal("Resolve did not reach Fetch after the mutation lock was released")
+	}
+	if err := <-resolveDone; err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	durable := loadTestLock(t, lockPath)
+	if _, ok := durable.Registry[updatedRef]; !ok {
+		t.Fatal("ordinary Resolve save overwrote the update pin")
+	}
+	if _, ok := durable.Registry[ref]; !ok {
+		t.Fatal("Resolve did not persist its fetched registry pin")
 	}
 }
 

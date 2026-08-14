@@ -2,12 +2,34 @@ package registry
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 )
+
+// WithRegistryMutationLock serializes lockfile and registry cache mutation for
+// the config's lockfile destination.
+func WithRegistryMutationLock(configPath string, callback func() error) error {
+	return withRegistryMutationLock(configPath, acquireRegistryUpdateLock, callback)
+}
+
+func withRegistryMutationLock(
+	configPath string,
+	acquire func(string) (func() error, error),
+	callback func() error,
+) (err error) {
+	release, err := acquire(configPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, release())
+	}()
+	return callback()
+}
 
 func acquireRegistryUpdateLock(configPath string) (func() error, error) {
 	path, err := registryUpdateLockPath(configPath)

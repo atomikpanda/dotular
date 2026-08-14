@@ -13,8 +13,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/httputil"
@@ -81,6 +83,152 @@ func seedCommandRegistryCache(t *testing.T, ref string, lock *registry.LockFile,
 		t.Fatalf("seed registry cache: %v", err)
 	}
 	requests.Store(0)
+}
+
+type commandRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f commandRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func commandHTTPResponse(req *http.Request, body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+		Request:    req,
+	}
+}
+
+func TestDirectRegistryFetchLoopsWaitForMutationLock(t *testing.T) {
+	tests := []struct {
+		name          string
+		run           func(string) error
+		moduleBody    func(string) string
+		wantSavedLock bool
+	}{
+		{
+			name: "infer module name",
+			run: func(path string) error {
+				_, err := inferModuleName(context.Background(), path)
+				return err
+			},
+			moduleBody: func(path string) string {
+				return fmt.Sprintf(
+					"name: locked-module\nitems:\n  - file: source\n    destination:\n      linux: %s\n",
+					path,
+				)
+			},
+		},
+		{
+			name: "init",
+			run: func(string) error {
+				return initCmd().Execute()
+			},
+			wantSavedLock: true,
+			moduleBody: func(string) string {
+				return "name: locked-module\nitems: []\n"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			configFile = writeTestConfig(t, "modules: []\n")
+			noCache = true
+			t.Cleanup(func() {
+				configFile = "dotular.yaml"
+				noCache = false
+			})
+
+			ref := "example.invalid/" + strings.ReplaceAll(tt.name, " ", "-") + "/module.yaml"
+			targetPath := filepath.Join(t.TempDir(), "matched.conf")
+			indexFetched := make(chan struct{})
+			moduleRequested := make(chan struct{})
+			allowModule := make(chan struct{})
+			var allowModuleOnce sync.Once
+			t.Cleanup(func() { allowModuleOnce.Do(func() { close(allowModule) }) })
+			previousTransport := httputil.Client.Transport
+			httputil.Client.Transport = commandRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				switch req.URL.String() {
+				case registry.IndexURL():
+					close(indexFetched)
+					return commandHTTPResponse(req, "modules:\n  - name: "+ref+"\n"), nil
+				default:
+					close(moduleRequested)
+					<-allowModule
+					return commandHTTPResponse(req, tt.moduleBody(targetPath)), nil
+				}
+			})
+			t.Cleanup(func() { httputil.Client.Transport = previousTransport })
+
+			lockHeld := make(chan struct{})
+			releaseHeld := make(chan struct{})
+			var releaseHeldOnce sync.Once
+			releaseHolder := func() { releaseHeldOnce.Do(func() { close(releaseHeld) }) }
+			t.Cleanup(releaseHolder)
+			holderDone := make(chan error, 1)
+			go func() {
+				holderDone <- registry.WithRegistryMutationLock(configFile, func() error {
+					close(lockHeld)
+					<-releaseHeld
+					return nil
+				})
+			}()
+			select {
+			case <-lockHeld:
+			case err := <-holderDone:
+				t.Fatalf("acquire mutation lock: %v", err)
+			case <-time.After(time.Second):
+				t.Fatal("timed out acquiring mutation lock")
+			}
+
+			commandDone := make(chan error, 1)
+			go func() {
+				commandDone <- tt.run(targetPath)
+			}()
+			select {
+			case <-indexFetched:
+			case <-time.After(time.Second):
+				t.Fatal("command did not fetch the registry index")
+			}
+			select {
+			case <-moduleRequested:
+				t.Fatal("command reached registry.Fetch while the mutation lock was held")
+			case <-time.After(50 * time.Millisecond):
+			}
+
+			releaseHolder()
+			if err := <-holderDone; err != nil {
+				t.Fatalf("release held mutation lock: %v", err)
+			}
+			select {
+			case <-moduleRequested:
+				allowModuleOnce.Do(func() { close(allowModule) })
+			case <-time.After(time.Second):
+				t.Fatal("command did not reach registry.Fetch after the mutation lock was released")
+			}
+			err := <-commandDone
+			if err != nil {
+				t.Fatalf("command error = %v", err)
+			}
+
+			_, saved := loadCommandLock(t, registry.LockPath(configFile)).Registry[ref]
+			if saved != tt.wantSavedLock {
+				t.Fatalf("saved lock contains ref = %t, want %t", saved, tt.wantSavedLock)
+			}
+		})
+	}
+}
+
+func loadCommandLock(t *testing.T, path string) *registry.LockFile {
+	t.Helper()
+	lock, err := registry.LoadLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lock
 }
 
 func TestBuildRoot(t *testing.T) {

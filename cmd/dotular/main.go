@@ -339,27 +339,30 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 	// Try registry-based inference.
 	entries, err := registry.FetchIndex(ctx, u)
 	if err == nil && len(entries) > 0 {
-		lockPath := registry.LockPath(configFile)
-		lock, lockErr := registry.LoadLock(lockPath)
-		if lockErr == nil {
-			var modules []registry.RemoteModule
+		var modules []registry.RemoteModule
+		lockErr := registry.WithRegistryMutationLock(configFile, func() error {
+			lock, err := registry.LoadLock(registry.LockPath(configFile))
+			if err != nil {
+				return err
+			}
 			for _, entry := range entries {
 				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
 				if fetchErr == nil {
 					modules = append(modules, *mod)
 				}
 			}
-			if len(modules) > 0 {
-				matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath, actions.OSIsDir)
-				if len(matches) == 1 {
-					u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
-					return matches[0].ModuleName, nil
-				}
-				if len(matches) > 1 {
-					u.Info("Multiple registry modules match this path:")
-					for _, m := range matches {
-						u.Info(fmt.Sprintf("  - %s", m.ModuleName))
-					}
+			return nil
+		})
+		if lockErr == nil && len(modules) > 0 {
+			matches := scanner.MatchPath(absPath, modules, platform.Current(), platform.ExpandPath, actions.OSIsDir)
+			if len(matches) == 1 {
+				u.Info(fmt.Sprintf("Matched registry module: %s", matches[0].ModuleName))
+				return matches[0].ModuleName, nil
+			}
+			if len(matches) > 1 {
+				u.Info("Multiple registry modules match this path:")
+				for _, m := range matches {
+					u.Info(fmt.Sprintf("  - %s", m.ModuleName))
 				}
 			}
 		}
@@ -948,29 +951,38 @@ modules to add to your dotular.yaml.`,
 			}
 
 			// 2. Fetch all module definitions.
-			lockPath := registry.LockPath(configFile)
-			lock, err := registry.LoadLock(lockPath)
+			var modules []registry.RemoteModule
+			err = registry.WithRegistryMutationLock(configFile, func() error {
+				lockPath := registry.LockPath(configFile)
+				lock, err := registry.LoadLock(lockPath)
+				if err != nil {
+					return err
+				}
+
+				for _, entry := range entries {
+					mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
+					if fetchErr != nil {
+						u.Warn(fmt.Sprintf("skipping %s: %v", entry.Name, fetchErr))
+						continue
+					}
+					modules = append(modules, *mod)
+				}
+				if len(modules) == 0 {
+					return nil
+				}
+
+				// Save updated lock file.
+				if err := registry.SaveLock(lockPath, lock); err != nil {
+					u.Warn(fmt.Sprintf("could not save lock file: %v", err))
+				}
+				return nil
+			})
 			if err != nil {
 				return err
-			}
-
-			var modules []registry.RemoteModule
-			for _, entry := range entries {
-				mod, _, fetchErr := registry.Fetch(ctx, entry.Name, lock, registry.FetchOptions{NoCache: noCache}, u)
-				if fetchErr != nil {
-					u.Warn(fmt.Sprintf("skipping %s: %v", entry.Name, fetchErr))
-					continue
-				}
-				modules = append(modules, *mod)
 			}
 			if len(modules) == 0 {
 				u.Info("No modules could be fetched from registry.")
 				return nil
-			}
-
-			// Save updated lock file.
-			if err := registry.SaveLock(lockPath, lock); err != nil {
-				u.Warn(fmt.Sprintf("could not save lock file: %v", err))
 			}
 
 			// 3. Scan the machine.

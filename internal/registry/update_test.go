@@ -1949,3 +1949,51 @@ type updateErrReader struct {
 func (r updateErrReader) Read([]byte) (int, error) {
 	return 0, r.err
 }
+
+func TestWithRegistryMutationLockExecutesCallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "dotular.yaml")
+	if err := os.WriteFile(configPath, []byte("modules: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	called := false
+	if err := WithRegistryMutationLock(configPath, func() error {
+		called = true
+		return nil
+	}); err != nil {
+		t.Fatalf("WithRegistryMutationLock() error = %v", err)
+	}
+	if !called {
+		t.Fatal("WithRegistryMutationLock() did not execute callback")
+	}
+}
+
+func TestWithRegistryMutationLockJoinsCallbackAndReleaseErrors(t *testing.T) {
+	callbackErr := errors.New("callback failed")
+	releaseErr := errors.New("release failed")
+	var events []string
+
+	err := withRegistryMutationLock(
+		"dotular.yaml",
+		func(configPath string) (func() error, error) {
+			events = append(events, "acquire "+configPath)
+			return func() error {
+				events = append(events, "release")
+				return releaseErr
+			}, nil
+		},
+		func() error {
+			events = append(events, "callback")
+			return callbackErr
+		},
+	)
+
+	if !errors.Is(err, callbackErr) || !errors.Is(err, releaseErr) {
+		t.Fatalf("withRegistryMutationLock() error = %v, want callback and release errors", err)
+	}
+	wantEvents := []string{"acquire dotular.yaml", "callback", "release"}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %q, want %q", events, wantEvents)
+	}
+}

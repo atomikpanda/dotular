@@ -10,11 +10,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-var moveCacheFileEx = windows.MoveFileEx
+var moveFileEx = windows.MoveFileEx
 
 const windowsLongPathThreshold = 248
 
-func replaceCacheFile(tempPath string, path string) error {
+func replaceFile(tempPath string, path string) error {
 	flags := uint32(windows.MOVEFILE_WRITE_THROUGH)
 
 	_, err := os.Stat(path)
@@ -23,29 +23,29 @@ func replaceCacheFile(tempPath string, path string) error {
 		flags |= windows.MOVEFILE_REPLACE_EXISTING
 	case os.IsNotExist(err):
 	default:
-		return fmt.Errorf("inspect cache destination before MoveFileEx: %w", err)
+		return fmt.Errorf("inspect destination before MoveFileEx: %w", err)
 	}
 
 	tempMovePath, err := normalizeMoveFileExPath(tempPath)
 	if err != nil {
-		return fmt.Errorf("normalize cache temporary path for MoveFileEx: %w", err)
+		return fmt.Errorf("normalize temporary file path for MoveFileEx: %w", err)
 	}
 	tempPathUTF16, err := windows.UTF16PtrFromString(tempMovePath)
 	if err != nil {
-		return fmt.Errorf("encode cache temporary path for MoveFileEx: %w", err)
+		return fmt.Errorf("encode temporary file path for MoveFileEx: %w", err)
 	}
 
 	destinationMovePath, err := normalizeMoveFileExPath(path)
 	if err != nil {
-		return fmt.Errorf("normalize cache destination path for MoveFileEx: %w", err)
+		return fmt.Errorf("normalize destination path for MoveFileEx: %w", err)
 	}
 	pathUTF16, err := windows.UTF16PtrFromString(destinationMovePath)
 	if err != nil {
-		return fmt.Errorf("encode cache destination path for MoveFileEx: %w", err)
+		return fmt.Errorf("encode destination path for MoveFileEx: %w", err)
 	}
 
-	if err := moveCacheFileEx(tempPathUTF16, pathUTF16, flags); err != nil {
-		return fmt.Errorf("MoveFileEx cache commit: %w", err)
+	if err := moveFileEx(tempPathUTF16, pathUTF16, flags); err != nil {
+		return fmt.Errorf("replace file with MoveFileEx: %w", err)
 	}
 
 	return nil

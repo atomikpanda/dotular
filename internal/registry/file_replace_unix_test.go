@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestReplaceCacheFileUsesAtomicRename(t *testing.T) {
+func TestReplaceFileUsesAtomicRename(t *testing.T) {
 	tests := []struct {
 		name            string
 		seedDestination bool
@@ -27,23 +27,23 @@ func TestReplaceCacheFileUsesAtomicRename(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, "cache.json")
-			tempPath := filepath.Join(dir, ".cache.json.tmp-platform")
+			path := filepath.Join(dir, "dotular.lock.yaml")
+			tempPath := path + ".tmp"
 			writeTestFile(t, tempPath, []byte("new"))
 
 			if test.seedDestination {
 				writeTestFile(t, path, []byte("old"))
 			}
 
-			if err := replaceCacheFile(tempPath, path); err != nil {
-				t.Fatalf("replaceCacheFile() error = %v", err)
+			if err := replaceFile(tempPath, path); err != nil {
+				t.Fatalf("replaceFile() error = %v", err)
 			}
 
 			assertTestFileData(t, path, []byte("new"))
 			if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("os.Stat(%q) error = %v, want os.ErrNotExist", tempPath, err)
 			}
-			assertDirectoryNames(t, dir, []string{"cache.json"})
+			assertDirectoryNames(t, dir, []string{"dotular.lock.yaml"})
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,72 @@ func TestSaveAndLoadLock(t *testing.T) {
 	}
 	if entry.URL != "https://raw.githubusercontent.com/atomikpanda/dotular/main/modules/neovim.yaml" {
 		t.Errorf("URL = %q", entry.URL)
+	}
+}
+
+func TestSaveLockReplacesExistingLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.lock.yaml")
+	if err := os.WriteFile(path, []byte("old lock bytes"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", path, err)
+	}
+
+	lf := &LockFile{
+		Registry: map[string]LockEntry{
+			"example.com/module@main": {
+				SHA256: "new checksum",
+				URL:    "https://example.com/module.yaml",
+			},
+		},
+	}
+	if err := SaveLock(path, lf); err != nil {
+		t.Fatalf("SaveLock() error = %v", err)
+	}
+
+	loaded, err := LoadLock(path)
+	if err != nil {
+		t.Fatalf("LoadLock() error = %v", err)
+	}
+	if got := loaded.Registry["example.com/module@main"].SHA256; got != "new checksum" {
+		t.Fatalf("saved checksum = %q, want %q", got, "new checksum")
+	}
+}
+
+func TestSaveLockReplacementFailurePreservesDestinationAndCleansTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dotular.lock.yaml")
+	tempPath := path + ".tmp"
+	oldData := []byte("old lock bytes must survive")
+	if err := os.WriteFile(path, oldData, 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", path, err)
+	}
+
+	replaceErr := errors.New("replace failed")
+	err := saveLockWithReplace(path, &LockFile{}, func(gotTempPath string, gotPath string) error {
+		if gotTempPath != tempPath {
+			t.Fatalf("replacement temporary path = %q, want %q", gotTempPath, tempPath)
+		}
+		if gotPath != path {
+			t.Fatalf("replacement destination path = %q, want %q", gotPath, path)
+		}
+		if _, err := os.Stat(gotTempPath); err != nil {
+			t.Fatalf("temporary lockfile unavailable during replacement: %v", err)
+		}
+		return replaceErr
+	})
+	if !errors.Is(err, replaceErr) {
+		t.Fatalf("saveLockWithReplace() error = %v, want errors.Is(replaceErr)", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v", path, err)
+	}
+	if string(got) != string(oldData) {
+		t.Fatalf("destination data = %q, want preserved %q", got, oldData)
+	}
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) error = %v, want os.ErrNotExist", tempPath, err)
 	}
 }
 
