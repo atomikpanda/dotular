@@ -14,7 +14,7 @@ import (
 
 // Render executes the Go template string s with params as the data object.
 func Render(s string, params map[string]any) (string, error) {
-	t, err := template.New("").Option("missingkey=zero").Parse(s)
+	t, err := template.New("").Option("missingkey=error").Parse(s)
 	if err != nil {
 		return "", fmt.Errorf("parse template %q: %w", s, err)
 	}

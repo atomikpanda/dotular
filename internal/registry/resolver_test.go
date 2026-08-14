@@ -94,6 +94,22 @@ func TestRenderItems(t *testing.T) {
 	}
 }
 
+func TestRenderItemsRejectsMissingParameter(t *testing.T) {
+	got, err := renderItems(
+		[]config.Item{{Package: "{{ .pkg }}"}},
+		map[string]any{"other": "value"},
+	)
+	if err == nil {
+		t.Fatalf("renderItems() = %#v, want missing key error", got)
+	}
+	if !strings.Contains(err.Error(), `map has no entry for key "pkg"`) {
+		t.Fatalf("renderItems() error = %v, want missing key context", err)
+	}
+	if got != nil {
+		t.Fatalf("renderItems() = %#v, want nil on render error", got)
+	}
+}
+
 func TestRenderItemsValidatesRenderedValues(t *testing.T) {
 	tests := []struct {
 		name   string
