@@ -222,6 +222,48 @@ func TestFetchRejectsTruncatedBody(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsTrailingYAMLDocumentsBeforePublication(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "second document",
+			data: testModuleYAML + "---\nname: hidden\nitems:\n  - package: ignored\n",
+			want: "multiple YAML documents",
+		},
+		{
+			name: "malformed trailing document",
+			data: testModuleYAML + "---\nname: [unterminated\n",
+			want: "parse registry module",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.data)
+			})
+			lock := newTestLock(t)
+
+			_, _, err := fetchForTest(t, ref, lock, false)
+			if err == nil {
+				t.Fatal("Fetch() succeeded, want trailing-document error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Fetch() error = %q, want %q", err, tt.want)
+			}
+			if len(lock.Registry) != 0 {
+				t.Errorf("lockfile pinned %d entries; rejected YAML must never be pinned", len(lock.Registry))
+			}
+			if _, statErr := os.Stat(moduleCachePath(ref)); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("cache file was published for rejected YAML: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestFetchCacheHitSkipsNetwork(t *testing.T) {
 	ref := "cache.example/hit/module"
 	if err := writeCacheFile(moduleCachePath(ref), []byte(testModuleYAML)); err != nil {

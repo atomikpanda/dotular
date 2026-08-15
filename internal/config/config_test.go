@@ -255,6 +255,47 @@ func TestLoadInvalidYAML(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsTrailingYAMLDocuments(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "mapping root",
+			yaml: "modules: []\n---\nmodules: []\n",
+			want: "multiple YAML documents",
+		},
+		{
+			name: "legacy sequence root",
+			yaml: "[]\n---\n[]\n",
+			want: "multiple YAML documents",
+		},
+		{
+			name: "malformed trailing document",
+			yaml: "modules: []\n---\n[unterminated\n",
+			want: "parse config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "dotular.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load() succeeded, want trailing-document error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Load() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestConfigModule(t *testing.T) {
 	cfg := Config{
 		Modules: []Module{
@@ -396,6 +437,31 @@ func TestPlatformMapUnmarshalNullSpellingsAreEmpty(t *testing.T) {
 	}
 }
 
+func TestPlatformMapUnmarshalRejectsNonScalarMappingValues(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{"sequence", "linux: [~]\n"},
+		{"mapping", "linux: {path: ~/.config}\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var pm PlatformMap
+			err := yaml.Unmarshal([]byte(tt.yaml), &pm)
+			if err == nil {
+				t.Fatal("yaml.Unmarshal() succeeded, want non-scalar platform value error")
+			}
+			for _, want := range []string{"line 1", `"linux"`, "scalar"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("yaml.Unmarshal() error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestLoadWithAge(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dotular.yaml")
@@ -508,6 +574,8 @@ func TestLoadSupportedRootShapes(t *testing.T) {
 		{"empty sequence", "[]\n", 0},
 		{"mapping", "modules:\n  - name: local\n    items:\n      - package: git\n", 1},
 		{"legacy sequence", "- name: legacy\n  items:\n    - package: curl\n", 1},
+		{"mapping with trailing comment and whitespace", "modules: []\n# trailing comment\n\n", 0},
+		{"legacy sequence with trailing comment and whitespace", "[]\n# trailing comment\n\n", 0},
 	}
 
 	for _, tt := range tests {

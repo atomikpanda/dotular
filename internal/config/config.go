@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -293,6 +294,9 @@ func (p *PlatformMap) UnmarshalYAML(value *yaml.Node) error {
 			keyNode := value.Content[i]
 			key := keyNode.Value
 			val := value.Content[i+1]
+			if val.Kind != yaml.ScalarNode {
+				return fmt.Errorf("line %d: platform key %q must have a scalar value", val.Line, key)
+			}
 			v := val.Value
 			// YAML reads "~" as null, but as a path it means the home
 			// directory, so keep it. Every other null spelling ("null",
@@ -379,6 +383,14 @@ func Load(path string) (Config, error) {
 		}
 	default:
 		return Config{}, fmt.Errorf("config root must be a mapping with a \"modules\" key, or a bare sequence of modules; got %s", nodeKindName(doc.Kind))
+	}
+
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return Config{}, fmt.Errorf("parse config: %w", err)
+		}
+		return Config{}, fmt.Errorf("parse config: line %d: multiple YAML documents are not supported", trailing.Line)
 	}
 
 	if err := cfg.Validate(); err != nil {

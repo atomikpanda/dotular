@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -179,6 +180,13 @@ func parseModule(data []byte) (*RemoteModule, error) {
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&mod); err != nil {
 		return nil, fmt.Errorf("parse registry module: %w", err)
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("parse registry module: %w", err)
+		}
+		return nil, fmt.Errorf("parse registry module: line %d: multiple YAML documents are not supported", trailing.Line)
 	}
 	if err := config.ValidateItems(mod.Items, config.ItemValidationOptions{
 		AllowDirectionTemplates: true,
