@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/atomikpanda/dotular/internal/platform"
 )
 
 func TestBinaryActionDescribe(t *testing.T) {
@@ -31,6 +33,23 @@ func TestBinaryActionDescribeNoVersion(t *testing.T) {
 	got := a.Describe()
 	if got == "" {
 		t.Error("Describe() should not be empty")
+	}
+}
+
+func TestBinaryActionWritePathsReturnsOnlyInstalledBinary(t *testing.T) {
+	a := &BinaryAction{
+		Name:      "tool",
+		SourceURL: "https://example.com/downloads/tool",
+		InstallTo: "~/bin",
+	}
+	want := filepath.Join(platform.ExpandPath("~/bin"), "tool")
+
+	got := a.WritePaths()
+	if len(got) != 1 {
+		t.Fatalf("WritePaths() = %v, want only %s", got, want)
+	}
+	if got[0] != want {
+		t.Errorf("WritePaths()[0] = %q, want %q", got[0], want)
 	}
 }
 

@@ -3,21 +3,35 @@
 package snapshot
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/atomikpanda/dotular/internal/fsutil"
 )
 
-// Snapshot holds copies of files that existed before an apply started, plus a
-// list of paths that were newly created so they can be removed on rollback.
-type Snapshot struct {
-	dir     string
-	saved   map[string]string // destination path → copy inside dir
-	created []string          // paths that did not exist before; delete on rollback
+type savedRecord struct {
+	destination  string
+	snapshotPath string
 }
+
+// Snapshot holds ordered copies of paths that existed before an apply started,
+// plus the highest roots created by writes so rollback can remove them.
+type Snapshot struct {
+	dir      string
+	saved    []savedRecord
+	recorded map[string]struct{}
+	created  []string
+}
+
+var (
+	restoreSavedPath   = restoreSaved
+	removeCreatedPath  = os.RemoveAll
+	discardSnapshotDir = os.RemoveAll
+)
 
 // New creates an empty Snapshot backed by a temporary directory.
 func New() (*Snapshot, error) {
@@ -25,27 +39,34 @@ func New() (*Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot dir: %w", err)
 	}
-	return &Snapshot{dir: dir, saved: make(map[string]string)}, nil
+	return &Snapshot{dir: dir, recorded: make(map[string]struct{})}, nil
 }
 
 // Record saves the current state of path so it can be restored later.
-// If path does not exist, it is added to the created list (deleted on rollback).
-// Calling Record twice for the same path is a no-op after the first call.
+// If path does not exist, Record owns the highest missing ancestor immediately
+// below its closest existing parent. Calling Record twice for the same exact
+// path is a no-op after the first successful call.
 func (s *Snapshot) Record(path string) error {
-	if _, alreadyRecorded := s.saved[path]; alreadyRecorded {
+	if _, alreadyRecorded := s.recorded[path]; alreadyRecorded {
 		return nil
 	}
-	for _, p := range s.created {
-		if p == path {
+	for _, ownedRoot := range s.created {
+		if pathWithin(ownedRoot, path) {
+			s.recorded[path] = struct{}{}
 			return nil
 		}
 	}
 
-	// Lstat, not Stat: a symlink must be saved as a symlink, not as a copy of
-	// whatever it points at.
+	// Lstat, not Stat: a symlink is an existing boundary and must be saved as a
+	// symlink rather than traversed while deciding what rollback owns.
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
-		s.created = append(s.created, path)
+		createdRoot, err := highestMissingAncestor(path)
+		if err != nil {
+			return fmt.Errorf("snapshot %s: %w", path, err)
+		}
+		s.recorded[path] = struct{}{}
+		s.created = append(s.created, createdRoot)
 		return nil
 	}
 	if err != nil {
@@ -64,40 +85,70 @@ func (s *Snapshot) Record(path string) error {
 	if err != nil {
 		return fmt.Errorf("snapshot %s: %w", path, err)
 	}
-	s.saved[path] = tmpPath
+	s.saved = append(s.saved, savedRecord{destination: path, snapshotPath: tmpPath})
+	s.recorded[path] = struct{}{}
 	return nil
 }
 
-// Restore writes all saved files back to their original paths and removes any
-// newly created files. It continues past individual errors, returning the first.
+func highestMissingAncestor(path string) (string, error) {
+	missing := path
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		_, err := os.Lstat(parent)
+		if err == nil {
+			return missing, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		missing = parent
+		if filepath.Dir(parent) == parent {
+			return "", err
+		}
+	}
+}
+
+func pathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil &&
+		relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// Restore writes saved paths back in reverse capture order, then removes owned
+// created roots in reverse declaration order. Every failure remains observable.
 func (s *Snapshot) Restore() error {
-	var first error
-	for dest, tmp := range s.saved {
-		// Lstat: a saved symlink must be identified as one rather than followed.
-		info, err := os.Lstat(tmp)
-		if err != nil {
-			if first == nil {
-				first = fmt.Errorf("restore %s: %w", dest, err)
-			}
-			continue
-		}
-		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			err = fsutil.CopySymlink(tmp, dest)
-		case info.IsDir():
-			os.RemoveAll(dest)
-			err = fsutil.CopyDir(tmp, dest)
-		default:
-			err = restoreFile(tmp, dest)
-		}
-		if err != nil && first == nil {
-			first = fmt.Errorf("restore %s: %w", dest, err)
+	var errs []error
+	for i := len(s.saved) - 1; i >= 0; i-- {
+		record := s.saved[i]
+		if err := restoreSavedPath(record); err != nil {
+			errs = append(errs, fmt.Errorf("restore %s: %w", record.destination, err))
 		}
 	}
-	for _, path := range s.created {
-		os.RemoveAll(path) // best-effort; handles both files and directories
+	for i := len(s.created) - 1; i >= 0; i-- {
+		path := s.created[i]
+		if err := removeCreatedPath(path); err != nil {
+			errs = append(errs, fmt.Errorf("remove created path %s: %w", path, err))
+		}
 	}
-	return first
+	return errors.Join(errs...)
+}
+
+func restoreSaved(record savedRecord) error {
+	// Lstat: a saved symlink must be identified as one rather than followed.
+	info, err := os.Lstat(record.snapshotPath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info.Mode()&os.ModeSymlink != 0:
+		return fsutil.CopySymlink(record.snapshotPath, record.destination)
+	case info.IsDir():
+		removeErr := os.RemoveAll(record.destination)
+		copyErr := fsutil.CopyDir(record.snapshotPath, record.destination)
+		return errors.Join(removeErr, copyErr)
+	default:
+		return restoreFile(record.snapshotPath, record.destination)
+	}
 }
 
 // restoreFile writes a saved regular file back to dest. If the apply replaced
@@ -115,5 +166,5 @@ func restoreFile(tmp, dest string) error {
 
 // Discard removes the temporary snapshot directory.
 func (s *Snapshot) Discard() error {
-	return os.RemoveAll(s.dir)
+	return discardSnapshotDir(s.dir)
 }
