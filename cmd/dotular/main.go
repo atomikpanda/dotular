@@ -213,11 +213,22 @@ managed store and records it in the config YAML.`,
 			if ctx == nil {
 				ctx = context.Background()
 			}
-			srcPath := platform.ExpandPath(args[0])
-			var moduleName string
+			if err := config.ValidateDirection(direction); err != nil {
+				return usageErrorf("invalid --direction: %v", err)
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				if !errors.Is(err, fs.ErrNotExist) {
+					return err
+				}
+				cfg = config.Config{}
+			}
+
+			var moduleName, srcPath string
 			if len(args) >= 2 {
 				moduleName = args[1]
 			} else {
+				srcPath = platform.ExpandPath(args[0])
 				absSrcForInfer, inferErr := filepath.Abs(srcPath)
 				if inferErr != nil {
 					return fmt.Errorf("resolve path: %w", inferErr)
@@ -227,6 +238,13 @@ managed store and records it in the config YAML.`,
 					return inferErr
 				}
 				moduleName = inferred
+			}
+
+			if mod := cfg.Module(moduleName); mod != nil && mod.IsRegistry() {
+				return fmt.Errorf("cannot add items to registry-backed module %q", moduleName)
+			}
+			if len(args) >= 2 {
+				srcPath = platform.ExpandPath(args[0])
 			}
 
 			// Resolve the source to an absolute path.
@@ -281,12 +299,6 @@ managed store and records it in the config YAML.`,
 				pmap.Windows = srcParent
 			case "linux":
 				pmap.Linux = srcParent
-			}
-
-			// Load the existing config (or start fresh if it doesn't exist).
-			cfg, err := loadConfig()
-			if err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
 			}
 
 			// Build the new item. Leave Direction unset at the default so the
@@ -1001,6 +1013,12 @@ modules to add to your dotular.yaml.`,
 			ctx := context.Background()
 			u := ui.New(os.Stdout, os.Stderr)
 
+			// Validate the config before registry fetches can mutate cache or lock state.
+			cfg, loadErr := loadConfig()
+			if loadErr != nil && !errors.Is(loadErr, fs.ErrNotExist) {
+				return loadErr
+			}
+
 			// 1. Fetch the registry index.
 			u.Info("Fetching module registry...")
 			entries, err := registry.FetchIndex(ctx, u)
@@ -1101,11 +1119,7 @@ modules to add to your dotular.yaml.`,
 				return nil
 			}
 
-			// 5. Load or create config, merge selections.
-			cfg, loadErr := loadConfig()
-			if loadErr != nil && !errors.Is(loadErr, fs.ErrNotExist) {
-				return loadErr
-			}
+			// 5. Merge selections into the preflighted config.
 
 			// Normalize existing from: refs for dedup comparison.
 			existingURLs := make(map[string]bool)

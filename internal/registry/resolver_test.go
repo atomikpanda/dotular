@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -43,8 +44,8 @@ func TestMergeOverrides(t *testing.T) {
 		{File: ".vimrc"},
 	}
 	overrides := []config.Item{
-		{Package: "curl", Via: "apt"},      // replaces
-		{Package: "neovim", Via: "brew"},    // appends (no match)
+		{Package: "curl", Via: "apt"},    // replaces
+		{Package: "neovim", Via: "brew"}, // appends (no match)
 	}
 
 	result := mergeOverrides(base, overrides)
@@ -91,4 +92,76 @@ func TestRenderItems(t *testing.T) {
 	if result[0].Package != "neovim" {
 		t.Errorf("Package = %q", result[0].Package)
 	}
+}
+
+func TestRenderItemsRejectsMissingParameter(t *testing.T) {
+	got, err := renderItems(
+		[]config.Item{{Package: "{{ .pkg }}"}},
+		map[string]any{"other": "value"},
+	)
+	if err == nil {
+		t.Fatalf("renderItems() = %#v, want missing key error", got)
+	}
+	if !strings.Contains(err.Error(), `map has no entry for key "pkg"`) {
+		t.Fatalf("renderItems() error = %v, want missing key context", err)
+	}
+	if got != nil {
+		t.Fatalf("renderItems() = %#v, want nil on render error", got)
+	}
+}
+
+func TestRenderItemsValidatesRenderedValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		items  []config.Item
+		params map[string]any
+		want   string
+	}{
+		{
+			name:   "primary renders empty",
+			items:  []config.Item{{Package: "{{ .package }}"}},
+			params: map[string]any{"package": ""},
+			want:   "expected exactly one primary field",
+		},
+		{
+			name:   "direction renders invalid",
+			items:  []config.Item{{File: "config", Direction: "{{ .direction }}"}},
+			params: map[string]any{"direction": "pul"},
+			want:   `direction "pul"`,
+		},
+		{
+			name:  "multiple primaries rejected",
+			items: []config.Item{{Package: "git", File: "config"}},
+			want:  "package, file",
+		},
+		{
+			name:  "malformed template without params",
+			items: []config.Item{{Package: "{{ .bad"}},
+			want:  "parse template",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := renderItems(tt.items, tt.params)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("renderItems() error = %v, want containing %q", err, tt.want)
+			}
+			if got != nil {
+				t.Fatalf("renderItems() = %#v, want nil on validation error", got)
+			}
+		})
+	}
+
+	t.Run("direction renders valid", func(t *testing.T) {
+		got, err := renderItems(
+			[]config.Item{{File: "config", Direction: "{{ .direction }}"}},
+			map[string]any{"direction": "sync"},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Direction != "sync" {
+			t.Fatalf("renderItems() = %#v, want one item with direction sync", got)
+		}
+	})
 }

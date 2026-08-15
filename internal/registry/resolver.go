@@ -146,6 +146,9 @@ func renderItems(items []config.Item, params map[string]any) ([]config.Item, err
 		}
 		rendered = append(rendered, r)
 	}
+	if err := config.ValidateItems(rendered, config.ItemValidationOptions{}); err != nil {
+		return nil, fmt.Errorf("validate rendered items: %w", err)
+	}
 	return rendered, nil
 }
 

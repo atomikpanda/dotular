@@ -195,6 +195,101 @@ func TestParseModuleInvalid(t *testing.T) {
 	}
 }
 
+func TestParseModuleRejectsUnknownFields(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		key  string
+	}{
+		{
+			name: "root",
+			data: "nmae: typo\nitems:\n  - package: neovim\n",
+			key:  "nmae",
+		},
+		{
+			name: "parameter",
+			data: "name: typo\nparams:\n  editor:\n    descrption: preferred editor\nitems:\n  - package: neovim\n",
+			key:  "descrption",
+		},
+		{
+			name: "item",
+			data: "name: typo\nitems:\n  - packge: neovim\n",
+			key:  "packge",
+		},
+		{
+			name: "item hook",
+			data: "name: typo\nitems:\n  - package: neovim\n    hooks:\n      after_aply: echo done\n",
+			key:  "after_aply",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseModule([]byte(tt.data))
+			if err == nil {
+				t.Fatal("parseModule() = nil error, want unknown-field rejection")
+			}
+			for _, want := range []string{"parse registry module", tt.key, "line"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("parseModule() error = %q, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseModuleValidatesRawItems(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "zero primary fields",
+			data: "name: empty-item\nitems:\n  - via: brew\n",
+			want: `validate registry module "empty-item": items: item 1: expected exactly one primary field; found none`,
+		},
+		{
+			name: "multiple primary fields",
+			data: "name: ambiguous-item\nitems:\n  - package: neovim\n    script: install.sh\n",
+			want: `validate registry module "ambiguous-item": items: item 1: expected exactly one primary field; found package, script`,
+		},
+		{
+			name: "invalid literal direction",
+			data: "name: bad-direction\nitems:\n  - file: config\n    direction: pul\n",
+			want: `validate registry module "bad-direction": items: item 1: direction "pul" must be push, pull, or sync`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseModule([]byte(tt.data))
+			if err == nil {
+				t.Fatal("parseModule() = nil error, want item validation error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseModule() error = %q, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseModuleDefersTemplatedDirection(t *testing.T) {
+	for _, direction := range []string{"{{ .dir }}", "push-{{ .suffix }}"} {
+		t.Run(direction, func(t *testing.T) {
+			mod, err := parseModule([]byte(
+				"name: templated\nparams:\n  dir:\n    default: push\nitems:\n  - file: config\n    direction: '" + direction + "'\n",
+			))
+			if err != nil {
+				t.Fatalf("parseModule() error = %v", err)
+			}
+			if got := mod.Items[0].Direction; got != direction {
+				t.Fatalf("direction = %q, want %q", got, direction)
+			}
+		})
+	}
+}
+
 func TestWriteCacheFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sub", "cache.yaml")

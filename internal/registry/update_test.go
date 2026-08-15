@@ -689,49 +689,99 @@ func TestStageActiveRefsYAMLTypeFailureHasNoWrites(t *testing.T) {
 }
 
 func TestStageActiveRefsValidatesEverySharedRefUsageAfterUniqueFetchesWithoutWrites(t *testing.T) {
-	sharedData := []byte(
-		"name: shared\n" +
-			"params:\n" +
-			"  package:\n" +
-			"    default: safe\n" +
-			"items:\n" +
-			"  - package: '{{ .package }}'\n" +
-			"    via: brew\n",
-	)
-	otherData := moduleYAML("other", "other")
-	fixture := newUpdateFixture(t, map[string][]byte{
-		"/shared": sharedData,
-		"/other":  otherData,
-	})
-	sharedRef, otherRef := fixture.ref("/shared"), fixture.ref("/other")
-	fixture.configure(sharedRef, otherRef, sharedRef)
-	fixture.cfg.Modules[0].Name = "valid-shared-usage"
-	fixture.cfg.Modules[0].With = map[string]any{"package": "valid"}
-	fixture.cfg.Modules[2].Name = "invalid-shared-usage"
-	fixture.cfg.Modules[2].With = map[string]any{"package": "invalid'quote"}
-	fixture.persistLock(map[string]LockEntry{
-		sharedRef: {SHA256: strings.Repeat("a", sha256.Size*2)},
-		otherRef:  {SHA256: strings.Repeat("b", sha256.Size*2)},
-	})
-	fixture.seedCache(sharedRef, []byte("old shared cache"))
-	fixture.seedCache(otherRef, []byte("old other cache"))
-	fixture.snapshotDurableState()
+	t.Run("invalid rendered YAML", func(t *testing.T) {
+		sharedData := []byte(
+			"name: shared\n" +
+				"params:\n" +
+				"  package:\n" +
+				"    default: safe\n" +
+				"items:\n" +
+				"  - package: '{{ .package }}'\n" +
+				"    via: brew\n",
+		)
+		otherData := moduleYAML("other", "other")
+		fixture := newUpdateFixture(t, map[string][]byte{
+			"/shared": sharedData,
+			"/other":  otherData,
+		})
+		sharedRef, otherRef := fixture.ref("/shared"), fixture.ref("/other")
+		fixture.configure(sharedRef, otherRef, sharedRef)
+		fixture.cfg.Modules[0].Name = "valid-shared-usage"
+		fixture.cfg.Modules[0].With = map[string]any{"package": "valid"}
+		fixture.cfg.Modules[2].Name = "invalid-shared-usage"
+		fixture.cfg.Modules[2].With = map[string]any{"package": "invalid'quote"}
+		fixture.persistLock(map[string]LockEntry{
+			sharedRef: {SHA256: strings.Repeat("a", sha256.Size*2)},
+			otherRef:  {SHA256: strings.Repeat("b", sha256.Size*2)},
+		})
+		fixture.seedCache(sharedRef, []byte("old shared cache"))
+		fixture.seedCache(otherRef, []byte("old other cache"))
+		fixture.snapshotDurableState()
 
-	got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
+		got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
 
-	fixture.requireWrappedStageError(err, sharedRef, `module "invalid-shared-usage"`)
-	if !strings.Contains(err.Error(), "unmarshal rendered item") {
-		t.Fatalf("stageActiveRefs() error = %q, want rendered item context", err)
-	}
-	if got != nil {
-		t.Fatalf("stageActiveRefs() = %#v, want nil records after validation failure", got)
-	}
-	for _, ref := range []string{sharedRef, otherRef} {
-		if requests := fixture.requestCount(ref); requests != 1 {
-			t.Fatalf("requests for %q = %d, want 1", ref, requests)
+		fixture.requireWrappedStageError(err, sharedRef, `module "invalid-shared-usage"`)
+		if !strings.Contains(err.Error(), "unmarshal rendered item") {
+			t.Fatalf("stageActiveRefs() error = %q, want rendered item context", err)
 		}
-	}
-	fixture.requireDurableStateUnchanged()
+		if got != nil {
+			t.Fatalf("stageActiveRefs() = %#v, want nil records after validation failure", got)
+		}
+		for _, ref := range []string{sharedRef, otherRef} {
+			if requests := fixture.requestCount(ref); requests != 1 {
+				t.Fatalf("requests for %q = %d, want 1", ref, requests)
+			}
+		}
+		fixture.requireDurableStateUnchanged()
+	})
+
+	t.Run("invalid rendered direction", func(t *testing.T) {
+		sharedData := []byte(
+			"name: shared\n" +
+				"params:\n" +
+				"  direction:\n" +
+				"    default: sync\n" +
+				"items:\n" +
+				"  - file: config\n" +
+				"    direction: '{{ .direction }}'\n",
+		)
+		otherData := moduleYAML("other", "other")
+		fixture := newUpdateFixture(t, map[string][]byte{
+			"/shared": sharedData,
+			"/other":  otherData,
+		})
+		sharedRef, otherRef := fixture.ref("/shared"), fixture.ref("/other")
+		fixture.configure(sharedRef, otherRef, sharedRef)
+		fixture.cfg.Modules[0].Name = "valid-shared-usage"
+		fixture.cfg.Modules[0].With = map[string]any{"direction": "sync"}
+		fixture.cfg.Modules[2].Name = "invalid-shared-usage"
+		fixture.cfg.Modules[2].With = map[string]any{"direction": "pul"}
+		fixture.persistLock(map[string]LockEntry{
+			sharedRef: {SHA256: strings.Repeat("a", sha256.Size*2)},
+			otherRef:  {SHA256: strings.Repeat("b", sha256.Size*2)},
+		})
+		fixture.seedCache(sharedRef, []byte("old shared cache"))
+		fixture.seedCache(otherRef, []byte("old other cache"))
+		fixture.snapshotDurableState()
+
+		got, err := stageActiveRefs(context.Background(), fixture.cfg, fixture.lock, maxAggregateStagedBytes)
+
+		fixture.requireWrappedStageError(err, sharedRef, `module "invalid-shared-usage"`)
+		for _, want := range []string{"item 1", `direction "pul"`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("stageActiveRefs() error = %q, want rendered validation context %q", err, want)
+			}
+		}
+		if got != nil {
+			t.Fatalf("stageActiveRefs() = %#v, want nil records after validation failure", got)
+		}
+		for _, ref := range []string{sharedRef, otherRef} {
+			if requests := fixture.requestCount(ref); requests != 1 {
+				t.Fatalf("requests for %q = %d, want 1", ref, requests)
+			}
+		}
+		fixture.requireDurableStateUnchanged()
+	})
 }
 
 func TestReplacementLockPreservesInactiveEntriesAndDoesNotAliasOriginal(t *testing.T) {

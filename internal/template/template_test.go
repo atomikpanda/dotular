@@ -15,26 +15,25 @@ func TestRender(t *testing.T) {
 	}{
 		{"simple", "hello {{ .name }}", map[string]any{"name": "world"}, "hello world"},
 		{"multiple", "{{ .a }} and {{ .b }}", map[string]any{"a": "x", "b": "y"}, "x and y"},
-		{"missing key zero", "val={{ .missing }}", map[string]any{}, "val=<no value>"},
 		{"no template", "plain text", map[string]any{"x": "y"}, "plain text"},
-		{"empty params", "{{ .foo }}", nil, "val=<no value>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// The "missing key zero" and "empty params" tests use missingkey=zero
-			// which outputs "<no value>" for missing keys.
 			got, err := Render(tt.input, tt.params)
 			if err != nil {
 				t.Fatal(err)
-			}
-			if tt.name == "missing key zero" || tt.name == "empty params" {
-				// These have <no value> output from missingkey=zero option
-				return
 			}
 			if got != tt.want {
 				t.Errorf("Render(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRenderMissingKey(t *testing.T) {
+	_, err := Render("val={{ .missing }}", nil)
+	if err == nil {
+		t.Fatal("expected error for missing template key")
 	}
 }
 

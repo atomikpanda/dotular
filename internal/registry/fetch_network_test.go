@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -217,6 +219,48 @@ func TestFetchRejectsTruncatedBody(t *testing.T) {
 	}
 	if len(lock.Registry) != 0 {
 		t.Errorf("lockfile pinned %d entries; a truncated download must never be pinned", len(lock.Registry))
+	}
+}
+
+func TestFetchRejectsTrailingYAMLDocumentsBeforePublication(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{
+			name: "second document",
+			data: testModuleYAML + "---\nname: hidden\nitems:\n  - package: ignored\n",
+			want: "multiple YAML documents",
+		},
+		{
+			name: "malformed trailing document",
+			data: testModuleYAML + "---\nname: [unterminated\n",
+			want: "parse registry module",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.data)
+			})
+			lock := newTestLock(t)
+
+			_, _, err := fetchForTest(t, ref, lock, false)
+			if err == nil {
+				t.Fatal("Fetch() succeeded, want trailing-document error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Fetch() error = %q, want %q", err, tt.want)
+			}
+			if len(lock.Registry) != 0 {
+				t.Errorf("lockfile pinned %d entries; rejected YAML must never be pinned", len(lock.Registry))
+			}
+			if _, statErr := os.Stat(moduleCachePath(ref)); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Fatalf("cache file was published for rejected YAML: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -520,6 +564,77 @@ func TestFetchRejectsPinnedMismatchBeforeYAMLParsing(t *testing.T) {
 	if got := requests.Load(); got != 1 {
 		t.Fatalf("network requests = %d, want 1", got)
 	}
+}
+
+func TestFetchRejectsMalformedConfigWithoutPublication(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "unknown item key",
+			data: "name: malformed\nitems:\n  - packge: neovim\n",
+		},
+		{
+			name: "zero primary fields",
+			data: "name: malformed\nitems:\n  - via: brew\n",
+		},
+		{
+			name: "multiple primary fields",
+			data: "name: malformed\nitems:\n  - package: neovim\n    script: install.sh\n",
+		},
+		{
+			name: "invalid literal direction",
+			data: "name: malformed\nitems:\n  - file: config\n    direction: pul\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			ref := serveTestModule(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tt.data)
+			})
+			lock := newTestLock(t)
+
+			_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+			if err == nil {
+				t.Fatal("Fetch() = nil error, want malformed module rejection")
+			}
+			if len(lock.Registry) != 0 {
+				t.Fatalf("rejected module pinned: %#v", lock.Registry)
+			}
+			if _, err := os.Stat(moduleCachePath(ref)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("cache state after rejected module = %v", err)
+			}
+		})
+	}
+}
+
+func TestFetchPinnedInvalidCachePreservesLockEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const invalidCache = "name: malformed\nitems:\n  - packge: neovim\n"
+	ref := "example.com/module.yaml"
+	original := LockEntry{
+		SHA256: testModuleChecksum(invalidCache),
+		URL:    ParseRef(ref).FetchURL,
+	}
+	lock := &LockFile{Registry: map[string]LockEntry{ref: original}}
+	if err := writeCacheFile(moduleCachePath(ref), []byte(invalidCache)); err != nil {
+		t.Fatal(err)
+	}
+	forbidNetwork(t)
+
+	_, _, err := fetchWithOptionsForTest(t, ref, lock, FetchOptions{})
+	if err == nil {
+		t.Fatal("Fetch() = nil error, want cached module parse rejection")
+	}
+	for _, want := range []string{"parse registry module", "packge"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Fetch() error = %q, want %q after matching checksum", err, want)
+		}
+	}
+	requireLockEntryUnchanged(t, original, lock.Registry[ref])
 }
 
 func TestFetchRejectsCachePathCollisionBeforeIO(t *testing.T) {

@@ -201,6 +201,10 @@ Package items are **idempotent** — dotular checks whether the package is alrea
 
 `destination` accepts either a plain string (all platforms) or a per-OS mapping.
 
+Per-platform YAML maps accept only `macos`, `linux`, and `windows`. The
+`dotular platform` command prints Go runtime names, so it prints `darwin` on
+macOS; use `macos:` in YAML, not `darwin:`.
+
 #### `directory` — sync a whole directory tree
 
 ```yaml
@@ -299,7 +303,7 @@ If the module name is omitted, dotular infers it from the registry or prompts.
 | Flag          | Description |
 |---------------|-------------|
 | `--link`      | Record `link: true`, so apply symlinks instead of copying (default `false`) |
-| `--direction` | Record `direction:` — `push`, `pull`, or `sync` (default `push`) |
+| `--direction` | Accepts only `push`, `pull`, or `sync`, and records the selected `direction:` (default `push`) |
 
 This command rewrites the config file — see [Config file formats](#config-file-formats).
 
