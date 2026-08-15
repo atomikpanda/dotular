@@ -1,6 +1,7 @@
 package template
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/atomikpanda/dotular/internal/config"
@@ -160,5 +161,66 @@ func TestRenderItemScriptFields(t *testing.T) {
 	}
 	if result.Script != "https://example.com/1.2.3/install.sh" {
 		t.Errorf("Script = %q", result.Script)
+	}
+}
+
+func TestRenderItemRollbackFields(t *testing.T) {
+	item := config.Item{
+		Run:      "install-{{ .service }}",
+		Rollback: "uninstall-{{ .service }}",
+		Hooks: config.ItemHooks{
+			BeforeApply: "prepare-{{ .service }}",
+			Rollback: config.RollbackHooks{
+				BeforeApply: "undo-prepare-{{ .service }}",
+			},
+		},
+	}
+
+	result, err := RenderItem(item, map[string]any{"service": "custom-service"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Rollback != "uninstall-custom-service" {
+		t.Fatalf("Rollback = %q", result.Rollback)
+	}
+	if result.Hooks.Rollback.BeforeApply != "undo-prepare-custom-service" {
+		t.Fatalf("Hooks.Rollback.BeforeApply = %q", result.Hooks.Rollback.BeforeApply)
+	}
+}
+
+func TestRenderItemRollbackFieldsRejectMissingParameters(t *testing.T) {
+	tests := []struct {
+		name string
+		item config.Item
+		key  string
+	}{
+		{
+			name: "item action",
+			item: config.Item{Run: "install", Rollback: "{{ .undo_action }}"},
+			key:  "undo_action",
+		},
+		{
+			name: "item hook",
+			item: config.Item{
+				Run: "install",
+				Hooks: config.ItemHooks{
+					BeforeApply: "prepare",
+					Rollback: config.RollbackHooks{
+						BeforeApply: "{{ .undo_hook }}",
+					},
+				},
+			},
+			key: "undo_hook",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := RenderItem(tt.item, map[string]any{"other": "value"})
+			want := `map has no entry for key "` + tt.key + `"`
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("RenderItem() error = %v, want %q", err, want)
+			}
+		})
 	}
 }

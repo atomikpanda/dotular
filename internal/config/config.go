@@ -46,12 +46,26 @@ type Module struct {
 // IsRegistry returns true when this module is backed by a registry reference.
 func (m Module) IsRegistry() bool { return m.From != "" }
 
-// ModuleHooks are shell commands that run around module application.
-type ModuleHooks struct {
+// RollbackHooks are compensating shell commands for matching forward hooks.
+type RollbackHooks struct {
 	BeforeApply string `yaml:"before_apply,omitempty"`
 	AfterApply  string `yaml:"after_apply,omitempty"`
 	BeforeSync  string `yaml:"before_sync,omitempty"`
 	AfterSync   string `yaml:"after_sync,omitempty"`
+
+	beforeApplySet bool
+	afterApplySet  bool
+	beforeSyncSet  bool
+	afterSyncSet   bool
+}
+
+// ModuleHooks are shell commands that run around module application.
+type ModuleHooks struct {
+	BeforeApply string        `yaml:"before_apply,omitempty"`
+	AfterApply  string        `yaml:"after_apply,omitempty"`
+	BeforeSync  string        `yaml:"before_sync,omitempty"`
+	AfterSync   string        `yaml:"after_sync,omitempty"`
+	Rollback    RollbackHooks `yaml:"rollback,omitempty"`
 }
 
 // Item represents a single configuration action within a module.
@@ -103,17 +117,74 @@ type Item struct {
 	Via string `yaml:"via,omitempty"`
 
 	// --- shared: honoured on every item type ---
-	SkipIf string    `yaml:"skip_if,omitempty"`
-	Verify string    `yaml:"verify,omitempty"`
-	Hooks  ItemHooks `yaml:"hooks,omitempty"`
+	SkipIf   string    `yaml:"skip_if,omitempty"`
+	Verify   string    `yaml:"verify,omitempty"`
+	Rollback string    `yaml:"rollback,omitempty"`
+	Hooks    ItemHooks `yaml:"hooks,omitempty"`
+
+	rollbackSet bool
 }
 
 // ItemHooks are shell commands that run around individual item application.
 type ItemHooks struct {
-	BeforeApply string `yaml:"before_apply,omitempty"`
-	AfterApply  string `yaml:"after_apply,omitempty"`
-	BeforeSync  string `yaml:"before_sync,omitempty"`
-	AfterSync   string `yaml:"after_sync,omitempty"`
+	BeforeApply string        `yaml:"before_apply,omitempty"`
+	AfterApply  string        `yaml:"after_apply,omitempty"`
+	BeforeSync  string        `yaml:"before_sync,omitempty"`
+	AfterSync   string        `yaml:"after_sync,omitempty"`
+	Rollback    RollbackHooks `yaml:"rollback,omitempty"`
+}
+
+func validateRollbackHooks(
+	rollback, configured RollbackHooks,
+	beforeApply, afterApply, beforeSync, afterSync string,
+) error {
+	pairs := [...]struct {
+		name       string
+		forward    string
+		rollback   string
+		configured bool
+	}{
+		{
+			"before_apply",
+			beforeApply,
+			rollback.BeforeApply,
+			rollback.BeforeApply != "" || configured.BeforeApply != "" ||
+				rollback.beforeApplySet || configured.beforeApplySet,
+		},
+		{
+			"after_apply",
+			afterApply,
+			rollback.AfterApply,
+			rollback.AfterApply != "" || configured.AfterApply != "" ||
+				rollback.afterApplySet || configured.afterApplySet,
+		},
+		{
+			"before_sync",
+			beforeSync,
+			rollback.BeforeSync,
+			rollback.BeforeSync != "" || configured.BeforeSync != "" ||
+				rollback.beforeSyncSet || configured.beforeSyncSet,
+		},
+		{
+			"after_sync",
+			afterSync,
+			rollback.AfterSync,
+			rollback.AfterSync != "" || configured.AfterSync != "" ||
+				rollback.afterSyncSet || configured.afterSyncSet,
+		},
+	}
+	for _, pair := range pairs {
+		if !pair.configured {
+			continue
+		}
+		if strings.TrimSpace(pair.rollback) == "" {
+			return fmt.Errorf("hooks.rollback.%s must not be blank", pair.name)
+		}
+		if strings.TrimSpace(pair.forward) == "" {
+			return fmt.Errorf("hooks.rollback.%s requires hooks.%s", pair.name, pair.name)
+		}
+	}
+	return nil
 }
 
 // Type returns the item's action type string.
@@ -180,6 +251,9 @@ func (i Item) EffectiveDirection() string {
 // configuration boundaries.
 type ItemValidationOptions struct {
 	AllowDirectionTemplates bool
+	// RenderedFrom preserves whether rollback fields were explicitly configured
+	// when template rendering turns their values into empty strings.
+	RenderedFrom []Item
 }
 
 // ValidateDirection checks a non-empty explicit transfer direction.
@@ -224,6 +298,37 @@ func ValidateItems(items []Item, opts ItemValidationOptions) error {
 				return fmt.Errorf("item %d: %w", itemIndex+1, err)
 			}
 		}
+		rollbackConfigured := item.Rollback != "" || item.rollbackSet
+		configuredHooks := item.Hooks.Rollback
+		if itemIndex < len(opts.RenderedFrom) {
+			source := opts.RenderedFrom[itemIndex]
+			rollbackConfigured = rollbackConfigured || source.Rollback != "" || source.rollbackSet
+			configuredHooks = source.Hooks.Rollback
+		}
+		if rollbackConfigured {
+			if strings.TrimSpace(item.Rollback) == "" {
+				return fmt.Errorf("item %d: rollback must not be blank", itemIndex+1)
+			}
+			switch item.Type() {
+			case "package", "setting", "script", "run":
+			default:
+				return fmt.Errorf(
+					"item %d: rollback is not supported for %s items",
+					itemIndex+1,
+					item.Type(),
+				)
+			}
+		}
+		if err := validateRollbackHooks(
+			item.Hooks.Rollback,
+			configuredHooks,
+			item.Hooks.BeforeApply,
+			item.Hooks.AfterApply,
+			item.Hooks.BeforeSync,
+			item.Hooks.AfterSync,
+		); err != nil {
+			return fmt.Errorf("item %d: %w", itemIndex+1, err)
+		}
 	}
 	return nil
 }
@@ -237,6 +342,16 @@ func (c Config) Validate() error {
 		}
 		if mod.From != "" && len(mod.Items) != 0 {
 			return fmt.Errorf("%s: from and items are mutually exclusive", module)
+		}
+		if err := validateRollbackHooks(
+			mod.Hooks.Rollback,
+			mod.Hooks.Rollback,
+			mod.Hooks.BeforeApply,
+			mod.Hooks.AfterApply,
+			mod.Hooks.BeforeSync,
+			mod.Hooks.AfterSync,
+		); err != nil {
+			return fmt.Errorf("%s: %w", module, err)
 		}
 		if err := ValidateItems(mod.Items, ItemValidationOptions{}); err != nil {
 			return fmt.Errorf("%s: items: %w", module, err)
@@ -351,6 +466,156 @@ func (p PlatformMap) MarshalYAML() (any, error) {
 	}, nil
 }
 
+func yamlContentNode(node *yaml.Node) *yaml.Node {
+	seen := make(map[*yaml.Node]bool)
+	for node != nil && (node.Kind == yaml.DocumentNode || node.Kind == yaml.AliasNode) {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		if node.Kind == yaml.DocumentNode {
+			if len(node.Content) == 0 {
+				return nil
+			}
+			node = node.Content[0]
+			continue
+		}
+		node = node.Alias
+	}
+	return node
+}
+
+func isYAMLMergeKey(node *yaml.Node) bool {
+	if node.Kind != yaml.ScalarNode || node.Value != "<<" {
+		return false
+	}
+	switch node.Tag {
+	case "", "!", "!!merge", "tag:yaml.org,2002:merge":
+		return true
+	default:
+		return false
+	}
+}
+
+func yamlNodeValue(node *yaml.Node, key string) *yaml.Node {
+	return yamlNodeValueSeen(node, key, make(map[*yaml.Node]bool))
+}
+
+func yamlNodeValueSeen(node *yaml.Node, key string, seen map[*yaml.Node]bool) *yaml.Node {
+	for node != nil && node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		node = node.Content[0]
+	}
+	if node == nil || seen[node] {
+		return nil
+	}
+	seen[node] = true
+	if node.Kind == yaml.AliasNode {
+		return yamlNodeValueSeen(node.Alias, key, seen)
+	}
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	var merge *yaml.Node
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		keyNode := node.Content[i]
+		if isYAMLMergeKey(keyNode) {
+			merge = node.Content[i+1]
+			continue
+		}
+		if keyNode.Value == key {
+			return node.Content[i+1]
+		}
+	}
+	if merge == nil {
+		return nil
+	}
+	if merge.Kind == yaml.SequenceNode {
+		for _, merged := range merge.Content {
+			if value := yamlNodeValueSeen(merged, key, seen); value != nil {
+				return value
+			}
+		}
+		return nil
+	}
+	return yamlNodeValueSeen(merge, key, seen)
+}
+
+func markRollbackHooksPresence(hooks *RollbackHooks, node *yaml.Node) {
+	if yamlNodeValue(node, "before_apply") != nil {
+		hooks.beforeApplySet = true
+	}
+	if yamlNodeValue(node, "after_apply") != nil {
+		hooks.afterApplySet = true
+	}
+	if yamlNodeValue(node, "before_sync") != nil {
+		hooks.beforeSyncSet = true
+	}
+	if yamlNodeValue(node, "after_sync") != nil {
+		hooks.afterSyncSet = true
+	}
+}
+
+// MarkItemRollbackPresence records explicit rollback keys that decode to empty
+// strings, so validation can distinguish them from omitted rollback fields.
+func MarkItemRollbackPresence(items []Item, node *yaml.Node) {
+	node = yamlContentNode(node)
+	if node != nil && node.Kind == yaml.MappingNode {
+		node = yamlNodeValue(node, "items")
+	}
+	node = yamlContentNode(node)
+	if node == nil || node.Kind != yaml.SequenceNode {
+		return
+	}
+	for itemIndex := range items {
+		if itemIndex >= len(node.Content) {
+			return
+		}
+		itemNode := node.Content[itemIndex]
+		if yamlNodeValue(itemNode, "rollback") != nil {
+			items[itemIndex].rollbackSet = true
+		}
+		hooksNode := yamlNodeValue(itemNode, "hooks")
+		markRollbackHooksPresence(
+			&items[itemIndex].Hooks.Rollback,
+			yamlNodeValue(hooksNode, "rollback"),
+		)
+	}
+}
+
+func markConfigRollbackPresence(cfg *Config, document *yaml.Node) {
+	modulesNode := yamlContentNode(document)
+	if modulesNode != nil && modulesNode.Kind == yaml.MappingNode {
+		modulesNode = yamlNodeValue(modulesNode, "modules")
+	}
+	modulesNode = yamlContentNode(modulesNode)
+	if modulesNode == nil || modulesNode.Kind != yaml.SequenceNode {
+		return
+	}
+	for moduleIndex := range cfg.Modules {
+		if moduleIndex >= len(modulesNode.Content) {
+			return
+		}
+		moduleNode := modulesNode.Content[moduleIndex]
+		hooksNode := yamlNodeValue(moduleNode, "hooks")
+		markRollbackHooksPresence(
+			&cfg.Modules[moduleIndex].Hooks.Rollback,
+			yamlNodeValue(hooksNode, "rollback"),
+		)
+		MarkItemRollbackPresence(
+			cfg.Modules[moduleIndex].Items,
+			yamlNodeValue(moduleNode, "items"),
+		)
+		MarkItemRollbackPresence(
+			cfg.Modules[moduleIndex].Override,
+			yamlNodeValue(moduleNode, "override"),
+		)
+	}
+}
+
 // Load reads and parses a config file. It accepts both the new mapping format
 // (with a "modules" key) and the legacy bare-sequence format.
 func Load(path string) (Config, error) {
@@ -392,6 +657,8 @@ func Load(path string) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("parse config: line %d: multiple YAML documents are not supported", trailing.Line)
 	}
+
+	markConfigRollbackPresence(&cfg, doc)
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config: %w", err)
