@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 )
@@ -68,6 +69,40 @@ func TestRunWithOutput(t *testing.T) {
 	err := Run(context.Background(), "echo hello >/dev/null")
 	if err != nil {
 		t.Errorf("Run(echo) error: %v", err)
+	}
+}
+
+func TestValidateAcceptsSyntaxWithoutRunningCommand(t *testing.T) {
+	command := "exit 7"
+	if err := Validate(context.Background(), command); err != nil {
+		t.Fatalf("Validate(%q) error = %v", command, err)
+	}
+}
+
+func TestValidateRejectsMalformedSyntax(t *testing.T) {
+	command := "echo 'unterminated"
+	if runtime.GOOS == "windows" {
+		command = "if ("
+	}
+	if err := Validate(context.Background(), command); err == nil {
+		t.Fatalf("Validate(%q) error = nil, want syntax error", command)
+	}
+}
+
+func TestValidateReturnsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := Validate(ctx, "exit 0")
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Validate() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestValidateRejectsBlankCommand(t *testing.T) {
+	if err := Validate(context.Background(), " \t\n"); err == nil {
+		t.Fatal("Validate(blank) error = nil, want error")
 	}
 }
 
