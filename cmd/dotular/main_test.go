@@ -633,6 +633,93 @@ modules:
 	}
 }
 
+func TestListShowsInactiveModulesInOrderWithoutFetchingThem(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: first
+    items:
+      - run: "true"
+  - name: second
+    from: %q
+    only_tags: [work]
+  - name: third
+    items:
+      - package: git
+        via: brew
+      - run: "true"
+`, ref))
+
+	var output bytes.Buffer
+	root := buildRoot()
+	root.SetOut(&output)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"list", "--config", path})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0", got)
+	}
+	for name, statePath := range map[string]string{
+		"lockfile": registry.LockPath(path),
+		"cache":    cacheRoot,
+	} {
+		if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+		}
+	}
+
+	got := output.String()
+	for _, text := range []string{
+		"first", "1 items (1 run)",
+		"second", "skipped (tag mismatch)",
+		"third", "2 items (1 package, 1 run)",
+	} {
+		if !strings.Contains(got, text) {
+			t.Errorf("output = %q, want %q", got, text)
+		}
+	}
+	first := strings.Index(got, "first")
+	second := strings.Index(got, "second")
+	third := strings.Index(got, "third")
+	if first < 0 || second <= first || third <= second {
+		t.Errorf("module order in output = %q, want first < second < third", got)
+	}
+}
+
+func TestListUsesFromRefForUnaliasedInactiveModule(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+    only_tags: [work]
+`, ref))
+
+	var output bytes.Buffer
+	root := buildRoot()
+	root.SetOut(&output)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"list", "--config", path})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0", got)
+	}
+	if got := output.String(); !strings.Contains(got, ref) || !strings.Contains(got, "skipped (tag mismatch)") {
+		t.Fatalf("output = %q, want ref and tag-mismatch status", got)
+	}
+}
+
 func TestStatusCmdExecute(t *testing.T) {
 	path := writeTestConfig(t, `
 modules:

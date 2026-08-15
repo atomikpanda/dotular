@@ -573,12 +573,33 @@ func listCmd() *cobra.Command {
 		Short: "List all modules defined in the config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			selected, err := loadTaggedConfig(false)
 			if err != nil {
 				return err
 			}
-			u := ui.New(os.Stdout, os.Stderr)
-			for _, mod := range cfg.Modules {
+			cfg, err := resolveConfig(ctx, selected.active)
+			if err != nil {
+				return err
+			}
+
+			u := ui.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			activeIndex := 0
+			for i, raw := range selected.raw.Modules {
+				if !selected.activeMask[i] {
+					name := raw.Name
+					if name == "" {
+						name = raw.From
+					}
+					u.Info(fmt.Sprintf("%s  %s",
+						color.Bold(fmt.Sprintf("%-30s", name)),
+						color.Dim("skipped (tag mismatch)")))
+					continue
+				}
+				if activeIndex >= len(cfg.Modules) {
+					return fmt.Errorf("list modules: resolved module count does not match active config")
+				}
+				mod := cfg.Modules[activeIndex]
+				activeIndex++
 				counts := make(map[string]int)
 				for _, item := range mod.Items {
 					counts[item.Type()]++
@@ -588,6 +609,9 @@ func listCmd() *cobra.Command {
 				u.Info(fmt.Sprintf("%s  %s",
 					color.Bold(fmt.Sprintf("%-30s", mod.Name)),
 					color.Dim(fmt.Sprintf("%d items (%s)", total, breakdown))))
+			}
+			if activeIndex != len(cfg.Modules) {
+				return fmt.Errorf("list modules: resolved module count does not match active config")
 			}
 			return nil
 		},
