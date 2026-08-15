@@ -244,7 +244,7 @@ func TestSummarySuccess(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(10, 2, 1, 0, 3*time.Second)
+	u.Summary(10, 2, 1, 0, 0, 0, 0, 3*time.Second)
 	got := out.String()
 	for _, want := range []string{"10 applied", "2 skipped", "1 unresolved", "0 failed", "(3.0s)", "[ok]"} {
 		if !strings.Contains(got, want) {
@@ -260,7 +260,7 @@ func TestSummaryWithFailures(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(5, 1, 0, 2, 10*time.Second)
+	u.Summary(5, 1, 0, 2, 0, 0, 0, 10*time.Second)
 	got := out.String()
 	if !strings.Contains(got, "2 failed") {
 		t.Errorf("Summary output = %q, want to contain %q", got, "2 failed")
@@ -277,7 +277,7 @@ func TestSummaryAllSkipped(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(0, 5, 0, 0, 1*time.Second)
+	u.Summary(0, 5, 0, 0, 0, 0, 0, 1*time.Second)
 	got := out.String()
 	// Should use dash icon when applied == 0
 	if !strings.Contains(got, "-") {
@@ -292,7 +292,7 @@ func TestModuleSummary(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.ModuleSummary(3, 1, 1, 0)
+	u.ModuleSummary(3, 1, 1, 0, 0, 0, 0)
 	got := out.String()
 	if !strings.Contains(got, "3 applied") {
 		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "3 applied")
@@ -406,5 +406,86 @@ func TestTableEmpty(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "-") {
 		t.Errorf("separator line = %q, want to contain dashes", lines[1])
+	}
+}
+
+func TestRollbackResultShowsStructuredIdentityAndOutcome(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	tests := []struct {
+		outcome string
+		detail  string
+	}{
+		{outcome: "rolled_back", detail: ""},
+		{outcome: "rollback_failed", detail: "undo failed"},
+		{outcome: "uncompensated", detail: "capture unavailable"},
+	}
+	for _, test := range tests {
+		t.Run(test.outcome, func(t *testing.T) {
+			var out bytes.Buffer
+			u := New(&out, &bytes.Buffer{})
+			u.RollbackResult(
+				"dotfiles",
+				"item",
+				"install package git",
+				"action",
+				test.outcome,
+				test.detail,
+			)
+			got := out.String()
+			for _, want := range []string{
+				"dotfiles",
+				"item",
+				"install package git",
+				test.outcome,
+			} {
+				if !strings.Contains(got, want) {
+					t.Fatalf("RollbackResult output = %q, want %q", got, want)
+				}
+			}
+			if test.detail != "" && !strings.Contains(got, test.detail) {
+				t.Fatalf("RollbackResult output = %q, want detail %q", got, test.detail)
+			}
+		})
+	}
+}
+
+func TestRollbackCountsAppearInModuleAndFinalSummaries(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.ModuleSummary(0, 1, 0, 1, 4, 2, 3)
+	u.Summary(0, 1, 0, 1, 4, 2, 3, time.Second)
+
+	got := out.String()
+	for _, want := range []string{
+		"4 rolled back",
+		"2 rollback failed",
+		"3 uncompensated",
+	} {
+		if strings.Count(got, want) != 2 {
+			t.Fatalf("summary output = %q, want two occurrences of %q", got, want)
+		}
+	}
+}
+
+func TestUncompensatedSummaryUsesFailureSeverity(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.ModuleSummary(0, 0, 0, 0, 0, 0, 1)
+	u.Summary(0, 0, 0, 0, 0, 0, 1, time.Second)
+
+	got := out.String()
+	if strings.Count(got, "[FAIL]") != 2 {
+		t.Fatalf("uncompensated summaries = %q, want failure severity in module and final lines", got)
 	}
 }

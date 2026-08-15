@@ -196,7 +196,6 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 			continue
 		}
 
-		result.compensation = compensation.Describe()
 		if !entry.contextFree {
 			if deadlineErr := ctx.Err(); deadlineErr != nil {
 				result.outcome = rollbackOutcomeFailed
@@ -207,9 +206,11 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 			}
 		}
 
-		if err := compensation.Run(ctx); err != nil {
+		description, compensationErr := runCompensation(ctx, compensation)
+		result.compensation = description
+		if compensationErr != nil {
 			result.outcome = rollbackOutcomeFailed
-			result.err = fmt.Errorf("rollback %s %q %s with %q: %w", entry.identity.scope, entry.identity.target, entry.identity.operation, result.compensation, err)
+			result.err = fmt.Errorf("rollback %s %q %s with %q: %w", entry.identity.scope, entry.identity.target, entry.identity.operation, result.compensation, compensationErr)
 			failures = append(failures, result.err)
 		} else {
 			result.outcome = rollbackOutcomeRolledBack
@@ -218,7 +219,7 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 	}
 
 	if t.snapshot != nil {
-		if err := t.snapshot.Discard(); err != nil {
+		if err := discardModuleSnapshot(t.snapshot); err != nil {
 			report.cleanupErr = fmt.Errorf("discard filesystem snapshot: %w", err)
 			failures = append(failures, report.cleanupErr)
 		}
@@ -243,12 +244,63 @@ func (t *moduleTransaction) commit() error {
 	}
 
 	t.state = transactionCommitted
-	if t.snapshot != nil {
-		if err := t.snapshot.Discard(); err != nil {
+	snapshot := t.snapshot
+	t.snapshot = nil
+	t.entries = nil
+	if snapshot != nil {
+		if err := discardModuleSnapshot(snapshot); err != nil {
 			t.commitErr = fmt.Errorf("discard committed filesystem snapshot: %w", err)
 		}
 	}
 	return t.commitErr
+}
+
+func runCompensation(
+	ctx context.Context,
+	compensation actions.Compensation,
+) (string, error) {
+	description, descriptionErr := describeCompensation(compensation)
+	runErr := executeCompensation(ctx, compensation)
+	return description, errors.Join(descriptionErr, runErr)
+}
+
+func describeCompensation(compensation actions.Compensation) (
+	description string,
+	err error,
+) {
+	description = "compensation (description unavailable)"
+	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			err = recoveredPanicError("rollback compensation description", panicValue)
+		}
+	}()
+	description = compensation.Describe()
+	return description, nil
+}
+
+func executeCompensation(ctx context.Context, compensation actions.Compensation) (err error) {
+	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			err = recoveredPanicError("rollback compensation", panicValue)
+		}
+	}()
+	return compensation.Run(ctx)
+}
+
+func discardModuleSnapshot(snap moduleSnapshot) (err error) {
+	defer func() {
+		if panicValue := recover(); panicValue != nil {
+			err = recoveredPanicError("snapshot discard", panicValue)
+		}
+	}()
+	return snap.Discard()
+}
+
+func recoveredPanicError(operation string, panicValue any) error {
+	if err, ok := panicValue.(error); ok {
+		return fmt.Errorf("%s panicked: %w", operation, err)
+	}
+	return fmt.Errorf("%s panicked: %v", operation, panicValue)
 }
 
 func cloneRollbackReport(report rollbackReport) rollbackReport {

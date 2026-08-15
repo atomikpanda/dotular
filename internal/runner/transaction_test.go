@@ -364,3 +364,139 @@ func TestModuleTransactionRollbackRunsOnlyOnceWhenCalledConcurrently(t *testing.
 		}
 	}
 }
+
+func TestModuleTransactionRecoversRollbackPanicsAndContinues(t *testing.T) {
+	forwardErr := errors.New("forward failed")
+	compensationPanic := errors.New("compensation panicked")
+	restorePanic := errors.New("snapshot restore panicked")
+	var order []string
+	discarded := false
+	transaction := newModuleTransactionWithSnapshot(testSnapshot{
+		restore: func() error {
+			order = append(order, "restore")
+			panic(restorePanic)
+		},
+		discard: func() error {
+			order = append(order, "discard")
+			discarded = true
+			return nil
+		},
+	})
+	activateTestEntry(
+		t,
+		transaction,
+		operationIdentity{scope: "item", target: "earlier", operation: "action"},
+		recordingCompensation(&order, "earlier", nil),
+		nil,
+	)
+	activateTestEntry(
+		t,
+		transaction,
+		operationIdentity{scope: "item", target: "panicking", operation: "action"},
+		testCompensation{
+			description: "panicking compensation",
+			run: func(context.Context) error {
+				order = append(order, "panicking")
+				panic(compensationPanic)
+			},
+		},
+		nil,
+	)
+
+	report := transaction.rollback(context.Background(), forwardErr)
+
+	wantOrder := []string{"panicking", "earlier", "restore", "discard"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("rollback order = %v, want %v", order, wantOrder)
+	}
+	if !discarded {
+		t.Fatal("snapshot was not discarded after rollback panics")
+	}
+	if len(report.results) != 3 {
+		t.Fatalf("len(results) = %d, want panicking, earlier, and snapshot results", len(report.results))
+	}
+	if report.results[0].outcome != rollbackOutcomeFailed ||
+		!errors.Is(report.results[0].err, compensationPanic) {
+		t.Fatalf("panicking compensation result = %+v", report.results[0])
+	}
+	if report.results[1].outcome != rollbackOutcomeRolledBack {
+		t.Fatalf("earlier compensation result = %+v", report.results[1])
+	}
+	if report.results[2].outcome != rollbackOutcomeFailed ||
+		!errors.Is(report.results[2].err, restorePanic) {
+		t.Fatalf("snapshot panic result = %+v", report.results[2])
+	}
+	for _, wantErr := range []error{forwardErr, compensationPanic, restorePanic} {
+		if !errors.Is(report.err, wantErr) {
+			t.Fatalf("rollback error %v does not contain %v", report.err, wantErr)
+		}
+	}
+}
+
+type describePanicCompensation struct {
+	panicValue error
+	order      *[]string
+}
+
+func (c describePanicCompensation) Describe() string {
+	*c.order = append(*c.order, "describe")
+	panic(c.panicValue)
+}
+
+func (c describePanicCompensation) Run(context.Context) error {
+	*c.order = append(*c.order, "run")
+	return nil
+}
+
+func TestModuleTransactionDescribePanicStillRunsCompensationAndContinues(t *testing.T) {
+	describePanic := errors.New("describe panicked")
+	var order []string
+	transaction := newModuleTransactionWithSnapshot(testSnapshot{
+		restore: func() error {
+			order = append(order, "restore")
+			return nil
+		},
+		discard: func() error {
+			order = append(order, "discard")
+			return nil
+		},
+	})
+	activateTestEntry(
+		t,
+		transaction,
+		operationIdentity{scope: "item", target: "earlier", operation: "action"},
+		recordingCompensation(&order, "earlier", nil),
+		nil,
+	)
+	activateTestEntry(
+		t,
+		transaction,
+		operationIdentity{scope: "item", target: "describe panic", operation: "action"},
+		describePanicCompensation{panicValue: describePanic, order: &order},
+		nil,
+	)
+
+	report := transaction.rollback(context.Background(), nil)
+
+	wantOrder := []string{"describe", "run", "earlier", "restore", "discard"}
+	if !reflect.DeepEqual(order, wantOrder) {
+		t.Fatalf("rollback order = %v, want %v", order, wantOrder)
+	}
+	if len(report.results) != 3 {
+		t.Fatalf("len(results) = %d, want describe-panic, earlier, and snapshot", len(report.results))
+	}
+	describeResult := report.results[0]
+	if describeResult.outcome != rollbackOutcomeFailed {
+		t.Fatalf("describe-panic outcome = %q, want rollback_failed", describeResult.outcome)
+	}
+	if describeResult.compensation == "" {
+		t.Fatal("describe-panic result has no placeholder compensation description")
+	}
+	if !errors.Is(describeResult.err, describePanic) || !errors.Is(report.err, describePanic) {
+		t.Fatalf("describe panic missing from result/report: result=%v report=%v", describeResult.err, report.err)
+	}
+	if report.results[1].outcome != rollbackOutcomeRolledBack ||
+		report.results[2].outcome != rollbackOutcomeRolledBack {
+		t.Fatalf("later restoration did not continue: %+v", report.results)
+	}
+}

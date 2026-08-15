@@ -3,12 +3,16 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/testutil"
@@ -905,6 +909,9 @@ func TestNewRunner(t *testing.T) {
 	if r.UI == nil {
 		t.Error("expected UI to be initialized")
 	}
+	if r.RollbackTimeout != 2*time.Minute {
+		t.Errorf("RollbackTimeout = %v, want 2m", r.RollbackTimeout)
+	}
 }
 
 func TestNewRunnerWithAge(t *testing.T) {
@@ -1266,4 +1273,1166 @@ func containsStr(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+type lifecycleAction struct {
+	description string
+	writePaths  []string
+	prepare     func(context.Context) (actions.CompensationPreparation, error)
+	run         func(context.Context) error
+}
+
+func (a *lifecycleAction) Describe() string {
+	return a.description
+}
+
+func (a *lifecycleAction) WritePaths() []string {
+	return a.writePaths
+}
+
+func (a *lifecycleAction) PrepareCompensation(ctx context.Context) (actions.CompensationPreparation, error) {
+	if a.prepare == nil {
+		return actions.CompensationPreparation{
+			UnavailableReason: "no automatic compensation",
+		}, nil
+	}
+	return a.prepare(ctx)
+}
+
+func (a *lifecycleAction) Run(ctx context.Context, _ bool) error {
+	if a.run == nil {
+		return nil
+	}
+	return a.run(ctx)
+}
+
+type lifecycleCompensation struct {
+	description string
+	run         func(context.Context) error
+}
+
+func (c lifecycleCompensation) Describe() string {
+	return c.description
+}
+
+func (c lifecycleCompensation) Run(ctx context.Context) error {
+	if c.run == nil {
+		return nil
+	}
+	return c.run(ctx)
+}
+
+func newLifecycleRunner(
+	t *testing.T,
+	actionByPrimary map[string]actions.Action,
+) (*Runner, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	var out, errOut bytes.Buffer
+	r := newTestRunner(config.Config{})
+	r.DryRun = false
+	r.Atomic = true
+	r.RollbackTimeout = time.Second
+	r.Out = &out
+	r.UI = ui.New(&out, &errOut)
+	r.actionBuilder = func(item config.Item, _ string) (actions.Action, string, error) {
+		action := actionByPrimary[item.PrimaryValue()]
+		if action == nil {
+			return nil, "", errors.New("missing lifecycle test action")
+		}
+		return action, "", nil
+	}
+	return r, &out, &errOut
+}
+
+func assertNoSnapshotFiles(t *testing.T, tempRoot string) {
+	t.Helper()
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("snapshot temp root contains %v, want empty", entries)
+	}
+}
+
+func TestApplyModuleAtomicPreflightStopsBeforeEffects(t *testing.T) {
+	t.Run("invalid applicable rollback syntax", func(t *testing.T) {
+		tempRoot := t.TempDir()
+		t.Setenv("TMPDIR", tempRoot)
+		actionRan := false
+		hookRan := false
+		action := &lifecycleAction{
+			description: "invalid rollback action",
+			run: func(context.Context) error {
+				actionRan = true
+				return nil
+			},
+		}
+		r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"forward": action})
+		r.shellRun = func(context.Context, string) error {
+			hookRan = true
+			return nil
+		}
+		mod := config.Module{
+			Name: "invalid-preflight",
+			Hooks: config.ModuleHooks{
+				BeforeApply: ": forward-hook",
+				Rollback: config.RollbackHooks{
+					BeforeApply: "'unterminated",
+				},
+			},
+			Items: []config.Item{{Run: "forward", Rollback: ": undo-forward"}},
+		}
+
+		result := r.ApplyModule(context.Background(), mod)
+		if result.Err == nil {
+			t.Fatal("ApplyModule() error = nil, want rollback syntax error")
+		}
+		if actionRan || hookRan {
+			t.Fatalf("forward effects ran: action=%v hook=%v", actionRan, hookRan)
+		}
+		assertNoSnapshotFiles(t, tempRoot)
+	})
+
+	t.Run("fatal typed capture discards snapshot", func(t *testing.T) {
+		tempRoot := t.TempDir()
+		t.Setenv("TMPDIR", tempRoot)
+		captureErr := errors.New("capture failed")
+		actionRan := false
+		hookRan := false
+		action := &lifecycleAction{
+			description: "capture failure action",
+			writePaths:  []string{filepath.Join(t.TempDir(), "created", "target")},
+			prepare: func(context.Context) (actions.CompensationPreparation, error) {
+				return actions.CompensationPreparation{}, captureErr
+			},
+			run: func(context.Context) error {
+				actionRan = true
+				return nil
+			},
+		}
+		r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"capture": action})
+		r.shellRun = func(context.Context, string) error {
+			hookRan = true
+			return nil
+		}
+		mod := config.Module{
+			Name:  "capture-preflight",
+			Hooks: config.ModuleHooks{BeforeApply: ": before"},
+			Items: []config.Item{{Run: "capture", Rollback: ": undo-capture"}},
+		}
+
+		result := r.ApplyModule(context.Background(), mod)
+		if !errors.Is(result.Err, captureErr) {
+			t.Fatalf("ApplyModule() error = %v, want errors.Is(captureErr)", result.Err)
+		}
+		if actionRan || hookRan {
+			t.Fatalf("forward effects ran: action=%v hook=%v", actionRan, hookRan)
+		}
+		assertNoSnapshotFiles(t, tempRoot)
+	})
+}
+
+func TestApplyModuleValidatesConfigBeforeEffectsInEveryMode(t *testing.T) {
+	for _, atomic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-atomic", true: "atomic"}[atomic], func(t *testing.T) {
+			actionRan := false
+			action := &lifecycleAction{
+				description: "invalid config action",
+				run: func(context.Context) error {
+					actionRan = true
+					return nil
+				},
+			}
+			r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"source": action})
+			r.Atomic = atomic
+			mod := config.Module{
+				Name: "invalid-config",
+				Items: []config.Item{{
+					File:        "source",
+					Destination: config.PlatformMap{MacOS: "target"},
+					Rollback:    ": unsupported",
+				}},
+			}
+
+			result := r.ApplyModule(context.Background(), mod)
+			if result.Err == nil {
+				t.Fatal("ApplyModule() error = nil, want strict config validation error")
+			}
+			if actionRan {
+				t.Fatal("action ran after strict config validation failure")
+			}
+		})
+	}
+	t.Run("ApplyAll validates later modules before the first effect", func(t *testing.T) {
+		actionRan := false
+		action := &lifecycleAction{
+			description: "must not run",
+			run: func(context.Context) error {
+				actionRan = true
+				return nil
+			},
+		}
+		cfg := config.Config{Modules: []config.Module{
+			{Name: "otherwise-valid", Items: []config.Item{{Run: "effect"}}},
+			{
+				Name: "later-invalid",
+				Items: []config.Item{{
+					File:        "source",
+					Destination: config.PlatformMap{MacOS: "target"},
+					Rollback:    ": unsupported",
+				}},
+			},
+		}}
+		r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"effect": action})
+		r.Config = cfg
+
+		if err := r.ApplyAll(context.Background()); err == nil {
+			t.Fatal("ApplyAll() error = nil, want strict config validation error")
+		}
+		if actionRan {
+			t.Fatal("first module action ran before validation of later module")
+		}
+	})
+}
+
+func TestApplyModuleAtomicPreparesAllStateBeforeModuleHook(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	prepared := false
+	forwardErr := errors.New("forward failed")
+	action := &lifecycleAction{
+		description: "prepared action",
+		writePaths:  []string{target},
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			prepared = true
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{description: "undo prepared action"},
+			}, nil
+		},
+		run: func(context.Context) error {
+			return forwardErr
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"prepared": action})
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": before" {
+			if !prepared {
+				t.Fatal("module before_apply ran before typed capture")
+			}
+			if err := os.WriteFile(target, []byte("changed by hook"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name:  "prepared-before-hook",
+		Hooks: config.ModuleHooks{BeforeApply: ": before"},
+		Items: []config.Item{{Run: "prepared", Rollback: ": explicit fallback"}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, forwardErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("restored content = %q, want original pre-hook baseline", got)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("restored mode = %04o, want 0640", info.Mode().Perm())
+	}
+	assertNoSnapshotFiles(t, tempRoot)
+}
+
+func TestApplyModuleAtomicHookAndActionRollbackIsStrictLIFO(t *testing.T) {
+	var trace []string
+	appendTrace := func(value string) {
+		trace = append(trace, value)
+	}
+	action := &lifecycleAction{
+		description: "sync action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "undo sync action",
+					run: func(context.Context) error {
+						appendTrace("undo-action")
+						return nil
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			appendTrace("action")
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"sync-file": action})
+	afterApplyErr := errors.New("module after_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		appendTrace(command)
+		if command == ": module-after-apply" {
+			return afterApplyErr
+		}
+		return nil
+	}
+	item := config.Item{
+		File:        "sync-file",
+		Destination: config.PlatformMap{MacOS: "unused"},
+		Direction:   "sync",
+		Hooks: config.ItemHooks{
+			BeforeApply: ": item-before-apply",
+			BeforeSync:  ": item-before-sync",
+			AfterSync:   ": item-after-sync",
+			AfterApply:  ": item-after-apply",
+			Rollback: config.RollbackHooks{
+				BeforeApply: ": undo-item-before-apply",
+				BeforeSync:  ": undo-item-before-sync",
+				AfterSync:   ": undo-item-after-sync",
+				AfterApply:  ": undo-item-after-apply",
+			},
+		},
+	}
+	mod := config.Module{
+		Name:  "hook-lifo",
+		Items: []config.Item{item},
+		Hooks: config.ModuleHooks{
+			BeforeApply: ": module-before-apply",
+			BeforeSync:  ": module-before-sync",
+			AfterSync:   ": module-after-sync",
+			AfterApply:  ": module-after-apply",
+			Rollback: config.RollbackHooks{
+				BeforeApply: ": undo-module-before-apply",
+				BeforeSync:  ": undo-module-before-sync",
+				AfterSync:   ": undo-module-after-sync",
+				AfterApply:  ": undo-module-after-apply",
+			},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, afterApplyErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(afterApplyErr)", result.Err)
+	}
+	wantTail := []string{
+		": undo-module-after-apply",
+		": undo-module-after-sync",
+		": undo-item-after-apply",
+		": undo-item-after-sync",
+		"undo-action",
+		": undo-item-before-sync",
+		": undo-item-before-apply",
+		": undo-module-before-sync",
+		": undo-module-before-apply",
+	}
+	if len(trace) < len(wantTail) {
+		t.Fatalf("trace = %v, want rollback tail %v", trace, wantTail)
+	}
+	gotTail := trace[len(trace)-len(wantTail):]
+	if !reflect.DeepEqual(gotTail, wantTail) {
+		t.Fatalf("rollback order = %v, want %v", gotTail, wantTail)
+	}
+	if result.Applied != 0 || result.RolledBack != 10 ||
+		result.RollbackFailed != 0 || result.Uncompensated != 0 {
+		t.Fatalf("ModuleResult = %+v, want zero committed and 10 rollback operations", result)
+	}
+}
+
+func TestApplyModuleAtomicCompensatesFailedActionAttemptAndVerifyFailure(t *testing.T) {
+	tests := []struct {
+		name      string
+		actionErr error
+		verify    string
+	}{
+		{name: "action failure", actionErr: errors.New("action failed")},
+		{name: "verify failure", verify: ": verify"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			compensated := false
+			action := &lifecycleAction{
+				description: "attempted action",
+				prepare: func(context.Context) (actions.CompensationPreparation, error) {
+					return actions.CompensationPreparation{
+						Compensation: lifecycleCompensation{
+							description: "undo attempted action",
+							run: func(context.Context) error {
+								compensated = true
+								return nil
+							},
+						},
+					}, nil
+				},
+				run: func(context.Context) error {
+					return test.actionErr
+				},
+			}
+			r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"attempt": action})
+			verifyErr := errors.New("verify failed")
+			r.shellRun = func(_ context.Context, command string) error {
+				if command == test.verify && test.verify != "" {
+					return verifyErr
+				}
+				return nil
+			}
+			mod := config.Module{
+				Name:  "failed-attempt-" + test.name,
+				Items: []config.Item{{Run: "attempt", Verify: test.verify}},
+			}
+
+			result := r.ApplyModule(context.Background(), mod)
+			if result.Err == nil {
+				t.Fatal("ApplyModule() error = nil, want forward error")
+			}
+			if !compensated {
+				t.Fatal("failed attempted action was not compensated")
+			}
+			if result.Applied != 0 || result.RolledBack != 2 {
+				t.Fatalf("ModuleResult = %+v, want zero committed and action+snapshot rollback", result)
+			}
+		})
+	}
+}
+
+func TestApplyModuleAtomicUsesTypedCompensationBeforeExplicitFallback(t *testing.T) {
+	var trace []string
+	typed := &lifecycleAction{
+		description: "typed",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "typed rollback",
+					run: func(context.Context) error {
+						trace = append(trace, "typed")
+						return nil
+					},
+				},
+			}, nil
+		},
+	}
+	fallback := &lifecycleAction{
+		description: "fallback",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{UnavailableReason: "capture unavailable"}, nil
+		},
+	}
+	failureErr := errors.New("stop")
+	failure := &lifecycleAction{
+		description: "failure",
+		run: func(context.Context) error {
+			return failureErr
+		},
+	}
+	r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{
+		"typed":    typed,
+		"fallback": fallback,
+		"failure":  failure,
+	})
+	warningSeenBeforeExecution := false
+	failure.run = func(context.Context) error {
+		warningSeenBeforeExecution = containsStr(errOut.String(), "no automatic compensation")
+		return failureErr
+	}
+	r.shellRun = func(_ context.Context, command string) error {
+		trace = append(trace, command)
+		return nil
+	}
+	mod := config.Module{
+		Name: "compensation-precedence",
+		Items: []config.Item{
+			{Run: "typed", Rollback: ": explicit-typed"},
+			{Run: "fallback", Rollback: ": explicit-fallback"},
+			{Run: "failure"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, failureErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(failureErr)", result.Err)
+	}
+	if strings.Contains(strings.Join(trace, "\n"), "explicit-typed") {
+		t.Fatalf("typed compensation incorrectly ran explicit fallback: %v", trace)
+	}
+	if !containsStr(strings.Join(trace, "\n"), "explicit-fallback") {
+		t.Fatalf("unavailable typed capture did not run explicit fallback: %v", trace)
+	}
+	if result.RolledBack != 3 || result.Uncompensated != 1 {
+		t.Fatalf("ModuleResult = %+v, want typed+fallback+snapshot and one uncompensated", result)
+	}
+	if !containsStr(errOut.String(), "no automatic compensation") {
+		t.Fatalf("warning output = %q, want unavailable warning before execution", errOut.String())
+	}
+	if !warningSeenBeforeExecution {
+		t.Fatal("unavailable compensation warning was not emitted before action execution")
+	}
+}
+
+func TestApplyModuleAtomicRollbackFailuresContinueAndAuditTruthfully(t *testing.T) {
+	rollbackErr := errors.New("explicit rollback failed")
+	var trace []string
+	succeeded := &lifecycleAction{
+		description: "typed success",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "typed success rollback",
+					run: func(context.Context) error {
+						trace = append(trace, "typed-success")
+						return nil
+					},
+				},
+			}, nil
+		},
+	}
+	fallbackFailure := &lifecycleAction{
+		description: "fallback failure",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{UnavailableReason: "typed unavailable"}, nil
+		},
+	}
+	forwardErr := errors.New("forward failure")
+	uncompensatedFailure := &lifecycleAction{
+		description: "uncompensated failure",
+		run: func(context.Context) error {
+			return forwardErr
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"success":            succeeded,
+		"fallback-failure":   fallbackFailure,
+		"uncompensated-stop": uncompensatedFailure,
+	})
+	r.shellRun = func(_ context.Context, command string) error {
+		trace = append(trace, command)
+		if command == ": failing-fallback" {
+			return rollbackErr
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name: "truthful-rollback-report",
+		Items: []config.Item{
+			{Run: "success"},
+			{Run: "fallback-failure", Rollback: ": failing-fallback"},
+			{Run: "uncompensated-stop"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, forwardErr) || !errors.Is(result.Err, rollbackErr) {
+		t.Fatalf("ApplyModule() error = %v, want joined forward and rollback errors", result.Err)
+	}
+	if result.Applied != 0 || result.RolledBack != 2 ||
+		result.RollbackFailed != 1 || result.Uncompensated != 1 {
+		t.Fatalf("ModuleResult = %+v, want rolled_back=2 rollback_failed=1 uncompensated=1", result)
+	}
+	if !reflect.DeepEqual(trace, []string{": failing-fallback", "typed-success"}) {
+		t.Fatalf("rollback trace = %v, want failure then continued typed compensation", trace)
+	}
+	entries, err := audit.Read(mod.Name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rollbackEntries []audit.Entry
+	for _, entry := range entries {
+		if entry.Phase == "rollback" {
+			rollbackEntries = append(rollbackEntries, entry)
+		}
+	}
+	var outcomes []string
+	for _, entry := range rollbackEntries {
+		outcomes = append(outcomes, entry.Outcome)
+		if entry.Scope == "" || entry.Item == "" {
+			t.Fatalf("rollback audit entry lacks identity: %+v", entry)
+		}
+	}
+	wantOutcomes := []string{"uncompensated", "rollback_failed", "rolled_back", "rolled_back"}
+	if !reflect.DeepEqual(outcomes, wantOutcomes) {
+		t.Fatalf("rollback audit outcomes = %v, want %v", outcomes, wantOutcomes)
+	}
+}
+
+func TestApplyModuleAtomicRollbackUsesFreshContext(t *testing.T) {
+	type contextKey string
+	const key contextKey = "rollback-value"
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), key, "kept"))
+	compensated := false
+	action := &lifecycleAction{
+		description: "cancel forward",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "fresh cleanup",
+					run: func(cleanupCtx context.Context) error {
+						if cleanupCtx.Err() != nil {
+							t.Fatalf("cleanup context already canceled: %v", cleanupCtx.Err())
+						}
+						if cleanupCtx.Value(key) != "kept" {
+							t.Fatalf("cleanup context lost caller value: %v", cleanupCtx.Value(key))
+						}
+						compensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			cancel()
+			return context.Canceled
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"cancel": action})
+	mod := config.Module{Name: "fresh-context", Items: []config.Item{{Run: "cancel"}}}
+
+	result := r.ApplyModule(ctx, mod)
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("ApplyModule() error = %v, want context.Canceled", result.Err)
+	}
+	if !compensated {
+		t.Fatal("compensation did not run on a fresh cleanup context")
+	}
+}
+
+func TestApplyModuleNoAtomicBypassesRollbackPreparation(t *testing.T) {
+	prepared := false
+	compensated := false
+	actionErr := errors.New("non-atomic failure")
+	action := &lifecycleAction{
+		description: "non-atomic action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			prepared = true
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "must not run",
+					run: func(context.Context) error {
+						compensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			return actionErr
+		},
+	}
+	r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{"non-atomic": action})
+	r.Atomic = false
+	mod := config.Module{
+		Name:  "no-atomic",
+		Items: []config.Item{{Run: "non-atomic", Rollback: "'invalid syntax"}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, actionErr) {
+		t.Fatalf("ApplyModule() error = %v, want action error without rollback validation", result.Err)
+	}
+	if prepared || compensated {
+		t.Fatalf("non-atomic rollback state used: prepared=%v compensated=%v", prepared, compensated)
+	}
+	if result.RolledBack != 0 || result.RollbackFailed != 0 || result.Uncompensated != 0 {
+		t.Fatalf("non-atomic ModuleResult has rollback counts: %+v", result)
+	}
+	if containsStr(errOut.String(), "rollback") || containsStr(errOut.String(), "compensation") {
+		t.Fatalf("non-atomic warning output = %q, want no rollback warning", errOut.String())
+	}
+}
+
+func TestApplyModuleAtomicPanicUnwindsAndRepanicsSameValue(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	panicValue := &struct{ message string }{message: "identical panic"}
+	compensated := false
+	action := &lifecycleAction{
+		description: "panic action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "undo panic action",
+					run: func(context.Context) error {
+						compensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			panic(panicValue)
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"panic": action})
+	mod := config.Module{Name: "panic-unwind", Items: []config.Item{{Run: "panic"}}}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		r.ApplyModule(context.Background(), mod)
+	}()
+	if recovered != panicValue {
+		t.Fatalf("recovered panic = %#v, want identical %#v", recovered, panicValue)
+	}
+	if !compensated {
+		t.Fatal("panic did not unwind active action")
+	}
+	assertNoSnapshotFiles(t, tempRoot)
+}
+
+func TestApplyModuleAtomicCapturesPackageAndSettingBeforeModuleHook(t *testing.T) {
+	tests := []struct {
+		name string
+		item config.Item
+	}{
+		{name: "package", item: config.Item{Package: "pkg", Via: "brew"}},
+		{name: "setting", item: config.Item{Setting: "domain", Key: "key", Value: "value"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prepared := false
+			actionRan := false
+			action := &lifecycleAction{
+				description: test.name + " action",
+				prepare: func(context.Context) (actions.CompensationPreparation, error) {
+					prepared = true
+					return actions.CompensationPreparation{AlreadyApplied: true}, nil
+				},
+				run: func(context.Context) error {
+					actionRan = true
+					return nil
+				},
+			}
+			r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+				test.item.PrimaryValue(): action,
+			})
+			r.shellRun = func(context.Context, string) error {
+				if !prepared {
+					t.Fatalf("module hook ran before %s state capture", test.name)
+				}
+				return nil
+			}
+			mod := config.Module{
+				Name:  "capture-" + test.name,
+				Hooks: config.ModuleHooks{BeforeApply: ": before"},
+				Items: []config.Item{test.item},
+			}
+
+			result := r.ApplyModule(context.Background(), mod)
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			if actionRan {
+				t.Fatalf("conclusively present %s action ran", test.name)
+			}
+			if result.Skipped != 1 {
+				t.Fatalf("ModuleResult = %+v, want one already-applied skip", result)
+			}
+		})
+	}
+}
+
+func TestApplyModuleAtomicCommitsOnlyAfterModuleAfterApply(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	compensationRan := false
+	action := &lifecycleAction{
+		description: "successful action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "unused compensation",
+					run: func(context.Context) error {
+						compensationRan = true
+						return nil
+					},
+				},
+			}, nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"success": action})
+	afterApplySawSnapshot := false
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": after" {
+			entries, err := os.ReadDir(tempRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			afterApplySawSnapshot = len(entries) == 1
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name:  "commit-after-hook",
+		Items: []config.Item{{Run: "success"}},
+		Hooks: config.ModuleHooks{AfterApply: ": after"},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if !afterApplySawSnapshot {
+		t.Fatal("snapshot was discarded before module after_apply")
+	}
+	if compensationRan {
+		t.Fatal("successful transaction ran compensation")
+	}
+	assertNoSnapshotFiles(t, tempRoot)
+}
+
+type liveIdempotentAction struct {
+	description string
+	isApplied   func(context.Context) (bool, error)
+	run         func(context.Context) error
+}
+
+func (a *liveIdempotentAction) Describe() string {
+	return a.description
+}
+
+func (a *liveIdempotentAction) IsApplied(ctx context.Context) (bool, error) {
+	return a.isApplied(ctx)
+}
+
+func (a *liveIdempotentAction) Run(ctx context.Context, _ bool) error {
+	return a.run(ctx)
+}
+
+func TestApplyModuleAtomicEvaluatesSkipIfAtOriginalItemPosition(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "earlier-item-finished")
+	t.Setenv("DOTULAR_LIVE_MARKER", marker)
+	laterRan := false
+	earlier := &lifecycleAction{
+		description: "create live skip state",
+		run: func(context.Context) error {
+			return os.WriteFile(marker, []byte("ready"), 0o600)
+		},
+	}
+	later := &lifecycleAction{
+		description: "live skip_if action",
+		run: func(context.Context) error {
+			laterRan = true
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"earlier": earlier,
+		"later":   later,
+	})
+	mod := config.Module{
+		Name: "live-skip-if",
+		Items: []config.Item{
+			{Run: "earlier"},
+			{Run: "later", SkipIf: `test -f "$DOTULAR_LIVE_MARKER"`},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if laterRan {
+		t.Fatal("skip_if was evaluated before the earlier item established its live state")
+	}
+	if result.Applied != 1 || result.Skipped != 1 {
+		t.Fatalf("ModuleResult = %+v, want one applied and one live skip", result)
+	}
+}
+
+func TestApplyModuleAtomicChecksIdempotencyAtOriginalItemPosition(t *testing.T) {
+	stateEstablished := false
+	idempotencyChecks := 0
+	laterRan := false
+	earlier := &lifecycleAction{
+		description: "establish idempotent state",
+		run: func(context.Context) error {
+			stateEstablished = true
+			return nil
+		},
+	}
+	later := &liveIdempotentAction{
+		description: "live idempotent action",
+		isApplied: func(context.Context) (bool, error) {
+			idempotencyChecks++
+			return stateEstablished, nil
+		},
+		run: func(context.Context) error {
+			laterRan = true
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"earlier-idempotent": earlier,
+		"later-idempotent":   later,
+	})
+	mod := config.Module{
+		Name: "live-idempotency",
+		Items: []config.Item{
+			{Run: "earlier-idempotent"},
+			{Run: "later-idempotent"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if laterRan {
+		t.Fatal("idempotency was checked before the earlier item established live state")
+	}
+	if idempotencyChecks != 1 {
+		t.Fatalf("idempotency checks = %d, want one live check", idempotencyChecks)
+	}
+	if result.Applied != 1 || result.Skipped != 1 {
+		t.Fatalf("ModuleResult = %+v, want one applied and one already-applied skip", result)
+	}
+}
+
+func TestApplyModuleAtomicPreservesForwardPanicWhenRollbackPanics(t *testing.T) {
+	tempRoot := t.TempDir()
+	t.Setenv("TMPDIR", tempRoot)
+	forwardPanic := &struct{ message string }{message: "forward panic"}
+	rollbackPanic := errors.New("rollback panic")
+	earlierCompensated := false
+	earlier := &lifecycleAction{
+		description: "earlier action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "earlier compensation",
+					run: func(context.Context) error {
+						earlierCompensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+	}
+	panicking := &lifecycleAction{
+		description: "panicking action",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "panicking compensation",
+					run: func(context.Context) error {
+						panic(rollbackPanic)
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			panic(forwardPanic)
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"earlier-panic": earlier,
+		"forward-panic": panicking,
+	})
+	mod := config.Module{
+		Name: "preserve-forward-panic",
+		Items: []config.Item{
+			{Run: "earlier-panic"},
+			{Run: "forward-panic"},
+		},
+	}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		r.ApplyModule(context.Background(), mod)
+	}()
+	if recovered != forwardPanic {
+		t.Fatalf("recovered panic = %#v, want identical forward panic %#v", recovered, forwardPanic)
+	}
+	if !earlierCompensated {
+		t.Fatal("rollback stopped after a compensation panic")
+	}
+	assertNoSnapshotFiles(t, tempRoot)
+}
+
+type preparingIdempotentAction struct {
+	description string
+	prepare     func(context.Context) (actions.CompensationPreparation, error)
+	isApplied   func(context.Context) (bool, error)
+	run         func(context.Context) error
+}
+
+func (a *preparingIdempotentAction) Describe() string {
+	return a.description
+}
+
+func (a *preparingIdempotentAction) PrepareCompensation(ctx context.Context) (actions.CompensationPreparation, error) {
+	return a.prepare(ctx)
+}
+
+func (a *preparingIdempotentAction) IsApplied(ctx context.Context) (bool, error) {
+	return a.isApplied(ctx)
+}
+
+func (a *preparingIdempotentAction) Run(ctx context.Context, _ bool) error {
+	return a.run(ctx)
+}
+
+func TestApplyModuleAtomicLiveChecksPreparingIdempotentBeforeActivation(t *testing.T) {
+	stateEstablished := false
+	prepared := false
+	idempotencyChecks := 0
+	laterRan := false
+	laterCompensated := false
+	earlier := &lifecycleAction{
+		description: "establish package-like state",
+		run: func(context.Context) error {
+			stateEstablished = true
+			return nil
+		},
+	}
+	later := &preparingIdempotentAction{
+		description: "package-like preparing idempotent",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			prepared = true
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "prepared package-like compensation",
+					run: func(context.Context) error {
+						laterCompensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+		isApplied: func(context.Context) (bool, error) {
+			idempotencyChecks++
+			if !prepared {
+				t.Fatal("live idempotency ran before compensation preflight")
+			}
+			return stateEstablished, nil
+		},
+		run: func(context.Context) error {
+			laterRan = true
+			return nil
+		},
+	}
+	stopErr := errors.New("stop after live skip")
+	stop := &lifecycleAction{
+		description: "later failure",
+		run: func(context.Context) error {
+			return stopErr
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"establish-state": earlier,
+		"package-like":    later,
+		"stop-live-skip":  stop,
+	})
+	mod := config.Module{
+		Name: "preparing-live-idempotency",
+		Items: []config.Item{
+			{Run: "establish-state"},
+			{Run: "package-like"},
+			{Run: "stop-live-skip"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, stopErr) {
+		t.Fatalf("ApplyModule() error = %v, want stop error", result.Err)
+	}
+	if idempotencyChecks != 1 {
+		t.Fatalf("idempotency checks = %d, want one live check", idempotencyChecks)
+	}
+	if laterRan {
+		t.Fatal("present preparing idempotent action ran")
+	}
+	if laterCompensated {
+		t.Fatal("prepared compensation activated for a live already-applied skip")
+	}
+	if result.Skipped != 1 {
+		t.Fatalf("ModuleResult = %+v, want one live already-applied skip", result)
+	}
+}
+
+func TestApplyModuleAtomicSuppressesUncompensatedWarningsForLiveSkips(t *testing.T) {
+	tests := []struct {
+		name   string
+		item   config.Item
+		action actions.Action
+	}{
+		{
+			name: "skip_if",
+			item: config.Item{
+				Run:    "skip-if-warning",
+				SkipIf: "true",
+				Hooks:  config.ItemHooks{BeforeApply: ": should-not-run"},
+			},
+			action: &lifecycleAction{
+				description: "skip_if uncompensated warning target",
+				run: func(context.Context) error {
+					t.Fatal("skip_if action ran")
+					return nil
+				},
+			},
+		},
+		{
+			name: "preparing idempotent",
+			item: config.Item{
+				Run:   "idempotent-warning",
+				Hooks: config.ItemHooks{BeforeApply: ": should-not-run"},
+			},
+			action: &preparingIdempotentAction{
+				description: "idempotent uncompensated warning target",
+				prepare: func(context.Context) (actions.CompensationPreparation, error) {
+					return actions.CompensationPreparation{
+						UnavailableReason: "capture unavailable",
+					}, nil
+				},
+				isApplied: func(context.Context) (bool, error) {
+					return true, nil
+				},
+				run: func(context.Context) error {
+					t.Fatal("already-applied action ran")
+					return nil
+				},
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{
+				test.item.PrimaryValue(): test.action,
+			})
+			r.shellRun = func(context.Context, string) error {
+				t.Fatal("hook for skipped item ran")
+				return nil
+			}
+			mod := config.Module{
+				Name:  "no-warning-" + test.name,
+				Items: []config.Item{test.item},
+			}
+
+			result := r.ApplyModule(context.Background(), mod)
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			if result.Skipped != 1 {
+				t.Fatalf("ModuleResult = %+v, want one live skip", result)
+			}
+			if errOut.Len() != 0 {
+				t.Fatalf("skipped item emitted uncompensated warning: %q", errOut.String())
+			}
+		})
+	}
 }

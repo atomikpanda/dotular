@@ -158,3 +158,67 @@ func TestReadWithLimit(t *testing.T) {
 		t.Errorf("expected at most 2 entries, got %d", len(entries))
 	}
 }
+
+func TestEntryRollbackIdentityJSON(t *testing.T) {
+	entry := Entry{
+		Command: "apply",
+		Module:  "dotfiles",
+		Item:    "install package \"git\" via apt",
+		Phase:   "rollback",
+		Scope:   "item",
+		Outcome: "rollback_failed",
+		Reason:  "typed capture unavailable",
+		Error:   "uninstall failed",
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Entry
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Phase != "rollback" || decoded.Scope != "item" {
+		t.Fatalf("decoded rollback identity = phase %q scope %q", decoded.Phase, decoded.Scope)
+	}
+	if decoded.Reason != entry.Reason || decoded.Error != entry.Error {
+		t.Fatalf("decoded rollback detail = %+v, want %+v", decoded, entry)
+	}
+}
+
+func TestEntryOldJSONRemainsReadableWithoutRollbackIdentity(t *testing.T) {
+	oldLine := []byte(`{"time":"2024-06-15T12:00:00Z","command":"apply","module":"old","item":"run old","outcome":"success"}`)
+	var entry Entry
+	if err := json.Unmarshal(oldLine, &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.Module != "old" || entry.Outcome != "success" {
+		t.Fatalf("decoded old entry = %+v", entry)
+	}
+	if entry.Phase != "" || entry.Scope != "" {
+		t.Fatalf("old entry gained rollback identity: %+v", entry)
+	}
+}
+
+func TestEntryForwardJSONOmitsRollbackIdentity(t *testing.T) {
+	data, err := json.Marshal(Entry{
+		Command: "apply",
+		Module:  "forward",
+		Item:    "run forward",
+		Outcome: "success",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fields["phase"]; ok {
+		t.Fatalf("forward JSON includes phase: %s", data)
+	}
+	if _, ok := fields["scope"]; ok {
+		t.Fatalf("forward JSON includes scope: %s", data)
+	}
+}
