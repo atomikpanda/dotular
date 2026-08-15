@@ -31,7 +31,8 @@ const (
 	outcomeFailed
 )
 
-const defaultRollbackTimeout = 2 * time.Minute
+// DefaultRollbackTimeout bounds compensation for callers that do not override it.
+const DefaultRollbackTimeout = 2 * time.Minute
 
 type preparedItem struct {
 	item                    config.Item
@@ -84,6 +85,7 @@ type Runner struct {
 	Verbose           bool
 	Atomic            bool // snapshot-and-rollback per module (default true)
 	RollbackTimeout   time.Duration
+	RollbackStarted   func()
 	OS                string
 	MachineTags       []string
 	IgnoreTags        bool
@@ -105,7 +107,7 @@ func New(cfg config.Config, dryRun, verbose, atomic bool) *Runner {
 		DryRun:          dryRun,
 		Verbose:         verbose,
 		Atomic:          atomic,
-		RollbackTimeout: defaultRollbackTimeout,
+		RollbackTimeout: DefaultRollbackTimeout,
 		OS:              platform.Current(),
 		Out:             os.Stdout,
 		Command:         "apply",
@@ -843,10 +845,13 @@ func (r *Runner) rollbackTransaction(
 ) rollbackReport {
 	timeout := r.RollbackTimeout
 	if timeout <= 0 {
-		timeout = defaultRollbackTimeout
+		timeout = DefaultRollbackTimeout
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
+	if r.RollbackStarted != nil {
+		r.RollbackStarted()
+	}
 	return transaction.rollback(cleanupCtx, cause)
 }
 

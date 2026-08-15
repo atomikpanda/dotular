@@ -570,7 +570,7 @@ modules:
 	noAtomic = false
 
 	cfg, _ := loadConfig()
-	r := newRunner(cfg)
+	r := newRunner(cfg, defaultMutationOptions())
 	if r == nil {
 		t.Fatal("newRunner() returned nil")
 	}
@@ -2568,5 +2568,168 @@ func TestBadFlagValueIsUsageError(t *testing.T) {
 	err := root.Execute()
 	if got := exitCode(err); got != exitUsage {
 		t.Fatalf("exitCode(%v) = %d, want %d", err, got, exitUsage)
+	}
+}
+
+func TestMutatingCommandsExposeRollbackControls(t *testing.T) {
+	for _, name := range []string{"apply", "push", "pull", "sync"} {
+		t.Run(name, func(t *testing.T) {
+			root := buildRoot()
+			cmd, _, err := root.Find([]string{name})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			timeoutFlag := cmd.Flags().Lookup("rollback-timeout")
+			if timeoutFlag == nil {
+				t.Fatal("--rollback-timeout flag not found")
+			}
+			timeout, err := time.ParseDuration(timeoutFlag.DefValue)
+			if err != nil {
+				t.Fatalf("parse default rollback timeout %q: %v", timeoutFlag.DefValue, err)
+			}
+			if timeout != 2*time.Minute {
+				t.Errorf("--rollback-timeout default = %v, want 2m", timeout)
+			}
+			if cmd.InheritedFlags().Lookup("no-atomic") == nil {
+				t.Error("--no-atomic flag not found")
+			}
+		})
+	}
+}
+
+func TestNonMutatingCommandsDoNotExposeRollbackControls(t *testing.T) {
+	for _, name := range []string{"list", "status", "platform", "verify"} {
+		t.Run(name, func(t *testing.T) {
+			root := buildRoot()
+			cmd, _, err := root.Find([]string{name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd.Flags().Lookup("rollback-timeout") != nil ||
+				cmd.InheritedFlags().Lookup("rollback-timeout") != nil {
+				t.Errorf("%s unexpectedly exposes --rollback-timeout", name)
+			}
+		})
+	}
+}
+
+func TestRollbackTimeoutValidationPrecedesConfigLoading(t *testing.T) {
+	for _, command := range []string{"apply", "push", "pull", "sync"} {
+		for _, value := range []string{"0", "-1s", "not-a-duration"} {
+			t.Run(command+"/"+value, func(t *testing.T) {
+				root := buildRoot()
+				root.SetOut(io.Discard)
+				root.SetErr(io.Discard)
+				root.SetArgs([]string{
+					command,
+					"--rollback-timeout=" + value,
+					"--config", filepath.Join(t.TempDir(), "missing.yaml"),
+				})
+
+				err := root.Execute()
+				if got := exitCode(err); got != exitUsage {
+					t.Fatalf("exit code = %d, want %d; error = %v", got, exitUsage, err)
+				}
+				if err == nil || !strings.Contains(err.Error(), "rollback-timeout") {
+					t.Fatalf("error = %v, want rollback-timeout usage error", err)
+				}
+				if strings.Contains(err.Error(), "missing.yaml") {
+					t.Fatalf("validation reached config loading: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestNewRunnerReceivesMutationOptions(t *testing.T) {
+	previousNoAtomic := noAtomic
+	noAtomic = true
+	t.Cleanup(func() { noAtomic = previousNoAtomic })
+
+	r := newRunner(config.Config{}, mutationOptions{
+		rollbackTimeout: 17 * time.Second,
+	})
+	if r.RollbackTimeout != 17*time.Second {
+		t.Errorf("RollbackTimeout = %v, want 17s", r.RollbackTimeout)
+	}
+	if r.Atomic {
+		t.Error("Atomic = true with --no-atomic")
+	}
+}
+
+func TestCanceledCommandContextReachesResolutionAndRunner(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+`, ref))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	root := buildRoot()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"apply", "--dry-run", "--config", path})
+	err := root.ExecuteContext(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("registry requests = %d, want 0 for already-canceled context", got)
+	}
+}
+
+func TestMutatingCommandsMarkRollbackCapabilityOnlyWhenRollbackPossible(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMarked bool
+	}{
+		{
+			name:       "atomic apply",
+			args:       []string{"apply"},
+			wantMarked: true,
+		},
+		{
+			name: "dry run",
+			args: []string{"apply", "--dry-run"},
+		},
+		{
+			name: "no atomic",
+			args: []string{"apply", "--no-atomic"},
+		},
+		{
+			name: "non-mutating command",
+			args: []string{"list"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			marked := false
+			ctx := context.WithValue(
+				context.Background(),
+				rollbackCapableContextKey{},
+				func() { marked = true },
+			)
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs(append(
+				tt.args,
+				"--config",
+				filepath.Join(t.TempDir(), "missing.yaml"),
+			))
+			_ = root.ExecuteContext(ctx)
+
+			if marked != tt.wantMarked {
+				t.Fatalf("rollback-capable marker = %t, want %t", marked, tt.wantMarked)
+			}
+		})
 	}
 }

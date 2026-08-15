@@ -58,7 +58,7 @@ const (
 func main() {
 	color.Init()
 	root := buildRoot()
-	if err := root.Execute(); err != nil {
+	if err := executeRoot(root, os.Exit); err != nil {
 		os.Exit(exitCode(err))
 	}
 }
@@ -243,8 +243,41 @@ func loadAndResolveTaggedConfig(
 	return cfg, selected, nil
 }
 
-func newRunner(cfg config.Config) *runner.Runner {
-	return runner.New(cfg, dryRun, verbose, !noAtomic)
+type mutationOptions struct {
+	rollbackTimeout time.Duration
+}
+
+func defaultMutationOptions() mutationOptions {
+	return mutationOptions{rollbackTimeout: runner.DefaultRollbackTimeout}
+}
+
+func newRunner(cfg config.Config, options mutationOptions) *runner.Runner {
+	r := runner.New(cfg, dryRun, verbose, !noAtomic)
+	r.RollbackTimeout = options.rollbackTimeout
+	return r
+}
+
+func withMutationOptions(
+	cmd *cobra.Command,
+	run func(context.Context, mutationOptions, []string) error,
+) *cobra.Command {
+	options := defaultMutationOptions()
+	cmd.Flags().DurationVar(
+		&options.rollbackTimeout,
+		"rollback-timeout",
+		runner.DefaultRollbackTimeout,
+		"maximum time allowed for rollback",
+	)
+	cmd.RunE = func(cmd *cobra.Command, args []string) error {
+		if options.rollbackTimeout <= 0 {
+			return usageErrorf("--rollback-timeout must be greater than zero")
+		}
+		if !noAtomic && !dryRun {
+			markRollbackCapableFromContext(cmd.Context())
+		}
+		return run(cmd.Context(), options, args)
+	}
+	return cmd
 }
 
 func addIgnoreTagsFlag(cmd *cobra.Command, target *bool) {
@@ -272,9 +305,6 @@ managed store and records it in the config YAML.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
 			if err := config.ValidateDirection(direction); err != nil {
 				return usageErrorf("invalid --direction: %v", err)
 			}
@@ -480,21 +510,23 @@ func applyCmd() *cobra.Command {
   dotular apply homebrew "Visual Studio Code"
   dotular apply --dry-run
   dotular apply --no-atomic`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return withMutationOptions(
+		cmd,
+		func(ctx context.Context, options mutationOptions, args []string) error {
 			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
-			r := newRunner(cfg)
+			r := newRunner(cfg, options)
 			r.MachineTags = selected.machineTags
 			r.IgnoreTags = ignoreTags
+			r.RollbackStarted = rollbackStartedFromContext(ctx)
 
 			return applyNamedModules(ctx, r, cfg, selected, args)
 		},
-	}
-	addIgnoreTagsFlag(cmd, &ignoreTags)
-	return cmd
+	)
 }
 
 func inactiveModuleError(name string) error {
@@ -587,23 +619,25 @@ func directionCmd(direction, short string) *cobra.Command {
 		Example: fmt.Sprintf(`  dotular %[1]s
   dotular %[1]s "Visual Studio Code"
   dotular %[1]s --dry-run`, direction),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return withMutationOptions(
+		cmd,
+		func(ctx context.Context, options mutationOptions, args []string) error {
 			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
-			r := newRunner(cfg)
+			r := newRunner(cfg, options)
 			r.MachineTags = selected.machineTags
 			r.IgnoreTags = ignoreTags
+			r.RollbackStarted = rollbackStartedFromContext(ctx)
 			r.Command = direction
 			r.DirectionOverride = direction
 
 			return applyNamedModules(ctx, r, cfg, selected, args)
 		},
-	}
-	addIgnoreTagsFlag(cmd, &ignoreTags)
-	return cmd
+	)
 }
 
 // --- list --------------------------------------------------------------------
@@ -613,7 +647,7 @@ func listCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all modules defined in the config",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			selected, err := loadTaggedConfig(false)
 			if err != nil {
 				return err
@@ -683,7 +717,7 @@ func statusCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show what would be applied for the current platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, nil)
 			if err != nil {
 				return err
@@ -725,7 +759,7 @@ func verifyCmd() *cobra.Command {
 		Example: `  dotular verify
   dotular verify "Visual Studio Code"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
@@ -1029,7 +1063,7 @@ func registryCmd() *cobra.Command {
 			}
 
 			// Default: fetch and display remote index.
-			ctx := context.Background()
+			ctx := cmd.Context()
 			entries, err := registry.FetchIndex(ctx, u)
 			if err != nil {
 				return err
@@ -1060,7 +1094,7 @@ func registryCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -1165,7 +1199,7 @@ func initCmd() *cobra.Command {
 them against the official module registry, and lets you pick which
 modules to add to your dotular.yaml.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 			u := ui.New(os.Stdout, os.Stderr)
 
 			// Validate the config before registry fetches can mutate cache or lock state.
