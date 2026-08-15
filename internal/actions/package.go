@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -14,8 +12,6 @@ import (
 
 	"github.com/atomikpanda/dotular/internal/color"
 )
-
-type packageCommandExecutor func(context.Context, []string, bool) ([]byte, error)
 
 type packageState uint8
 
@@ -35,7 +31,7 @@ type PackageAction struct {
 	Package string
 	Manager string // e.g. "brew", "winget", "apt"
 
-	executor packageCommandExecutor
+	executor commandExecutor
 }
 
 func (a *PackageAction) Describe() string {
@@ -123,7 +119,7 @@ func (a *PackageAction) captureState(ctx context.Context) (packageState, string,
 	return state, "", nil
 }
 
-func (a *PackageAction) commandExecutor() packageCommandExecutor {
+func (a *PackageAction) commandExecutor() commandExecutor {
 	if a.executor != nil {
 		return a.executor
 	}
@@ -134,7 +130,7 @@ type packageCompensation struct {
 	manager  string
 	pkg      string
 	args     []string
-	executor packageCommandExecutor
+	executor commandExecutor
 }
 
 func (c *packageCompensation) Describe() string {
@@ -149,28 +145,11 @@ func (c *packageCompensation) Run(ctx context.Context) error {
 }
 
 func executePackageCommand(ctx context.Context, args []string, captureOutput bool) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	if captureOutput {
-		output, err := cmd.Output()
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return output, fmt.Errorf("package command %q: %w", args, ctxErr)
-		}
-		if err != nil {
-			return output, fmt.Errorf("package command %q: %w", args, err)
-		}
-		return output, nil
+	output, err := executeCommand(ctx, args, captureOutput)
+	if err != nil {
+		return output, fmt.Errorf("package command %q: %w", args, err)
 	}
-
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("package command %q: %w", args, ctxErr)
-		}
-		return nil, fmt.Errorf("package command %q: %w", args, err)
-	}
-	return nil, nil
+	return output, nil
 }
 
 // CheckArgs returns a per-package check whose exit status indicates whether pkg
