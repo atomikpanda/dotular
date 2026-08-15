@@ -631,8 +631,8 @@ capture, compensation, warnings, and rollback events. Strict YAML decoding,
 configuration validation, and template validation still apply.
 
 The first supported termination signal (SIGINT, and SIGTERM on Unix) cancels
-forward work and starts rollback. A subsequent signal after rollback starts
-terminates immediately.
+forward work and starts rollback. A second supported termination signal
+terminates immediately, whether rollback has started or not.
 SIGKILL, power loss, kernel failure, and process death cannot be recovered.
 Package dependency removal, automatic reversal of undeclared command effects,
 compensation retries, durable recovery, and restartable transactions are also

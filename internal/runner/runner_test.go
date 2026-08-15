@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -575,6 +576,27 @@ func TestApplyAllDryRun(t *testing.T) {
 	r := newTestRunner(cfg)
 	if err := r.ApplyAll(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestApplyAllValidationFailureMarksFinalSummaryFailed(t *testing.T) {
+	cfg := config.Config{
+		Modules: []config.Module{{
+			Name:  "invalid",
+			Items: []config.Item{{Run: "true", Script: "setup.sh"}},
+		}},
+	}
+	r := newTestRunner(cfg)
+	var out bytes.Buffer
+	r.Out = &out
+	r.UI = ui.New(&out, &bytes.Buffer{})
+
+	if err := r.ApplyAll(context.Background()); err == nil {
+		t.Fatal("ApplyAll() error = nil, want validation failure")
+	}
+	const failedSummary = "[FAIL] 0 applied, 0 skipped, 0 failed"
+	if output := out.String(); !strings.Contains(output, failedSummary) {
+		t.Fatalf("validation failure summary = %q, want %q", output, failedSummary)
 	}
 }
 
@@ -1697,9 +1719,221 @@ func TestApplyModuleAtomicHookAndActionRollbackIsStrictLIFO(t *testing.T) {
 	if !reflect.DeepEqual(gotTail, wantTail) {
 		t.Fatalf("rollback order = %v, want %v", gotTail, wantTail)
 	}
-	if result.Applied != 0 || result.RolledBack != 10 ||
+	if result.Applied != 0 || result.RolledBack != 1 ||
 		result.RollbackFailed != 0 || result.Uncompensated != 0 {
-		t.Fatalf("ModuleResult = %+v, want zero committed and 10 rollback operations", result)
+		t.Fatalf("ModuleResult = %+v, want one rolled-back item outcome", result)
+	}
+}
+
+func TestApplyModuleAtomicCountsOneRollbackOutcomePerAttemptedFilesystemItem(t *testing.T) {
+	first := &lifecycleAction{
+		description: "first filesystem item",
+		writePaths:  []string{filepath.Join(t.TempDir(), "first")},
+	}
+	second := &lifecycleAction{
+		description: "second filesystem item",
+		writePaths:  []string{filepath.Join(t.TempDir(), "second")},
+	}
+	r, out, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"first":  first,
+		"second": second,
+	})
+	forwardErr := errors.New("module after_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": fail-module" {
+			return forwardErr
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name:  "filesystem-item-outcomes",
+		Items: []config.Item{{Run: "first"}, {Run: "second"}},
+		Hooks: config.ModuleHooks{
+			BeforeApply: ": before-module",
+			AfterApply:  ": fail-module",
+			Rollback: config.RollbackHooks{
+				BeforeApply: ": undo-before-module",
+				AfterApply:  ": undo-after-module",
+			},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, forwardErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
+	}
+	if result.Applied != 0 || result.RolledBack != 2 ||
+		result.RollbackFailed != 0 || result.Uncompensated != 0 {
+		t.Fatalf("ModuleResult = %+v, want exactly two rolled-back item outcomes", result)
+	}
+	if !strings.Contains(out.String(), "2 rolled back, 0 rollback failed, 0 uncompensated") {
+		t.Fatalf("module summary = %q, want two rolled-back item outcomes", out.String())
+	}
+}
+
+func TestApplyModuleAtomicMixedRollbackJournalCountsOnlyItems(t *testing.T) {
+	filesystem := &lifecycleAction{
+		description: "filesystem item",
+		writePaths:  []string{filepath.Join(t.TempDir(), "filesystem")},
+	}
+	typed := &lifecycleAction{
+		description: "typed item",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{description: "undo typed item"},
+			}, nil
+		},
+	}
+	explicit := &lifecycleAction{description: "explicit item"}
+	r, out, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"filesystem": filesystem,
+		"typed":      typed,
+		"explicit":   explicit,
+	})
+	forwardErr := errors.New("module after_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": fail-module" {
+			return forwardErr
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name: "mixed-item-outcomes",
+		Items: []config.Item{
+			{Run: "filesystem", Hooks: config.ItemHooks{
+				BeforeApply: ": before-filesystem",
+				Rollback:    config.RollbackHooks{BeforeApply: ": undo-before-filesystem"},
+			}},
+			{Run: "typed"},
+			{Run: "explicit", Rollback: ": undo-explicit"},
+		},
+		Hooks: config.ModuleHooks{
+			AfterApply: ": fail-module",
+			Rollback:   config.RollbackHooks{AfterApply: ": undo-after-module"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, forwardErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
+	}
+	outcomeCount := result.RolledBack + result.RollbackFailed + result.Uncompensated
+	if result.Applied != 0 || result.RolledBack != 3 ||
+		result.RollbackFailed != 0 || result.Uncompensated != 0 || outcomeCount != len(mod.Items) {
+		t.Fatalf("ModuleResult = %+v, want one rolled-back outcome per attempted item", result)
+	}
+
+	entries, err := audit.Read(mod.Name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawHook, sawSnapshot bool
+	var rollbackDetails int
+	rollbackDetailsByItem := make(map[string]int)
+	for _, entry := range entries {
+		if entry.Phase != "rollback" {
+			continue
+		}
+		rollbackDetails++
+		rollbackDetailsByItem[entry.Item]++
+		sawHook = sawHook || strings.Contains(entry.Item, "hook ")
+		sawSnapshot = sawSnapshot || strings.Contains(entry.Item, "snapshot restore")
+	}
+	if !sawHook || !sawSnapshot {
+		t.Fatalf("rollback audit details lack hook or snapshot row: %+v", entries)
+	}
+	if rollbackDetails <= outcomeCount {
+		t.Fatalf("rollback detail rows = %d, want more than %d item outcomes", rollbackDetails, outcomeCount)
+	}
+	for _, item := range []string{
+		"filesystem item [action]",
+		"typed item [action]",
+		"explicit item [action]",
+		"filesystem [snapshot restore]",
+	} {
+		if rollbackDetailsByItem[item] != 1 {
+			t.Fatalf("rollback audit detail count for %q = %d, want 1: %+v", item, rollbackDetailsByItem[item], entries)
+		}
+	}
+	if !strings.Contains(out.String(), `[rollback] mixed-item-outcomes item "filesystem item" action: rolled_back`) ||
+		!strings.Contains(out.String(), `[rollback] mixed-item-outcomes module "filesystem" snapshot restore: rolled_back`) {
+		t.Fatalf("rollback output lacks filesystem item or snapshot detail: %q", out.String())
+	}
+}
+
+func TestApplyModuleAtomicSnapshotFailureMarksFilesystemItemsRollbackFailed(t *testing.T) {
+	parent := t.TempDir()
+	firstPath := filepath.Join(parent, "first")
+	secondPath := filepath.Join(parent, "second")
+	for _, path := range []string{firstPath, secondPath} {
+		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := &lifecycleAction{
+		description: "first filesystem item",
+		writePaths:  []string{firstPath},
+	}
+	second := &lifecycleAction{
+		description: "second filesystem item",
+		writePaths:  []string{secondPath},
+		run: func(context.Context) error {
+			if err := os.RemoveAll(parent); err != nil {
+				return err
+			}
+			return os.WriteFile(parent, []byte("blocks snapshot restore"), 0o600)
+		},
+	}
+	r, out, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"first":  first,
+		"second": second,
+	})
+	forwardErr := errors.New("module after_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": fail-module" {
+			return forwardErr
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name:  "filesystem-snapshot-failure-outcomes",
+		Items: []config.Item{{Run: "first"}, {Run: "second"}},
+		Hooks: config.ModuleHooks{
+			AfterApply: ": fail-module",
+			Rollback:   config.RollbackHooks{AfterApply: ": undo-after-module"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, forwardErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
+	}
+	if result.Applied != 0 || result.RolledBack != 0 ||
+		result.RollbackFailed != 2 || result.Uncompensated != 0 {
+		t.Fatalf("ModuleResult = %+v, want exactly two rollback-failed filesystem item outcomes", result)
+	}
+	entries, err := audit.Read(mod.Name, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollbackOutcomes := make(map[string][]string)
+	for _, entry := range entries {
+		if entry.Phase == "rollback" {
+			rollbackOutcomes[entry.Item] = append(rollbackOutcomes[entry.Item], entry.Outcome)
+		}
+	}
+	for _, item := range []string{"first filesystem item [action]", "second filesystem item [action]"} {
+		if !reflect.DeepEqual(rollbackOutcomes[item], []string{rollbackOutcomeFailed}) {
+			t.Fatalf("rollback audit outcomes for %q = %v, want [%s]", item, rollbackOutcomes[item], rollbackOutcomeFailed)
+		}
+	}
+	if !reflect.DeepEqual(rollbackOutcomes["filesystem [snapshot restore]"], []string{rollbackOutcomeFailed}) {
+		t.Fatalf("snapshot rollback audit outcomes = %v, want [%s]", rollbackOutcomes["filesystem [snapshot restore]"], rollbackOutcomeFailed)
+	}
+	for _, item := range []string{"first filesystem item", "second filesystem item"} {
+		if !strings.Contains(out.String(), fmt.Sprintf(`item %q action: rollback_failed`, item)) {
+			t.Fatalf("rollback output lacks failed item outcome for %q: %q", item, out.String())
+		}
 	}
 }
 
@@ -1752,10 +1986,51 @@ func TestApplyModuleAtomicCompensatesFailedActionAttemptAndVerifyFailure(t *test
 			if !compensated {
 				t.Fatal("failed attempted action was not compensated")
 			}
-			if result.Applied != 0 || result.RolledBack != 2 {
-				t.Fatalf("ModuleResult = %+v, want zero committed and action+snapshot rollback", result)
+			if result.Applied != 0 || result.Failed != 0 || result.RolledBack != 1 {
+				t.Fatalf("ModuleResult = %+v, want only one rolled-back final item outcome", result)
 			}
 		})
+	}
+}
+
+func TestApplyModuleAtomicItemHookFailureBeforeAttemptDoesNotCountFailedItem(t *testing.T) {
+	actionRan := false
+	action := &lifecycleAction{
+		description: "not attempted",
+		run: func(context.Context) error {
+			actionRan = true
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"not-attempted": action})
+	hookErr := errors.New("before_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": fail-before" {
+			return hookErr
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name: "item-hook-before-attempt",
+		Items: []config.Item{{
+			Run: "not-attempted",
+			Hooks: config.ItemHooks{
+				BeforeApply: ": fail-before",
+				Rollback:    config.RollbackHooks{BeforeApply: ": undo-before"},
+			},
+		}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if !errors.Is(result.Err, hookErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(hookErr)", result.Err)
+	}
+	if actionRan {
+		t.Fatal("action ran after its before_apply hook failed")
+	}
+	if result.Failed != 0 || result.RolledBack != 0 ||
+		result.RollbackFailed != 0 || result.Uncompensated != 0 {
+		t.Fatalf("ModuleResult = %+v, want no final item outcome before action attempt", result)
 	}
 }
 
@@ -1821,8 +2096,8 @@ func TestApplyModuleAtomicUsesTypedCompensationBeforeExplicitFallback(t *testing
 	if !containsStr(strings.Join(trace, "\n"), "explicit-fallback") {
 		t.Fatalf("unavailable typed capture did not run explicit fallback: %v", trace)
 	}
-	if result.RolledBack != 3 || result.Uncompensated != 1 {
-		t.Fatalf("ModuleResult = %+v, want typed+fallback+snapshot and one uncompensated", result)
+	if result.RolledBack != 2 || result.Uncompensated != 1 {
+		t.Fatalf("ModuleResult = %+v, want typed and fallback rolled back plus one uncompensated item", result)
 	}
 	if !containsStr(errOut.String(), "no automatic compensation") {
 		t.Fatalf("warning output = %q, want unavailable warning before execution", errOut.String())
@@ -1887,9 +2162,9 @@ func TestApplyModuleAtomicRollbackFailuresContinueAndAuditTruthfully(t *testing.
 	if !errors.Is(result.Err, forwardErr) || !errors.Is(result.Err, rollbackErr) {
 		t.Fatalf("ApplyModule() error = %v, want joined forward and rollback errors", result.Err)
 	}
-	if result.Applied != 0 || result.RolledBack != 2 ||
+	if result.Applied != 0 || result.RolledBack != 1 ||
 		result.RollbackFailed != 1 || result.Uncompensated != 1 {
-		t.Fatalf("ModuleResult = %+v, want rolled_back=2 rollback_failed=1 uncompensated=1", result)
+		t.Fatalf("ModuleResult = %+v, want one outcome per attempted item", result)
 	}
 	if !reflect.DeepEqual(trace, []string{": failing-fallback", "typed-success"}) {
 		t.Fatalf("rollback trace = %v, want failure then continued typed compensation", trace)
@@ -1990,6 +2265,9 @@ func TestApplyModuleNoAtomicBypassesRollbackPreparation(t *testing.T) {
 	result := r.ApplyModule(context.Background(), mod)
 	if !errors.Is(result.Err, actionErr) {
 		t.Fatalf("ApplyModule() error = %v, want action error without rollback validation", result.Err)
+	}
+	if result.Failed != 1 {
+		t.Fatalf("non-atomic ModuleResult Failed = %d, want 1", result.Failed)
 	}
 	if prepared || compensated {
 		t.Fatalf("non-atomic rollback state used: prepared=%v compensated=%v", prepared, compensated)
@@ -2337,6 +2615,44 @@ func (a *preparingIdempotentAction) IsApplied(ctx context.Context) (bool, error)
 
 func (a *preparingIdempotentAction) Run(ctx context.Context, _ bool) error {
 	return a.run(ctx)
+}
+
+func TestApplyModuleAtomicSkipsConclusivePreparedPresenceWithoutLiveCheck(t *testing.T) {
+	idempotencyChecks := 0
+	actionRan := false
+	action := &preparingIdempotentAction{
+		description: "conclusively present package",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{AlreadyApplied: true}, nil
+		},
+		isApplied: func(context.Context) (bool, error) {
+			idempotencyChecks++
+			return false, nil
+		},
+		run: func(context.Context) error {
+			actionRan = true
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"present-package": action})
+	mod := config.Module{
+		Name:  "conclusive-prepared-presence",
+		Items: []config.Item{{Run: "present-package"}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if idempotencyChecks != 0 {
+		t.Fatalf("live idempotency checks = %d, want none after conclusive prepared presence", idempotencyChecks)
+	}
+	if actionRan {
+		t.Fatal("conclusively present prepared action ran")
+	}
+	if result.Applied != 0 || result.Skipped != 1 {
+		t.Fatalf("ModuleResult = %+v, want one conclusive prepared skip", result)
+	}
 }
 
 func TestApplyModuleAtomicLiveChecksPreparingIdempotentBeforeActivation(t *testing.T) {

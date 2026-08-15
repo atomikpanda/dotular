@@ -244,7 +244,7 @@ func TestSummarySuccess(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(10, 2, 1, 0, 0, 0, 0, 3*time.Second)
+	u.Summary(10, 2, 1, 0, 0, 0, 0, false, 3*time.Second)
 	got := out.String()
 	for _, want := range []string{"10 applied", "2 skipped", "1 unresolved", "0 failed", "(3.0s)", "[ok]"} {
 		if !strings.Contains(got, want) {
@@ -260,7 +260,7 @@ func TestSummaryWithFailures(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(5, 1, 0, 2, 0, 0, 0, 10*time.Second)
+	u.Summary(5, 1, 0, 2, 0, 0, 0, false, 10*time.Second)
 	got := out.String()
 	if !strings.Contains(got, "2 failed") {
 		t.Errorf("Summary output = %q, want to contain %q", got, "2 failed")
@@ -277,7 +277,7 @@ func TestSummaryAllSkipped(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.Summary(0, 5, 0, 0, 0, 0, 0, 1*time.Second)
+	u.Summary(0, 5, 0, 0, 0, 0, 0, false, 1*time.Second)
 	got := out.String()
 	// Should use dash icon when applied == 0
 	if !strings.Contains(got, "-") {
@@ -292,7 +292,7 @@ func TestModuleSummary(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.ModuleSummary(3, 1, 1, 0, 0, 0, 0)
+	u.ModuleSummary(3, 1, 1, 0, 0, 0, 0, false)
 	got := out.String()
 	if !strings.Contains(got, "3 applied") {
 		t.Errorf("ModuleSummary output = %q, want to contain %q", got, "3 applied")
@@ -459,8 +459,8 @@ func TestRollbackCountsAppearInModuleAndFinalSummaries(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.ModuleSummary(0, 1, 0, 1, 4, 2, 3)
-	u.Summary(0, 1, 0, 1, 4, 2, 3, time.Second)
+	u.ModuleSummary(0, 1, 0, 1, 4, 2, 3, false)
+	u.Summary(0, 1, 0, 1, 4, 2, 3, false, time.Second)
 
 	got := out.String()
 	for _, want := range []string{
@@ -481,11 +481,31 @@ func TestUncompensatedSummaryUsesFailureSeverity(t *testing.T) {
 
 	var out bytes.Buffer
 	u := New(&out, &bytes.Buffer{})
-	u.ModuleSummary(0, 0, 0, 0, 0, 0, 1)
-	u.Summary(0, 0, 0, 0, 0, 0, 1, time.Second)
+	u.ModuleSummary(0, 0, 0, 0, 0, 0, 1, false)
+	u.Summary(0, 0, 0, 0, 0, 0, 1, false, time.Second)
 
 	got := out.String()
 	if strings.Count(got, "[FAIL]") != 2 {
 		t.Fatalf("uncompensated summaries = %q, want failure severity in module and final lines", got)
+	}
+}
+
+func TestTransactionFailureSummaryUsesFailureSeverityWithoutItemFailures(t *testing.T) {
+	old := saveColor()
+	defer func() { color.Enabled = old }()
+	color.Enabled = false
+
+	var out bytes.Buffer
+	u := New(&out, &bytes.Buffer{})
+	u.ModuleSummary(0, 0, 0, 0, 0, 0, 0, true)
+	u.Summary(0, 0, 0, 0, 0, 0, 0, true, time.Second)
+
+	got := out.String()
+	const failedSummary = "[FAIL] 0 applied, 0 skipped, 0 failed"
+	if count := strings.Count(got, failedSummary); count != 2 {
+		t.Fatalf(
+			"transaction failure summaries = %q, want module and final failure severity with zero item failures",
+			got,
+		)
 	}
 }

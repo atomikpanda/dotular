@@ -28,6 +28,19 @@ type operationIdentity struct {
 	operation string
 }
 
+type rollbackAccountingSource uint8
+
+const (
+	rollbackAccountingNone rollbackAccountingSource = iota
+	rollbackAccountingItem
+	rollbackAccountingFilesystemSnapshot
+)
+
+type rollbackItemMarker struct {
+	identity operationIdentity
+	active   bool
+}
+
 type journalEntry struct {
 	identity          operationIdentity
 	compensation      actions.Compensation
@@ -35,6 +48,7 @@ type journalEntry struct {
 	unavailableReason string
 	active            bool
 	contextFree       bool
+	accountingSource  rollbackAccountingSource
 }
 
 type rollbackResult struct {
@@ -46,9 +60,10 @@ type rollbackResult struct {
 }
 
 type rollbackReport struct {
-	results    []rollbackResult
-	cleanupErr error
-	err        error
+	results      []rollbackResult
+	itemOutcomes []rollbackResult
+	cleanupErr   error
+	err          error
 }
 
 type transactionState uint8
@@ -69,12 +84,13 @@ type snapshotRecorder interface {
 }
 
 type moduleTransaction struct {
-	mu        sync.Mutex
-	entries   []*journalEntry
-	snapshot  moduleSnapshot
-	state     transactionState
-	report    rollbackReport
-	commitErr error
+	mu              sync.Mutex
+	entries         []*journalEntry
+	filesystemItems []*rollbackItemMarker
+	snapshot        moduleSnapshot
+	state           transactionState
+	report          rollbackReport
+	commitErr       error
 }
 
 type snapshotCompensation struct {
@@ -112,9 +128,10 @@ func newModuleTransactionWithSnapshot(snap moduleSnapshot) *moduleTransaction {
 			target:    "filesystem",
 			operation: "snapshot restore",
 		},
-		compensation: snapshotCompensation{snapshot: snap},
-		active:       true,
-		contextFree:  true,
+		compensation:     snapshotCompensation{snapshot: snap},
+		active:           true,
+		contextFree:      true,
+		accountingSource: rollbackAccountingFilesystemSnapshot,
 	})
 	return transaction
 }
@@ -159,6 +176,43 @@ func (t *moduleTransaction) deactivate(entry *journalEntry) error {
 	return errUnknownJournalEntry
 }
 
+// activateFilesystemItem records an attempted filesystem-backed item whose
+// final rollback outcome is determined by the shared snapshot restore.
+func (t *moduleTransaction) activateFilesystemItem(identity operationIdentity) (*rollbackItemMarker, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	switch t.state {
+	case transactionCommitted:
+		return nil, errTransactionCommitted
+	case transactionRolledBack:
+		return nil, errTransactionRolledBack
+	}
+
+	marker := &rollbackItemMarker{identity: identity, active: true}
+	t.filesystemItems = append(t.filesystemItems, marker)
+	return marker, nil
+}
+
+func (t *moduleTransaction) deactivateFilesystemItem(marker *rollbackItemMarker) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	switch t.state {
+	case transactionCommitted:
+		return errTransactionCommitted
+	case transactionRolledBack:
+		return errTransactionRolledBack
+	}
+	for _, candidate := range t.filesystemItems {
+		if candidate == marker {
+			candidate.active = false
+			return nil
+		}
+	}
+	return errUnknownJournalEntry
+}
+
 // rollback executes the active journal once in reverse activation order. A
 // snapshot restore and discard are context-free so cleanup is still attempted
 // after the caller-supplied command cleanup context expires.
@@ -192,7 +246,7 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 		if compensation == nil {
 			result.outcome = rollbackOutcomeUncompensated
 			result.reason = entry.unavailableReason
-			report.results = append(report.results, result)
+			t.recordRollbackResult(&report, entry, result)
 			continue
 		}
 
@@ -200,7 +254,7 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 			if deadlineErr := ctx.Err(); deadlineErr != nil {
 				result.outcome = rollbackOutcomeFailed
 				result.err = fmt.Errorf("rollback %s %q %s: %w", entry.identity.scope, entry.identity.target, entry.identity.operation, deadlineErr)
-				report.results = append(report.results, result)
+				t.recordRollbackResult(&report, entry, result)
 				failures = append(failures, result.err)
 				continue
 			}
@@ -215,7 +269,7 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 		} else {
 			result.outcome = rollbackOutcomeRolledBack
 		}
-		report.results = append(report.results, result)
+		t.recordRollbackResult(&report, entry, result)
 	}
 
 	if t.snapshot != nil {
@@ -228,6 +282,28 @@ func (t *moduleTransaction) rollback(ctx context.Context, cause error) rollbackR
 	t.report = cloneRollbackReport(report)
 	t.state = transactionRolledBack
 	return cloneRollbackReport(report)
+}
+
+func (t *moduleTransaction) recordRollbackResult(
+	report *rollbackReport,
+	entry *journalEntry,
+	result rollbackResult,
+) {
+	report.results = append(report.results, result)
+	switch entry.accountingSource {
+	case rollbackAccountingItem:
+		report.itemOutcomes = append(report.itemOutcomes, result)
+	case rollbackAccountingFilesystemSnapshot:
+		for _, marker := range t.filesystemItems {
+			if !marker.active {
+				continue
+			}
+			itemResult := result
+			itemResult.identity = marker.identity
+			report.itemOutcomes = append(report.itemOutcomes, itemResult)
+			report.results = append(report.results, itemResult)
+		}
+	}
 }
 
 // commit closes the journal before discarding its snapshot. A discard failure
@@ -247,6 +323,7 @@ func (t *moduleTransaction) commit() error {
 	snapshot := t.snapshot
 	t.snapshot = nil
 	t.entries = nil
+	t.filesystemItems = nil
 	if snapshot != nil {
 		if err := discardModuleSnapshot(snapshot); err != nil {
 			t.commitErr = fmt.Errorf("discard committed filesystem snapshot: %w", err)
@@ -306,5 +383,6 @@ func recoveredPanicError(operation string, panicValue any) error {
 func cloneRollbackReport(report rollbackReport) rollbackReport {
 	clone := report
 	clone.results = append([]rollbackResult(nil), report.results...)
+	clone.itemOutcomes = append([]rollbackResult(nil), report.itemOutcomes...)
 	return clone
 }

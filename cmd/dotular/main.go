@@ -272,9 +272,6 @@ func withMutationOptions(
 		if options.rollbackTimeout <= 0 {
 			return usageErrorf("--rollback-timeout must be greater than zero")
 		}
-		if !noAtomic && !dryRun {
-			markRollbackCapableFromContext(cmd.Context())
-		}
 		return run(cmd.Context(), options, args)
 	}
 	return cmd
@@ -522,7 +519,6 @@ func applyCmd() *cobra.Command {
 			r := newRunner(cfg, options)
 			r.MachineTags = selected.machineTags
 			r.IgnoreTags = ignoreTags
-			r.RollbackStarted = rollbackStartedFromContext(ctx)
 
 			return applyNamedModules(ctx, r, cfg, selected, args)
 		},
@@ -631,7 +627,6 @@ func directionCmd(direction, short string) *cobra.Command {
 			r := newRunner(cfg, options)
 			r.MachineTags = selected.machineTags
 			r.IgnoreTags = ignoreTags
-			r.RollbackStarted = rollbackStartedFromContext(ctx)
 			r.Command = direction
 			r.DirectionOverride = direction
 

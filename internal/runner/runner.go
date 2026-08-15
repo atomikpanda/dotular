@@ -35,15 +35,14 @@ const (
 const DefaultRollbackTimeout = 2 * time.Minute
 
 type preparedItem struct {
-	item                    config.Item
-	action                  actions.Action
-	skipReason              string
-	isSync                  bool
-	compensation            actions.Compensation
-	fallback                actions.Compensation
-	unavailableReason       string
-	filesystemBacked        bool
-	compensationNotRequired bool
+	item              config.Item
+	action            actions.Action
+	skipReason        string
+	isSync            bool
+	compensation      actions.Compensation
+	fallback          actions.Compensation
+	unavailableReason string
+	filesystemBacked  bool
 }
 
 type preparedModule struct {
@@ -85,7 +84,6 @@ type Runner struct {
 	Verbose           bool
 	Atomic            bool // snapshot-and-rollback per module (default true)
 	RollbackTimeout   time.Duration
-	RollbackStarted   func()
 	OS                string
 	MachineTags       []string
 	IgnoreTags        bool
@@ -137,12 +135,14 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 			totalRolledBack,
 			totalRollbackFailed,
 			totalUncompensated,
+			firstErr != nil,
 			time.Since(start),
 		)
 	}()
 
 	if err := r.Config.Validate(); err != nil {
-		return fmt.Errorf("validate config before apply: %w", err)
+		firstErr = fmt.Errorf("validate config before apply: %w", err)
+		return firstErr
 	}
 
 	for _, mod := range r.Config.Modules {
@@ -189,6 +189,7 @@ func (r *Runner) ApplyModule(ctx context.Context, mod config.Module) ModuleResul
 		result.RolledBack,
 		result.RollbackFailed,
 		result.Uncompensated,
+		result.Err != nil,
 	)
 	return result
 }
@@ -507,25 +508,20 @@ func (r *Runner) capturePreparedModule(
 				)
 			}
 			if preparation.AlreadyApplied {
-				if _, liveCheck := entry.action.(actions.Idempotent); liveCheck {
-					entry.compensationNotRequired = true
-				} else {
-					entry.skipReason = "already applied"
-					continue
-				}
+				entry.skipReason = "already applied"
+				continue
 			}
 			entry.compensation = preparation.Compensation
 			entry.unavailableReason = preparation.UnavailableReason
 		}
-		if !entry.compensationNotRequired && entry.item.Rollback != "" {
+		if entry.item.Rollback != "" {
 			entry.fallback = commandCompensation{
 				command:     entry.item.Rollback,
 				description: "run explicit rollback for " + entry.action.Describe(),
 				run:         r.runShell,
 			}
 		}
-		if !entry.compensationNotRequired &&
-			entry.compensation == nil && entry.fallback == nil && !entry.filesystemBacked &&
+		if entry.compensation == nil && entry.fallback == nil && !entry.filesystemBacked &&
 			entry.unavailableReason == "" {
 			entry.unavailableReason = "no automatic compensation or explicit rollback"
 		}
@@ -659,19 +655,33 @@ func (r *Runner) applyPreparedItem(
 		}
 	}
 
+	actionIdentity := operationIdentity{
+		scope:     "item",
+		target:    prepared.action.Describe(),
+		operation: "action",
+	}
+	var filesystemMarker *rollbackItemMarker
+	if prepared.filesystemBacked {
+		var err error
+		filesystemMarker, err = transaction.activateFilesystemItem(actionIdentity)
+		if err != nil {
+			return outcomeFailed, fmt.Errorf("module %q: activate filesystem rollback accounting: %w", mod.Name, err)
+		}
+	}
+
 	var actionEntry *journalEntry
-	if !prepared.compensationNotRequired &&
-		(prepared.compensation != nil || prepared.fallback != nil || !prepared.filesystemBacked) {
+	if prepared.compensation != nil || prepared.fallback != nil || !prepared.filesystemBacked {
+		accountingSource := rollbackAccountingItem
+		if prepared.filesystemBacked {
+			accountingSource = rollbackAccountingNone
+		}
 		var err error
 		actionEntry, err = transaction.activate(journalEntry{
-			identity: operationIdentity{
-				scope:     "item",
-				target:    prepared.action.Describe(),
-				operation: "action",
-			},
+			identity:          actionIdentity,
 			compensation:      prepared.compensation,
 			fallback:          prepared.fallback,
 			unavailableReason: prepared.unavailableReason,
+			accountingSource:  accountingSource,
 		})
 		if err != nil {
 			return outcomeFailed, fmt.Errorf("module %q: activate action rollback: %w", mod.Name, err)
@@ -692,6 +702,11 @@ func (r *Runner) applyPreparedItem(
 		if actionEntry != nil {
 			if err := transaction.deactivate(actionEntry); err != nil {
 				return outcomeFailed, fmt.Errorf("module %q: deactivate skipped action rollback: %w", mod.Name, err)
+			}
+		}
+		if filesystemMarker != nil {
+			if err := transaction.deactivateFilesystemItem(filesystemMarker); err != nil {
+				return outcomeFailed, fmt.Errorf("module %q: deactivate skipped filesystem rollback accounting: %w", mod.Name, err)
 			}
 		}
 		message := strings.TrimSuffix(runErr.Error(), ": "+actions.ErrSkipped.Error())
@@ -761,8 +776,7 @@ func (r *Runner) applyPreparedItem(
 
 func (r *Runner) warnPreparedItem(prepared preparedItem) {
 	target := prepared.action.Describe()
-	if !prepared.compensationNotRequired &&
-		prepared.compensation == nil && prepared.fallback == nil && !prepared.filesystemBacked {
+	if prepared.compensation == nil && prepared.fallback == nil && !prepared.filesystemBacked {
 		r.UI.Warn(fmt.Sprintf(
 			"[rollback] item %q will be uncompensated: %s",
 			target,
@@ -832,6 +846,7 @@ func (r *Runner) failAtomicModule(
 	cause error,
 ) ModuleResult {
 	result.Applied = 0
+	result.Failed = 0
 	report := r.rollbackTransaction(ctx, transaction, cause)
 	r.reportRollback(module, report, &result)
 	result.Err = report.err
@@ -849,9 +864,6 @@ func (r *Runner) rollbackTransaction(
 	}
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	if r.RollbackStarted != nil {
-		r.RollbackStarted()
-	}
 	return transaction.rollback(cleanupCtx, cause)
 }
 
@@ -882,16 +894,22 @@ func (r *Runner) reportRollback(module string, report rollbackReport, result *Mo
 			Outcome: rollback.outcome,
 		}
 		switch rollback.outcome {
+		case rollbackOutcomeFailed:
+			entry.Error = detail
+		case rollbackOutcomeUncompensated:
+			entry.Reason = detail
+		}
+		audit.Log(entry)
+	}
+	for _, itemOutcome := range report.itemOutcomes {
+		switch itemOutcome.outcome {
 		case rollbackOutcomeRolledBack:
 			result.RolledBack++
 		case rollbackOutcomeFailed:
 			result.RollbackFailed++
-			entry.Error = detail
 		case rollbackOutcomeUncompensated:
 			result.Uncompensated++
-			entry.Reason = detail
 		}
-		audit.Log(entry)
 	}
 	if report.cleanupErr != nil {
 		r.UI.Warn(fmt.Sprintf("[rollback] module %q cleanup failed: %v", module, report.cleanupErr))

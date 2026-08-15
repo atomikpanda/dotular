@@ -142,9 +142,9 @@ func (u *UI) Info(msg string) {
 }
 
 // summaryIcon returns the appropriate icon and color function for a summary line.
-func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
+func (u *UI) summaryIcon(applied, failed int, transactionFailed bool) (string, func(string) string) {
 	s := u.symbols()
-	if failed > 0 {
+	if transactionFailed || failed > 0 {
 		return s.Cross, color.BoldRed
 	}
 	if applied == 0 {
@@ -157,9 +157,14 @@ func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
 func (u *UI) Summary(
 	applied, skipped, unresolved, failed int,
 	rolledBack, rollbackFailed, uncompensated int,
+	transactionFailed bool,
 	elapsed time.Duration,
 ) {
-	icon, colorFn := u.summaryIcon(applied, failed+rollbackFailed+uncompensated)
+	icon, colorFn := u.summaryIcon(
+		applied,
+		failed+rollbackFailed+uncompensated,
+		transactionFailed,
+	)
 	unresolvedText := ""
 	if unresolved > 0 {
 		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)
@@ -178,8 +183,13 @@ func (u *UI) Summary(
 func (u *UI) ModuleSummary(
 	applied, skipped, unresolved, failed int,
 	rolledBack, rollbackFailed, uncompensated int,
+	transactionFailed bool,
 ) {
-	icon, colorFn := u.summaryIcon(applied, failed+rollbackFailed+uncompensated)
+	icon, colorFn := u.summaryIcon(
+		applied,
+		failed+rollbackFailed+uncompensated,
+		transactionFailed,
+	)
 	unresolvedText := ""
 	if unresolved > 0 {
 		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)

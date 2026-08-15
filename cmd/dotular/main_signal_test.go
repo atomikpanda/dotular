@@ -8,123 +8,134 @@ import (
 	"time"
 )
 
-func TestSignalControllerCancelsThenHardExitsDuringRollback(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 2)
-	firstNotificationStopped := make(chan struct{})
-	hardExit := make(chan int, 1)
+func TestSignalControllerHardExitsSecondSignalDuringRollback(t *testing.T) {
+	for _, received := range terminationSignals() {
+		t.Run(received.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			signals := make(chan os.Signal, 2)
+			firstNotificationStopped := make(chan struct{})
+			hardExit := make(chan int, 1)
+			rollbackStarted := make(chan struct{})
 
-	controller := newSignalController(
-		cancel,
-		signals,
-		func() { close(firstNotificationStopped) },
-		func() {},
-		func(code int) { hardExit <- code },
-	)
-	defer controller.Stop()
-	controller.RollbackCapable()
+			controller := newSignalController(
+				cancel,
+				signals,
+				func() { close(firstNotificationStopped) },
+				func() {},
+				func(code int) { hardExit <- code },
+			)
+			defer controller.Stop()
+			go func() {
+				<-ctx.Done()
+				close(rollbackStarted)
+			}()
 
-	signals <- os.Interrupt
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("first signal did not cancel forward context")
-	}
-	select {
-	case <-firstNotificationStopped:
-	case <-time.After(time.Second):
-		t.Fatal("first signal did not stop the root notification context")
-	}
-	select {
-	case code := <-hardExit:
-		t.Fatalf("first signal hard-exited with code %d before rollback", code)
-	default:
-	}
+			signals <- received
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("first signal did not cancel forward context")
+			}
+			select {
+			case <-firstNotificationStopped:
+			case <-time.After(time.Second):
+				t.Fatal("first signal did not stop the root notification context")
+			}
+			select {
+			case code := <-hardExit:
+				t.Fatalf("first signal hard-exited with code %d before rollback", code)
+			default:
+			}
 
-	controller.RollbackStarted()
-	signals <- os.Interrupt
-	select {
-	case code := <-hardExit:
-		if code == 0 {
-			t.Error("hard exit code = 0, want non-zero")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second signal during rollback did not hard-exit")
+			select {
+			case <-rollbackStarted:
+			case <-time.After(time.Second):
+				t.Fatal("rollback did not start after cancellation")
+			}
+			signals <- received
+			select {
+			case code := <-hardExit:
+				if code == 0 {
+					t.Error("hard exit code = 0, want non-zero")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("second signal during rollback did not hard-exit")
+			}
+		})
 	}
 }
 
 func TestSignalControllerHardExitsSecondSignalWhenRollbackUnavailable(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 2)
-	hardExit := make(chan int, 1)
-	controller := newSignalController(cancel, signals, func() {}, func() {}, func(code int) {
-		hardExit <- code
-	})
-	defer controller.Stop()
+	for _, received := range terminationSignals() {
+		t.Run(received.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			signals := make(chan os.Signal, 2)
+			hardExit := make(chan int, 1)
+			controller := newSignalController(cancel, signals, func() {}, func() {}, func(code int) {
+				hardExit <- code
+			})
+			defer controller.Stop()
 
-	signals <- os.Interrupt
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("first signal did not cancel forward context")
-	}
-	signals <- os.Interrupt
-	select {
-	case code := <-hardExit:
-		if code == 0 {
-			t.Error("hard exit code = 0, want non-zero")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("second signal did not hard-exit when rollback is unavailable")
+			signals <- received
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("first signal did not cancel forward context")
+			}
+			signals <- received
+			select {
+			case code := <-hardExit:
+				if code == 0 {
+					t.Error("hard exit code = 0, want non-zero")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("second signal did not hard-exit when rollback is unavailable")
+			}
+		})
 	}
 }
 
-func TestSignalControllerGatesExtraPreRollbackSignal(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal)
-	hardExit := make(chan int, 1)
-	controller := newSignalController(cancel, signals, func() {}, func() {}, func(code int) {
-		hardExit <- code
-	})
-	defer controller.Stop()
-	controller.RollbackCapable()
+func TestSignalControllerHardExitsSecondSignalBeforeRollback(t *testing.T) {
+	for _, received := range terminationSignals() {
+		t.Run(received.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			signals := make(chan os.Signal)
+			hardExit := make(chan int, 1)
+			controller := newSignalController(cancel, signals, func() {}, func() {}, func(code int) {
+				hardExit <- code
+			})
+			defer controller.Stop()
 
-	sendSignal := func() {
-		t.Helper()
-		sent := make(chan struct{})
-		go func() {
-			signals <- os.Interrupt
-			close(sent)
-		}()
-		select {
-		case <-sent:
-		case <-time.After(time.Second):
-			t.Fatal("signal controller did not receive signal")
-		}
-	}
+			sendSignal := func() {
+				t.Helper()
+				sent := make(chan struct{})
+				go func() {
+					signals <- received
+					close(sent)
+				}()
+				select {
+				case <-sent:
+				case <-time.After(time.Second):
+					t.Fatal("signal controller did not receive signal")
+				}
+			}
 
-	sendSignal()
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("first signal did not cancel forward context")
-	}
-	sendSignal()
-	select {
-	case code := <-hardExit:
-		t.Fatalf("pre-rollback signal hard-exited with code %d", code)
-	default:
-	}
-
-	controller.RollbackStarted()
-	sendSignal()
-	select {
-	case code := <-hardExit:
-		if code == 0 {
-			t.Error("hard exit code = 0, want non-zero")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("signal during rollback did not hard-exit")
+			sendSignal()
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+				t.Fatal("first signal did not cancel forward context")
+			}
+			sendSignal()
+			select {
+			case code := <-hardExit:
+				if code == 0 {
+					t.Error("hard exit code = 0, want non-zero")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("second signal before rollback did not hard-exit")
+			}
+		})
 	}
 }
 

@@ -238,40 +238,44 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 			malformedOutput: `{"apps":`,
 		},
 		{
-			manager:         "apt",
-			pkg:             "foo",
-			query:           []string{"dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Abbrev}\n"},
-			uninstall:       []string{"sudo", "apt-get", "remove", "-y", "foo"},
-			prefixOutput:    "foobar\tii \n",
-			presentOutput:   "foobar\tii \nfoo\tii \n",
-			malformedOutput: "foo\tbroken\n",
+			manager:            "apt",
+			pkg:                "foo",
+			query:              []string{"dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Abbrev}\n"},
+			uninstall:          []string{"sudo", "apt-get", "remove", "-y", "foo"},
+			prefixOutput:       "foobar\tii \n",
+			presentOutput:      "foobar\tii \nfoo\tii \n",
+			malformedOutput:    "foo\tbroken\n",
+			absenceUnavailable: true,
 		},
 		{
-			manager:         "apt-get",
-			pkg:             "foo",
-			query:           []string{"dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Abbrev}\n"},
-			uninstall:       []string{"sudo", "apt-get", "remove", "-y", "foo"},
-			prefixOutput:    "foobar\tii \n",
-			presentOutput:   "foobar\tii \nfoo\tii \n",
-			malformedOutput: "foo\tbroken\n",
+			manager:            "apt-get",
+			pkg:                "foo",
+			query:              []string{"dpkg-query", "-W", "-f=${binary:Package}\t${db:Status-Abbrev}\n"},
+			uninstall:          []string{"sudo", "apt-get", "remove", "-y", "foo"},
+			prefixOutput:       "foobar\tii \n",
+			presentOutput:      "foobar\tii \nfoo\tii \n",
+			malformedOutput:    "foo\tbroken\n",
+			absenceUnavailable: true,
 		},
 		{
-			manager:         "dnf",
-			pkg:             "foo.x86_64",
-			query:           []string{"rpm", "-qa", "--qf", "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t[%{PROVIDENAME},]\n"},
-			uninstall:       []string{"sudo", "dnf", "remove", "-y", "foo.x86_64"},
-			prefixOutput:    "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\n",
-			presentOutput:   "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\nfoo\t(none)\t1.0\t1\tx86_64\tfoo,\n",
-			malformedOutput: string([]byte{0xff}),
+			manager:            "dnf",
+			pkg:                "foo.x86_64",
+			query:              []string{"rpm", "-qa", "--qf", "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t[%{PROVIDENAME},]\n"},
+			uninstall:          []string{"sudo", "dnf", "remove", "-y", "foo.x86_64"},
+			prefixOutput:       "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\n",
+			presentOutput:      "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\nfoo\t(none)\t1.0\t1\tx86_64\tfoo,\n",
+			malformedOutput:    string([]byte{0xff}),
+			absenceUnavailable: true,
 		},
 		{
-			manager:         "yum",
-			pkg:             "foo.x86_64",
-			query:           []string{"rpm", "-qa", "--qf", "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t[%{PROVIDENAME},]\n"},
-			uninstall:       []string{"sudo", "yum", "remove", "-y", "foo.x86_64"},
-			prefixOutput:    "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\n",
-			presentOutput:   "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\nfoo\t(none)\t1.0\t1\tx86_64\tfoo,\n",
-			malformedOutput: string([]byte{0xff}),
+			manager:            "yum",
+			pkg:                "foo.x86_64",
+			query:              []string{"rpm", "-qa", "--qf", "%{NAME}\t%{EPOCH}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\t[%{PROVIDENAME},]\n"},
+			uninstall:          []string{"sudo", "yum", "remove", "-y", "foo.x86_64"},
+			prefixOutput:       "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\n",
+			presentOutput:      "foobar\t(none)\t1.0\t1\tx86_64\tfoobar,\nfoo\t(none)\t1.0\t1\tx86_64\tfoo,\n",
+			malformedOutput:    string([]byte{0xff}),
+			absenceUnavailable: true,
 		},
 		{
 			manager:            "pacman",
@@ -331,7 +335,7 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 				return
 			}
 
-			t.Run("prefix_is_absent_and_prepares_exact_uninstall", func(t *testing.T) {
+			t.Run("prefix_does_not_match_exact_identity", func(t *testing.T) {
 				executor := &recordingPackageExecutor{results: []packageCommandResult{
 					{output: []byte(tt.prefixOutput)},
 					{},
@@ -426,17 +430,106 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 	}
 }
 
-func TestPackageActionIsAppliedUsesConclusiveState(t *testing.T) {
+func TestPackageCompensationNoMatchInventoryDoesNotAuthorizeProviderUninstall(t *testing.T) {
+	tests := []struct {
+		name    string
+		manager string
+		output  string
+	}{
+		{
+			name:    "dpkg_empty_inventory",
+			manager: "apt",
+		},
+		{
+			name:    "dpkg_unrelated_inventory",
+			manager: "apt-get",
+			output:  "postfix\tii \n",
+		},
+		{
+			name:    "rpm_empty_inventory",
+			manager: "dnf",
+		},
+		{
+			name:    "rpm_unrelated_inventory",
+			manager: "yum",
+			output:  "postfix\t(none)\t3.9\t1\tx86_64\tpostfix,\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &recordingPackageExecutor{results: []packageCommandResult{{
+				output: []byte(tt.output),
+			}}}
+			action := &PackageAction{
+				Package:  "mail-transport-agent",
+				Manager:  tt.manager,
+				executor: executor.execute,
+			}
+
+			preparation, err := action.PrepareCompensation(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preparation.AlreadyApplied || preparation.Compensation != nil || preparation.UnavailableReason == "" {
+				t.Fatalf("preparation = %#v, want unknown state with explicit fallback available", preparation)
+			}
+			if len(executor.calls) != 1 {
+				t.Fatalf("state capture made %d calls, want inventory query only", len(executor.calls))
+			}
+		})
+	}
+}
+
+func TestPackageActionIsAppliedUsesPerPackageCheckAfterUnknownCompensationCapture(t *testing.T) {
+	for _, manager := range []string{"apt", "dnf"} {
+		t.Run(manager, func(t *testing.T) {
+			executor := &recordingPackageExecutor{results: []packageCommandResult{
+				{err: errors.New("inventory unavailable")},
+				{},
+			}}
+			action := &PackageAction{
+				Package:  "mail-transport-agent",
+				Manager:  manager,
+				executor: executor.execute,
+			}
+
+			preparation, err := action.PrepareCompensation(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preparation.AlreadyApplied || preparation.Compensation != nil || preparation.UnavailableReason == "" {
+				t.Fatalf("preparation = %#v, want unknown state with explicit fallback available", preparation)
+			}
+
+			applied, err := action.IsApplied(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !applied {
+				t.Fatal("IsApplied() = false, want installed package skipped")
+			}
+			if len(executor.calls) != 2 {
+				t.Fatalf("package checks made %d calls, want inventory capture then per-package check", len(executor.calls))
+			}
+			if got, want := executor.calls[1].args, CheckArgs(manager, action.Package); !reflect.DeepEqual(got, want) {
+				t.Fatalf("IsApplied() args = %#v, want original per-package check %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestPackageActionIsAppliedUsesPerPackageExitStatus(t *testing.T) {
 	tests := []struct {
 		name    string
 		output  string
 		err     error
 		applied bool
 	}{
-		{name: "present", output: "foobar\nfoo\n", applied: true},
-		{name: "prefix_only", output: "foobar\n"},
-		{name: "malformed", output: string([]byte{0xff})},
-		{name: "failed_check", err: errors.New("start failed")},
+		{name: "successful_empty_output", applied: true},
+		{name: "successful_arbitrary_output", output: string([]byte{0xff}), applied: true},
+		{name: "nonzero_status", err: &exec.ExitError{}},
+		{name: "start_failure", err: errors.New("start failed")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -451,6 +544,9 @@ func TestPackageActionIsAppliedUsesConclusiveState(t *testing.T) {
 			}
 			if applied != tt.applied {
 				t.Fatalf("IsApplied() = %t, want %t", applied, tt.applied)
+			}
+			if got, want := executor.calls[0].args, CheckArgs(action.Manager, action.Package); !reflect.DeepEqual(got, want) {
+				t.Fatalf("IsApplied() args = %#v, want %#v", got, want)
 			}
 		})
 	}
@@ -610,11 +706,11 @@ func TestPackageCompensationAmbiguousIdentitySafety(t *testing.T) {
 			wantUnknown: true,
 		},
 		{
-			name:       "apt_hyphenated_prefix_package_is_absent",
-			manager:    "apt",
-			pkg:        "foo",
-			output:     "foo-dev\tii \n",
-			wantAbsent: true,
+			name:        "apt_hyphenated_prefix_package_is_unknown",
+			manager:     "apt",
+			pkg:         "foo",
+			output:      "foo-dev\tii \n",
+			wantUnknown: true,
 		},
 		{
 			name:        "rpm_glob_selector_is_unknown",
@@ -631,11 +727,11 @@ func TestPackageCompensationAmbiguousIdentitySafety(t *testing.T) {
 			wantUnknown: true,
 		},
 		{
-			name:       "rpm_hyphenated_prefix_package_is_absent",
-			manager:    "dnf",
-			pkg:        "foo",
-			output:     "foo-devel\t(none)\t1.2\t1\tx86_64\tfoo-devel,\n",
-			wantAbsent: true,
+			name:        "rpm_hyphenated_prefix_package_is_unknown",
+			manager:     "dnf",
+			pkg:         "foo",
+			output:      "foo-devel\t(none)\t1.2\t1\tx86_64\tfoo-devel,\n",
+			wantUnknown: true,
 		},
 		{
 			name:        "flatpak_application_architecture_ref_is_present",

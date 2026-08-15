@@ -51,15 +51,26 @@ func (a *PackageAction) Run(ctx context.Context, dryRun bool) error {
 	return err
 }
 
-// IsApplied returns true only when the package query conclusively identifies
-// the requested package. Unknown state remains fail-open so normal execution
-// can still attempt the install.
+// IsApplied uses the manager's original per-package exit-status check. Rollback
+// capture is intentionally independent because its stricter inventory parsing
+// may be unable to authorize an automatic uninstall.
 func (a *PackageAction) IsApplied(ctx context.Context) (bool, error) {
-	state, _, err := a.captureState(ctx)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	return state == packageStatePresent, nil
+	args := CheckArgs(a.Manager, a.Package)
+	if args == nil {
+		return false, nil
+	}
+
+	_, err := a.commandExecutor()(ctx, args, true)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return false, ctxErr
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false, err
+	}
+	return err == nil, nil
 }
 
 // PrepareCompensation captures whether this exact package was installed before
@@ -482,7 +493,7 @@ func parseDPKGState(pkg, output string) (packageState, error) {
 	if ambiguousInstalledPackage != "" {
 		return packageStateUnknown, fmt.Errorf("installed package %q may map to %q but cannot be identified exactly", ambiguousInstalledPackage, pkg)
 	}
-	return packageStateAbsent, nil
+	return packageStateUnknown, fmt.Errorf("dpkg inventory cannot prove %q absent because apt may resolve it through a virtual provider", pkg)
 }
 
 func parseDPKGIdentity(identity string, rejectSelectors bool) (name, architecture string, err error) {
@@ -570,7 +581,7 @@ func parseRPMState(pkg, output string) (packageState, error) {
 	case architectureAmbiguousPackage != "":
 		return packageStateUnknown, fmt.Errorf("installed package %q may be foreign architecture for bare target %q", architectureAmbiguousPackage, pkg)
 	default:
-		return packageStateAbsent, nil
+		return packageStateUnknown, fmt.Errorf("rpm inventory cannot prove %q absent because the install target may resolve through a virtual provider", pkg)
 	}
 }
 

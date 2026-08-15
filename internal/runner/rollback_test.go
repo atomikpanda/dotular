@@ -30,6 +30,55 @@ func atomicRunner() *Runner {
 	return r
 }
 
+func TestCompensatedHookFailureMarksModuleAndFinalSummariesFailed(t *testing.T) {
+	tests := []struct {
+		name  string
+		hooks config.ModuleHooks
+	}{
+		{
+			name: "before_apply",
+			hooks: config.ModuleHooks{
+				BeforeApply: "fail",
+				Rollback:    config.RollbackHooks{BeforeApply: "compensate"},
+			},
+		},
+		{
+			name: "after_apply",
+			hooks: config.ModuleHooks{
+				AfterApply: "fail",
+				Rollback:   config.RollbackHooks{AfterApply: "compensate"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mod := config.Module{Name: "hooks", Hooks: tt.hooks}
+			r := atomicRunner()
+			r.Config = config.Config{Modules: []config.Module{mod}}
+			r.shellRun = func(_ context.Context, command string) error {
+				if command == "fail" {
+					return errors.New("hook failed")
+				}
+				return nil
+			}
+
+			if err := r.ApplyAll(context.Background()); err == nil {
+				t.Fatal("ApplyAll() error = nil, want hook failure")
+			}
+			output := r.Out.(*bytes.Buffer).String()
+			const failedSummary = "[FAIL] 0 applied, 0 skipped, 0 failed"
+			if got := strings.Count(output, failedSummary); got != 2 {
+				t.Fatalf(
+					"summary failure markers = %d, want module and final summaries while item failures stay zero:\n%s",
+					got,
+					output,
+				)
+			}
+		})
+	}
+}
+
 // chdir points the process at dir for the duration of the test, because
 // buildAction builds module-relative source paths that must resolve from cwd.
 func chdir(t *testing.T, dir string) {
