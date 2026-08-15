@@ -507,6 +507,11 @@ func TestMatchesTags(t *testing.T) {
 			}
 		})
 	}
+
+	r.IgnoreTags = true
+	if !r.matchesTags(config.Module{OnlyTags: []string{"windows"}}) {
+		t.Error("IgnoreTags should bypass a tag mismatch")
+	}
 }
 
 func TestSkipManager(t *testing.T) {
