@@ -1107,6 +1107,111 @@ func TestMalformedMachineTagsFailBeforeRegistryResolution(t *testing.T) {
 	}
 }
 
+func TestNamedInactiveModuleFailsBeforeUnrelatedActiveResolution(t *testing.T) {
+	for _, command := range []string{"apply", "push", "pull", "sync", "verify"} {
+		t.Run(command, func(t *testing.T) {
+			testutil.SetHome(t, t.TempDir())
+			cacheRoot := filepath.Join(t.TempDir(), "cache")
+			t.Setenv("XDG_CACHE_HOME", cacheRoot)
+			var replacement atomic.Bool
+			var requests atomic.Int32
+			ref := serveCommandRegistryModule(t, &replacement, &requests)
+			path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+  - name: inactive
+    only_tags: [work]
+    items:
+      - run: "true"
+        verify: "true"
+`, ref))
+
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{command, "--config", path, "inactive"})
+			err := root.Execute()
+			if got := exitCode(err); got != exitUsage {
+				t.Fatalf("exit code = %d, want %d; error = %v", got, exitUsage, err)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("requests = %d, want 0 before named tag rejection", got)
+			}
+			for name, statePath := range map[string]string{
+				"lockfile": registry.LockPath(path),
+				"cache":    cacheRoot,
+			} {
+				if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+					t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestIgnoreTagsSelectsUnaliasedRemoteByFromRef(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	runMarker := filepath.Join(t.TempDir(), "ran")
+	verifyMarker := filepath.Join(t.TempDir(), "verified")
+	var requests atomic.Int32
+	module := fmt.Sprintf(`
+name: remote-internal
+items:
+  - run: "touch %s"
+    verify: "touch %s"
+`, runMarker, verifyMarker)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Write([]byte(module))
+	}))
+	t.Cleanup(srv.Close)
+	previousTransport := httputil.Client.Transport
+	httputil.Client.Transport = srv.Client().Transport
+	t.Cleanup(func() { httputil.Client.Transport = previousTransport })
+	ref := strings.TrimPrefix(srv.URL, "https://") + "/module.yaml"
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+    only_tags: [work]
+`, ref))
+
+	rejected := buildRoot()
+	rejected.SetOut(io.Discard)
+	rejected.SetErr(io.Discard)
+	rejected.SetArgs([]string{"apply", "--config", path, ref})
+	err := rejected.Execute()
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("rejected exit code = %d, want %d; error = %v", got, exitUsage, err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests before override = %d, want 0", got)
+	}
+
+	applied := buildRoot()
+	applied.SetOut(io.Discard)
+	applied.SetErr(io.Discard)
+	applied.SetArgs([]string{"apply", "--ignore-tags", "--config", path, ref})
+	if err := applied.Execute(); err != nil {
+		t.Fatalf("apply unaliased ref with override: %v", err)
+	}
+	if _, err := os.Stat(runMarker); err != nil {
+		t.Fatalf("apply did not select unaliased ref: %v", err)
+	}
+
+	verified := buildRoot()
+	verified.SetOut(io.Discard)
+	verified.SetErr(io.Discard)
+	verified.SetArgs([]string{"verify", "--ignore-tags", "--config", path, ref})
+	if err := verified.Execute(); err != nil {
+		t.Fatalf("verify unaliased ref with override: %v", err)
+	}
+	if _, err := os.Stat(verifyMarker); err != nil {
+		t.Fatalf("verify did not select unaliased ref: %v", err)
+	}
+}
+
 func TestDirectionCmdWithModule(t *testing.T) {
 	path := writeTestConfig(t, `
 modules:

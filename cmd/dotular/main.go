@@ -224,9 +224,16 @@ func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
 	return resolveConfig(ctx, cfg)
 }
 
-func loadAndResolveTaggedConfig(ctx context.Context, ignoreTags bool) (config.Config, taggedConfig, error) {
+func loadAndResolveTaggedConfig(
+	ctx context.Context,
+	ignoreTags bool,
+	names []string,
+) (config.Config, taggedConfig, error) {
 	selected, err := loadTaggedConfig(ignoreTags)
 	if err != nil {
+		return config.Config{}, taggedConfig{}, err
+	}
+	if err := rejectInactiveNamedModules(selected, names); err != nil {
 		return config.Config{}, taggedConfig{}, err
 	}
 	cfg, err := resolveConfig(ctx, selected.active)
@@ -475,7 +482,7 @@ func applyCmd() *cobra.Command {
   dotular apply --no-atomic`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
@@ -490,25 +497,59 @@ func applyCmd() *cobra.Command {
 	return cmd
 }
 
-// selectModules resolves module names against the config, failing on the first
-// unknown name so that a typo never silently applies a subset of what was asked.
+func inactiveModuleError(name string) error {
+	return usageErrorf(
+		"module %q is inactive: tag filters do not match; use --ignore-tags to override",
+		name,
+	)
+}
+
+func rejectInactiveNamedModules(selected taggedConfig, names []string) error {
+	for _, name := range names {
+		for i, active := range selected.activeMask {
+			raw := selected.raw.Modules[i]
+			if !active && (raw.Name == name || raw.From == name) {
+				return inactiveModuleError(name)
+			}
+		}
+	}
+	return nil
+}
+
+// selectModules resolves module names against the materialised config or their
+// raw aliases/refs, failing on the first unknown name.
 func selectModules(cfg config.Config, selected taggedConfig, names []string) ([]config.Module, error) {
+	if err := rejectInactiveNamedModules(selected, names); err != nil {
+		return nil, err
+	}
+
 	mods := make([]config.Module, 0, len(names))
 	for _, name := range names {
-		mod := cfg.Module(name)
-		if mod == nil {
-			for i, active := range selected.activeMask {
-				raw := selected.raw.Modules[i]
-				if !active && (raw.Name == name || raw.From == name) {
-					return nil, usageErrorf(
-						"module %q is inactive: tag filters do not match; use --ignore-tags to override",
-						name,
-					)
-				}
+		if mod := cfg.Module(name); mod != nil {
+			mods = append(mods, *mod)
+			continue
+		}
+
+		resolvedIndex := 0
+		found := false
+		for i, active := range selected.activeMask {
+			if !active {
+				continue
 			}
+			if resolvedIndex >= len(cfg.Modules) {
+				break
+			}
+			raw := selected.raw.Modules[i]
+			if raw.Name == name || raw.From == name {
+				mods = append(mods, cfg.Modules[resolvedIndex])
+				found = true
+				break
+			}
+			resolvedIndex++
+		}
+		if !found {
 			return nil, usageErrorf("module %q not found in config", name)
 		}
-		mods = append(mods, *mod)
 	}
 	return mods, nil
 }
@@ -548,7 +589,7 @@ func directionCmd(direction, short string) *cobra.Command {
   dotular %[1]s --dry-run`, direction),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
@@ -643,7 +684,7 @@ func statusCmd() *cobra.Command {
 		Short: "Show what would be applied for the current platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, nil)
 			if err != nil {
 				return err
 			}
@@ -685,7 +726,7 @@ func verifyCmd() *cobra.Command {
   dotular verify "Visual Studio Code"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
