@@ -172,21 +172,83 @@ func loadConfig() (config.Config, error) {
 	return cfg, nil
 }
 
-// loadAndResolveConfig parses the config and resolves any registry module
-// references, fetching remote modules and applying param/override logic.
-func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
+// taggedConfig retains the raw module order while carrying only modules that
+// may be resolved for the current command.
+type taggedConfig struct {
+	raw         config.Config
+	active      config.Config
+	activeMask  []bool
+	machineTags []string
+}
+
+func loadTaggedConfig(ignoreTags bool) (taggedConfig, error) {
 	cfg, err := loadConfig()
 	if err != nil {
-		return config.Config{}, err
+		return taggedConfig{}, err
 	}
+	machine, err := tags.Load()
+	if err != nil {
+		return taggedConfig{}, err
+	}
+
+	selected := taggedConfig{
+		raw:         cfg,
+		active:      config.Config{Age: cfg.Age},
+		activeMask:  make([]bool, len(cfg.Modules)),
+		machineTags: append([]string(nil), machine.Tags...),
+	}
+	for i, mod := range cfg.Modules {
+		active := ignoreTags || tags.Matches(machine.Tags, mod.OnlyTags, mod.ExcludeTags)
+		selected.activeMask[i] = active
+		if active {
+			selected.active.Modules = append(selected.active.Modules, mod)
+		}
+	}
+	return selected, nil
+}
+
+func resolveConfig(ctx context.Context, cfg config.Config) (config.Config, error) {
 	u := ui.New(os.Stdout, os.Stderr)
 	return registry.Resolve(ctx, cfg, configFile, registry.ResolveOptions{
 		NoCache: noCache,
 	}, u)
 }
 
+// loadAndResolveConfig resolves the complete config for commands that do not
+// apply machine-tag policy.
+func loadAndResolveConfig(ctx context.Context) (config.Config, error) {
+	cfg, err := loadConfig()
+	if err != nil {
+		return config.Config{}, err
+	}
+	return resolveConfig(ctx, cfg)
+}
+
+func loadAndResolveTaggedConfig(
+	ctx context.Context,
+	ignoreTags bool,
+	names []string,
+) (config.Config, taggedConfig, error) {
+	selected, err := loadTaggedConfig(ignoreTags)
+	if err != nil {
+		return config.Config{}, taggedConfig{}, err
+	}
+	if err := rejectInactiveNamedModules(selected, names); err != nil {
+		return config.Config{}, taggedConfig{}, err
+	}
+	cfg, err := resolveConfig(ctx, selected.active)
+	if err != nil {
+		return config.Config{}, taggedConfig{}, err
+	}
+	return cfg, selected, nil
+}
+
 func newRunner(cfg config.Config) *runner.Runner {
 	return runner.New(cfg, dryRun, verbose, !noAtomic)
+}
+
+func addIgnoreTagsFlag(cmd *cobra.Command, target *bool) {
+	cmd.Flags().BoolVar(target, "ignore-tags", false, "run modules even when their tag filters do not match")
 }
 
 // --- add ---------------------------------------------------------------------
@@ -410,7 +472,8 @@ func inferModuleName(ctx context.Context, absPath string) (string, error) {
 // --- apply -------------------------------------------------------------------
 
 func applyCmd() *cobra.Command {
-	return &cobra.Command{
+	var ignoreTags bool
+	cmd := &cobra.Command{
 		Use:   "apply [module...]",
 		Short: "Apply modules (all if none specified)",
 		Example: `  dotular apply
@@ -419,37 +482,90 @@ func applyCmd() *cobra.Command {
   dotular apply --no-atomic`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
 			r := newRunner(cfg)
+			r.MachineTags = selected.machineTags
+			r.IgnoreTags = ignoreTags
 
-			return applyNamedModules(ctx, r, cfg, args)
+			return applyNamedModules(ctx, r, cfg, selected, args)
 		},
 	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return cmd
 }
 
-// selectModules resolves module names against the config, failing on the first
-// unknown name so that a typo never silently applies a subset of what was asked.
-func selectModules(cfg config.Config, names []string) ([]config.Module, error) {
+func inactiveModuleError(name string) error {
+	return usageErrorf(
+		"module %q is inactive: tag filters do not match; use --ignore-tags to override",
+		name,
+	)
+}
+
+func rejectInactiveNamedModules(selected taggedConfig, names []string) error {
+	for _, name := range names {
+		for i, active := range selected.activeMask {
+			raw := selected.raw.Modules[i]
+			if !active && (raw.Name == name || raw.From == name) {
+				return inactiveModuleError(name)
+			}
+		}
+	}
+	return nil
+}
+
+// selectModules resolves module names against the materialised config or their
+// raw aliases/refs, failing on the first unknown name.
+func selectModules(cfg config.Config, selected taggedConfig, names []string) ([]config.Module, error) {
+	if err := rejectInactiveNamedModules(selected, names); err != nil {
+		return nil, err
+	}
+
 	mods := make([]config.Module, 0, len(names))
 	for _, name := range names {
-		mod := cfg.Module(name)
-		if mod == nil {
+		if mod := cfg.Module(name); mod != nil {
+			mods = append(mods, *mod)
+			continue
+		}
+
+		resolvedIndex := 0
+		found := false
+		for i, active := range selected.activeMask {
+			if !active {
+				continue
+			}
+			if resolvedIndex >= len(cfg.Modules) {
+				break
+			}
+			raw := selected.raw.Modules[i]
+			if raw.Name == name || raw.From == name {
+				mods = append(mods, cfg.Modules[resolvedIndex])
+				found = true
+				break
+			}
+			resolvedIndex++
+		}
+		if !found {
 			return nil, usageErrorf("module %q not found in config", name)
 		}
-		mods = append(mods, *mod)
 	}
 	return mods, nil
 }
 
 // applyNamedModules applies the named modules, or every module when none are named.
-func applyNamedModules(ctx context.Context, r *runner.Runner, cfg config.Config, names []string) error {
+func applyNamedModules(
+	ctx context.Context,
+	r *runner.Runner,
+	cfg config.Config,
+	selected taggedConfig,
+	names []string,
+) error {
 	if len(names) == 0 {
 		return r.ApplyAll(ctx)
 	}
-	mods, err := selectModules(cfg, names)
+	mods, err := selectModules(cfg, selected, names)
 	if err != nil {
 		return err
 	}
@@ -464,7 +580,8 @@ func applyNamedModules(ctx context.Context, r *runner.Runner, cfg config.Config,
 // --- push / pull / sync ------------------------------------------------------
 
 func directionCmd(direction, short string) *cobra.Command {
-	return &cobra.Command{
+	var ignoreTags bool
+	cmd := &cobra.Command{
 		Use:   fmt.Sprintf("%s [module...]", direction),
 		Short: short,
 		Example: fmt.Sprintf(`  dotular %[1]s
@@ -472,17 +589,21 @@ func directionCmd(direction, short string) *cobra.Command {
   dotular %[1]s --dry-run`, direction),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
 			r := newRunner(cfg)
+			r.MachineTags = selected.machineTags
+			r.IgnoreTags = ignoreTags
 			r.Command = direction
 			r.DirectionOverride = direction
 
-			return applyNamedModules(ctx, r, cfg, args)
+			return applyNamedModules(ctx, r, cfg, selected, args)
 		},
 	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return cmd
 }
 
 // --- list --------------------------------------------------------------------
@@ -493,12 +614,33 @@ func listCmd() *cobra.Command {
 		Short: "List all modules defined in the config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			selected, err := loadTaggedConfig(false)
 			if err != nil {
 				return err
 			}
-			u := ui.New(os.Stdout, os.Stderr)
-			for _, mod := range cfg.Modules {
+			cfg, err := resolveConfig(ctx, selected.active)
+			if err != nil {
+				return err
+			}
+
+			u := ui.New(cmd.OutOrStdout(), cmd.ErrOrStderr())
+			activeIndex := 0
+			for i, raw := range selected.raw.Modules {
+				if !selected.activeMask[i] {
+					name := raw.Name
+					if name == "" {
+						name = raw.From
+					}
+					u.Info(fmt.Sprintf("%s  %s",
+						color.Bold(fmt.Sprintf("%-30s", name)),
+						color.Dim("skipped (tag mismatch)")))
+					continue
+				}
+				if activeIndex >= len(cfg.Modules) {
+					return fmt.Errorf("list modules: resolved module count does not match active config")
+				}
+				mod := cfg.Modules[activeIndex]
+				activeIndex++
 				counts := make(map[string]int)
 				for _, item := range mod.Items {
 					counts[item.Type()]++
@@ -508,6 +650,9 @@ func listCmd() *cobra.Command {
 				u.Info(fmt.Sprintf("%s  %s",
 					color.Bold(fmt.Sprintf("%-30s", mod.Name)),
 					color.Dim(fmt.Sprintf("%d items (%s)", total, breakdown))))
+			}
+			if activeIndex != len(cfg.Modules) {
+				return fmt.Errorf("list modules: resolved module count does not match active config")
 			}
 			return nil
 		},
@@ -533,19 +678,24 @@ func formatTypeCounts(counts map[string]int) string {
 // --- status ------------------------------------------------------------------
 
 func statusCmd() *cobra.Command {
-	return &cobra.Command{
+	var ignoreTags bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show what would be applied for the current platform",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, nil)
 			if err != nil {
 				return err
 			}
 			r := runner.New(cfg, true, true, false)
+			r.MachineTags = selected.machineTags
+			r.IgnoreTags = ignoreTags
 			return r.ApplyAll(ctx)
 		},
 	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return cmd
 }
 
 // --- platform ----------------------------------------------------------------
@@ -568,18 +718,21 @@ func platformCmd() *cobra.Command {
 var errVerifyFailed = errors.New("some verify checks failed")
 
 func verifyCmd() *cobra.Command {
-	return &cobra.Command{
+	var ignoreTags bool
+	cmd := &cobra.Command{
 		Use:   "verify [module...]",
 		Short: "Run verify checks without modifying anything",
 		Example: `  dotular verify
   dotular verify "Visual Studio Code"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
-			cfg, err := loadAndResolveConfig(ctx)
+			cfg, selected, err := loadAndResolveTaggedConfig(ctx, ignoreTags, args)
 			if err != nil {
 				return err
 			}
 			r := runner.New(cfg, false, verbose, false)
+			r.MachineTags = selected.machineTags
+			r.IgnoreTags = ignoreTags
 			r.Command = "verify"
 
 			var allPassed bool
@@ -589,7 +742,7 @@ func verifyCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				mods, err := selectModules(cfg, args)
+				mods, err := selectModules(cfg, selected, args)
 				if err != nil {
 					return err
 				}
@@ -611,6 +764,8 @@ func verifyCmd() *cobra.Command {
 			return nil
 		},
 	}
+	addIgnoreTagsFlag(cmd, &ignoreTags)
+	return cmd
 }
 
 // --- encrypt / decrypt -------------------------------------------------------

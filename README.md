@@ -281,7 +281,8 @@ dotular init
 Fetches the module registry, scans this machine for the packages and config files
 those modules manage, and lets you pick which ones to adopt. Selected modules are
 appended to the config as `from:` registry references. In a non-interactive shell
-the picker is skipped and only fully-matching modules are added.
+the picker is skipped and only fully-matching modules are added. `init` does not
+infer `only_tags` or `exclude_tags`; add machine policy explicitly in the config.
 
 ### `add`
 
@@ -313,9 +314,12 @@ This command rewrites the config file — see [Config file formats](#config-file
 dotular apply [module...]
 dotular apply --dry-run
 dotular apply --no-atomic
+dotular apply homebrew --ignore-tags
 ```
 
-Apply all modules (or specified ones). Runs hooks, checks idempotency, handles rollback on failure.
+Apply all modules (or specified ones). Runs hooks, checks idempotency, and handles
+rollback on failure. Tag filters also apply when modules are named explicitly;
+`--ignore-tags` is the deliberate override.
 
 ### `push` / `pull` / `sync`
 
@@ -325,6 +329,9 @@ dotular pull [module...]
 dotular sync [module...]
 ```
 
+Tag filters apply to all three commands, including named modules. Pass
+`--ignore-tags` to override them for one invocation.
+
 Override the `direction` on all file and directory items for the run. Link items (`link: true`) are never overridden.
 
 `pull` and `sync` reconcile files only: `package`, `script`, `binary`, `run`, and `setting` items are skipped for the run (listed with `--verbose`, recorded in the audit log). `push` behaves like `apply` and runs them.
@@ -333,17 +340,21 @@ Override the `direction` on all file and directory items for the run. Link items
 
 ```sh
 dotular verify [module...]
+dotular verify "Work Tools" --ignore-tags
 ```
 
 Run all `verify:` commands without modifying anything. Exits 1 if any check fails.
+Tag filters apply to named modules unless `--ignore-tags` is present.
 
 ### `status`
 
 ```sh
 dotular status
+dotular status --ignore-tags
 ```
 
-Dry-run with verbose output — shows what would be applied.
+Dry-run with verbose output — shows what would be applied. Pass `--ignore-tags`
+to include modules that are inactive on this machine.
 
 ### `list`
 
@@ -351,7 +362,9 @@ Dry-run with verbose output — shows what would be applied.
 dotular list
 ```
 
-Print all modules and their item counts.
+Print all modules in config order. Active modules include item counts; inactive
+modules show `skipped (tag mismatch)`. Inactive remote modules are not fetched,
+so no item count is fabricated for them.
 
 ### `platform`
 
@@ -455,6 +468,18 @@ Then in your config:
     - package: steam
       via: brew-cask
 ```
+
+Tag filters gate `apply`, `push`, `pull`, `sync`, `verify`, and `status` whether
+all modules or explicit module names are requested. Use `--ignore-tags` when a
+one-off override is intentional.
+
+Filtering happens before registry resolution. An inactive remote module is not
+downloaded, rendered, cached, or written to `dotular.lock.yaml`. `dotular list`
+still shows it as `skipped (tag mismatch)`.
+
+`dotular init` does not infer tag policy from the current OS, architecture, or
+scan results. Registry modules do not carry that policy, and inferred filters
+would make a cross-platform config machine-specific.
 
 ---
 

@@ -21,9 +21,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atomikpanda/dotular/internal/audit"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/registry"
+	"github.com/atomikpanda/dotular/internal/tags"
 	"github.com/atomikpanda/dotular/internal/testutil"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
@@ -42,6 +44,17 @@ func writeTestConfig(t *testing.T, content string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeMachineConfig(t *testing.T, content string) {
+	t.Helper()
+	path := tags.ConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 const (
@@ -620,6 +633,93 @@ modules:
 	}
 }
 
+func TestListShowsInactiveModulesInOrderWithoutFetchingThem(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: first
+    items:
+      - run: "true"
+  - name: second
+    from: %q
+    only_tags: [work]
+  - name: third
+    items:
+      - package: git
+        via: brew
+      - run: "true"
+`, ref))
+
+	var output bytes.Buffer
+	root := buildRoot()
+	root.SetOut(&output)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"list", "--config", path})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0", got)
+	}
+	for name, statePath := range map[string]string{
+		"lockfile": registry.LockPath(path),
+		"cache":    cacheRoot,
+	} {
+		if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+		}
+	}
+
+	got := output.String()
+	for _, text := range []string{
+		"first", "1 items (1 run)",
+		"second", "skipped (tag mismatch)",
+		"third", "2 items (1 package, 1 run)",
+	} {
+		if !strings.Contains(got, text) {
+			t.Errorf("output = %q, want %q", got, text)
+		}
+	}
+	first := strings.Index(got, "first")
+	second := strings.Index(got, "second")
+	third := strings.Index(got, "third")
+	if first < 0 || second <= first || third <= second {
+		t.Errorf("module order in output = %q, want first < second < third", got)
+	}
+}
+
+func TestListUsesFromRefForUnaliasedInactiveModule(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+    only_tags: [work]
+`, ref))
+
+	var output bytes.Buffer
+	root := buildRoot()
+	root.SetOut(&output)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"list", "--config", path})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0", got)
+	}
+	if got := output.String(); !strings.Contains(got, ref) || !strings.Contains(got, "skipped (tag mismatch)") {
+		t.Fatalf("output = %q, want ref and tag-mismatch status", got)
+	}
+}
+
 func TestStatusCmdExecute(t *testing.T) {
 	path := writeTestConfig(t, `
 modules:
@@ -823,6 +923,292 @@ modules:
 	root.SetArgs([]string{"apply", "--dry-run", "--config", path, "alpha"})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNamedCommandsRejectTagInactiveModuleBeforeSideEffects(t *testing.T) {
+	for _, command := range []string{"apply", "push", "pull", "sync", "verify"} {
+		t.Run(command, func(t *testing.T) {
+			testutil.SetHome(t, t.TempDir())
+			cacheRoot := filepath.Join(t.TempDir(), "cache")
+			t.Setenv("XDG_CACHE_HOME", cacheRoot)
+			marker := filepath.Join(t.TempDir(), "ran")
+			path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: inactive
+    only_tags: [work]
+    hooks:
+      before_apply: "touch %s"
+    items:
+      - run: "true"
+        verify: "touch %s"
+`, marker, marker))
+
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{command, "--config", path, "inactive"})
+			err := root.Execute()
+			if got := exitCode(err); got != exitUsage {
+				t.Fatalf("exit code = %d, want %d; error = %v", got, exitUsage, err)
+			}
+			for _, text := range []string{"inactive", "tag filters do not match", "--ignore-tags"} {
+				if !strings.Contains(err.Error(), text) {
+					t.Errorf("error = %q, want %q", err, text)
+				}
+			}
+			for name, statePath := range map[string]string{
+				"action marker": marker,
+				"audit log":     audit.LogPath(),
+				"lockfile":      registry.LockPath(path),
+				"cache":         cacheRoot,
+			} {
+				if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+					t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestCommandsIgnoreTagMismatchOnlyWithExplicitFlag(t *testing.T) {
+	for _, command := range []string{"apply", "push", "pull", "sync", "verify"} {
+		t.Run(command, func(t *testing.T) {
+			testutil.SetHome(t, t.TempDir())
+			marker := filepath.Join(t.TempDir(), "ran")
+			path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: inactive
+    only_tags: [work]
+    hooks:
+      before_apply: "touch %s"
+    items:
+      - run: "true"
+        verify: "touch %s"
+`, marker, marker))
+
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{command, "--ignore-tags", "--config", path, "inactive"})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("%s --ignore-tags: %v", command, err)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("%s did not reach inactive module: %v", command, err)
+			}
+		})
+	}
+
+	t.Run("status", func(t *testing.T) {
+		testutil.SetHome(t, t.TempDir())
+		path := writeTestConfig(t, `
+modules:
+  - name: inactive
+    only_tags: [work]
+    items:
+      - run: "true"
+`)
+		root := buildRoot()
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		root.SetArgs([]string{"status", "--ignore-tags", "--config", path})
+
+		stdout, writer, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		previousStdout := os.Stdout
+		os.Stdout = writer
+		executeErr := root.Execute()
+		os.Stdout = previousStdout
+		if closeErr := writer.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		output, readErr := io.ReadAll(stdout)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if executeErr != nil {
+			t.Fatalf("status --ignore-tags: %v", executeErr)
+		}
+		if !strings.Contains(string(output), "inactive") {
+			t.Fatalf("status output = %q, want inactive module", output)
+		}
+	})
+}
+
+func TestTagFilteringPrecedesRegistryResolution(t *testing.T) {
+	for _, command := range []string{"apply", "status", "verify"} {
+		t.Run(command, func(t *testing.T) {
+			testutil.SetHome(t, t.TempDir())
+			cacheRoot := filepath.Join(t.TempDir(), "cache")
+			t.Setenv("XDG_CACHE_HOME", cacheRoot)
+			var replacement atomic.Bool
+			var requests atomic.Int32
+			ref := serveCommandRegistryModule(t, &replacement, &requests)
+			path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - name: inactive
+    from: %q
+    only_tags: [work]
+`, ref))
+
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{command, "--config", path})
+			if err := root.Execute(); err != nil {
+				t.Fatalf("%s: %v", command, err)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("%s requests = %d, want 0", command, got)
+			}
+			for name, statePath := range map[string]string{
+				"lockfile": registry.LockPath(path),
+				"cache":    cacheRoot,
+			} {
+				if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+					t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestMalformedMachineTagsFailBeforeRegistryResolution(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	writeMachineConfig(t, "tags: [")
+	var replacement atomic.Bool
+	var requests atomic.Int32
+	ref := serveCommandRegistryModule(t, &replacement, &requests)
+	path := writeTestConfig(t, fmt.Sprintf("modules:\n  - from: %q\n", ref))
+
+	root := buildRoot()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"apply", "--config", path})
+	err := root.Execute()
+	if err == nil || !strings.Contains(err.Error(), "parse machine config") {
+		t.Fatalf("error = %v, want machine config parse failure", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests = %d, want 0", got)
+	}
+	for name, statePath := range map[string]string{
+		"lockfile": registry.LockPath(path),
+		"cache":    cacheRoot,
+	} {
+		if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+		}
+	}
+}
+
+func TestNamedInactiveModuleFailsBeforeUnrelatedActiveResolution(t *testing.T) {
+	for _, command := range []string{"apply", "push", "pull", "sync", "verify"} {
+		t.Run(command, func(t *testing.T) {
+			testutil.SetHome(t, t.TempDir())
+			cacheRoot := filepath.Join(t.TempDir(), "cache")
+			t.Setenv("XDG_CACHE_HOME", cacheRoot)
+			var replacement atomic.Bool
+			var requests atomic.Int32
+			ref := serveCommandRegistryModule(t, &replacement, &requests)
+			path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+  - name: inactive
+    only_tags: [work]
+    items:
+      - run: "true"
+        verify: "true"
+`, ref))
+
+			root := buildRoot()
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			root.SetArgs([]string{command, "--config", path, "inactive"})
+			err := root.Execute()
+			if got := exitCode(err); got != exitUsage {
+				t.Fatalf("exit code = %d, want %d; error = %v", got, exitUsage, err)
+			}
+			if got := requests.Load(); got != 0 {
+				t.Fatalf("requests = %d, want 0 before named tag rejection", got)
+			}
+			for name, statePath := range map[string]string{
+				"lockfile": registry.LockPath(path),
+				"cache":    cacheRoot,
+			} {
+				if _, statErr := os.Stat(statePath); !errors.Is(statErr, fs.ErrNotExist) {
+					t.Errorf("%s stat error = %v, want fs.ErrNotExist", name, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestIgnoreTagsSelectsUnaliasedRemoteByFromRef(t *testing.T) {
+	testutil.SetHome(t, t.TempDir())
+	cacheRoot := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+	runMarker := filepath.Join(t.TempDir(), "ran")
+	verifyMarker := filepath.Join(t.TempDir(), "verified")
+	var requests atomic.Int32
+	module := fmt.Sprintf(`
+name: remote-internal
+items:
+  - run: "touch %s"
+    verify: "touch %s"
+`, runMarker, verifyMarker)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Write([]byte(module))
+	}))
+	t.Cleanup(srv.Close)
+	previousTransport := httputil.Client.Transport
+	httputil.Client.Transport = srv.Client().Transport
+	t.Cleanup(func() { httputil.Client.Transport = previousTransport })
+	ref := strings.TrimPrefix(srv.URL, "https://") + "/module.yaml"
+	path := writeTestConfig(t, fmt.Sprintf(`
+modules:
+  - from: %q
+    only_tags: [work]
+`, ref))
+
+	rejected := buildRoot()
+	rejected.SetOut(io.Discard)
+	rejected.SetErr(io.Discard)
+	rejected.SetArgs([]string{"apply", "--config", path, ref})
+	err := rejected.Execute()
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("rejected exit code = %d, want %d; error = %v", got, exitUsage, err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("requests before override = %d, want 0", got)
+	}
+
+	applied := buildRoot()
+	applied.SetOut(io.Discard)
+	applied.SetErr(io.Discard)
+	applied.SetArgs([]string{"apply", "--ignore-tags", "--config", path, ref})
+	if err := applied.Execute(); err != nil {
+		t.Fatalf("apply unaliased ref with override: %v", err)
+	}
+	if _, err := os.Stat(runMarker); err != nil {
+		t.Fatalf("apply did not select unaliased ref: %v", err)
+	}
+
+	verified := buildRoot()
+	verified.SetOut(io.Discard)
+	verified.SetErr(io.Discard)
+	verified.SetArgs([]string{"verify", "--ignore-tags", "--config", path, ref})
+	if err := verified.Execute(); err != nil {
+		t.Fatalf("verify unaliased ref with override: %v", err)
+	}
+	if _, err := os.Stat(verifyMarker); err != nil {
+		t.Fatalf("verify did not select unaliased ref: %v", err)
 	}
 }
 

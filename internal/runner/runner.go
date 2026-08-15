@@ -43,16 +43,17 @@ type ModuleResult struct {
 
 // Runner orchestrates applying config modules on the current platform.
 type Runner struct {
-	Config      config.Config
-	DryRun      bool
-	Verbose     bool
-	Atomic      bool // snapshot-and-rollback per module (default true)
-	OS          string
-	MachineTags []string
-	Out         io.Writer
-	UI          *ui.UI
-	AgeKey           *ageutil.Key
-	Command          string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
+	Config            config.Config
+	DryRun            bool
+	Verbose           bool
+	Atomic            bool // snapshot-and-rollback per module (default true)
+	OS                string
+	MachineTags       []string
+	IgnoreTags        bool
+	Out               io.Writer
+	UI                *ui.UI
+	AgeKey            *ageutil.Key
+	Command           string // "apply" | "push" | "pull" | "sync" | "verify" — for audit log
 	DirectionOverride string // when set, overrides direction on all non-link file items
 }
 
@@ -503,7 +504,7 @@ func (r *Runner) buildAction(item config.Item, moduleName ...string) (act action
 // --- helpers -----------------------------------------------------------------
 
 func (r *Runner) matchesTags(mod config.Module) bool {
-	return tags.Matches(r.MachineTags, mod.OnlyTags, mod.ExcludeTags)
+	return r.IgnoreTags || tags.Matches(r.MachineTags, mod.OnlyTags, mod.ExcludeTags)
 }
 
 func (r *Runner) skipManager(manager string) bool {
