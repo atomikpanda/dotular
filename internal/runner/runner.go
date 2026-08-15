@@ -707,7 +707,7 @@ func (r *Runner) applyPreparedItem(
 	}
 
 	r.UI.ItemResult(prepared.action.Describe(), time.Since(start), runErr)
-	outcome, errorText := "success", ""
+	outcome, errorText := "applied", ""
 	if runErr != nil {
 		outcome = "failure"
 		errorText = runErr.Error()

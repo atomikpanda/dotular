@@ -266,7 +266,7 @@ func withMutationOptions(
 		&options.rollbackTimeout,
 		"rollback-timeout",
 		runner.DefaultRollbackTimeout,
-		"maximum time allowed for rollback",
+		"maximum time for contextual compensation commands; filesystem restore/cleanup may continue",
 	)
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
 		if options.rollbackTimeout <= 0 {

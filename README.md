@@ -18,7 +18,7 @@ dotular replaces all of that with a single declarative YAML file.
 | Runs scripts | Yes — local and remote, with skip/verify | Templates only | No | Bootstrap only | No |
 | OS settings | Yes — macOS `defaults`, Windows registry | No | No | No | No |
 | Cross-platform config | One file, per-OS paths and packages | Separate templates | Symlinks only | Git + encryption | macOS only |
-| Atomicity | Snapshot + rollback of file and directory items, per module | No | No | No | No |
+| Best-effort rollback | Per-module transactional rollback across supported side effects | No | No | No | No |
 | No templating language | Plain YAML — no Go templates to learn | Go `text/template` | N/A | Jinja2 (alt) | N/A |
 | Shareable modules | Registry with parameters and overrides | Community scripts | No | No | No |
 | Audit log | Built-in, append-only JSON | No | No | No | No |
@@ -55,7 +55,7 @@ No bootstrap script. No platform `if`-statements. One file, any machine.
 - **Verification** — health-check commands per item (`verify:`)
 - **Encrypted secrets** — `age`-encrypted files, decrypted on apply
 - **File permissions** — enforce `chmod`-style permissions on pushed files
-- **Atomic applies** — snapshot the destination of each `file` and `directory` item before its module runs; roll back on failure
+- **Best-effort transactional rollback** — prepare filesystem snapshots and typed or explicit compensation before mutating a module; unwind on failure
 - **Machine tagging** — `only_tags`/`exclude_tags` per module
 - **Audit log** — append-only log of every action taken
 - **Registry** — reusable remote modules with parameters and overrides
@@ -111,10 +111,12 @@ modules:
     hooks:
       before_apply: echo "starting"
       after_apply:  echo "done"
-      before_sync:  echo "syncing"
-      after_sync:   echo "synced"
+      rollback:
+        before_apply: echo "undo starting"
+        after_apply:  echo "undo done"
     items:
-      - ...
+      - run: mkdir -p ~/.cache/my-module
+        rollback: rm -rf ~/.cache/my-module
 ```
 
 ### Config file formats
@@ -143,6 +145,7 @@ formatting in the file are lost**. Commit before running either command.
   via: brew           # see the table below for every accepted value
   skip_if: command -v rg
   verify: rg --version
+  rollback: brew uninstall ripgrep  # fallback if exact package capture is unavailable
 ```
 
 Supported package managers and the platform each one is bound to:
@@ -173,10 +176,11 @@ Package items are **idempotent** — dotular checks whether the package is alrea
 #### `script` — run a shell script
 
 ```yaml
-- script: https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh
-  via: remote          # remote | local (default: local)
-  skip_if: command -v brew
-  verify: brew --version
+- script: scripts/install-shell-tools.sh
+  via: local
+  skip_if: command -v shell-tool
+  verify: shell-tool --version
+  rollback: scripts/uninstall-shell-tools.sh
 ```
 
 `via: remote` downloads the script to a temp file and runs it. `via: local` runs the path as a local script.
@@ -236,7 +240,8 @@ Downloads the archive (`.tar.gz`, `.tgz`, `.zip`, or plain binary), extracts the
 #### `run` — inline shell command
 
 ```yaml
-- run: nvim --headless "+Lazy sync" +qa
+- run: mkdir -p ~/.cache/my-tool
+  rollback: rm -rf ~/.cache/my-tool
   after: directory     # informational only — ordering follows declaration order
 ```
 
@@ -246,6 +251,7 @@ Downloads the archive (`.tar.gz`, `.tgz`, `.zip`, or plain binary), extracts the
 - setting: com.apple.dock       # macOS bundle ID, or a Windows registry path
   key: autohide
   value: true                   # bool | int | float | string
+  rollback: defaults delete com.apple.dock autohide  # fallback if exact capture is unavailable
 ```
 
 The command used depends on the platform the apply runs on:
@@ -266,7 +272,11 @@ and booleans are written as `1`/`0`. `setting` items are not supported on Linux.
 |-------------|-------------|
 | `skip_if`   | Shell command — skip this item if it exits zero |
 | `verify`    | Shell command — run after apply and on `dotular verify`; fails the item if non-zero |
-| `hooks`     | `before_apply`, `after_apply`, `before_sync`, `after_sync` |
+| `rollback`  | Shell compensation for `script`/`run`, or fallback for `package`/`setting`; rejected for `file`/`directory`/`binary` |
+| `hooks`     | `before_apply`, `after_apply`, `before_sync`, `after_sync`; optional compensations use the same keys under `hooks.rollback` |
+
+Every `hooks.rollback.<name>` requires the matching forward `hooks.<name>`.
+Rollback commands cannot be blank. These rules apply to module and item hooks.
 
 ---
 
@@ -314,12 +324,15 @@ This command rewrites the config file — see [Config file formats](#config-file
 dotular apply [module...]
 dotular apply --dry-run
 dotular apply --no-atomic
+dotular apply --rollback-timeout 30s
 dotular apply homebrew --ignore-tags
 ```
 
-Apply all modules (or specified ones). Runs hooks, checks idempotency, and handles
-rollback on failure. Tag filters also apply when modules are named explicitly;
-`--ignore-tags` is the deliberate override.
+Apply all modules (or specified ones). Runs hooks, checks idempotency, and uses
+best-effort transactional rollback by default. `--rollback-timeout` bounds
+contextual compensation commands and defaults to two minutes; filesystem
+snapshot restoration/cleanup may continue. Tag filters also apply when modules
+are named explicitly; `--ignore-tags` is the deliberate override.
 
 ### `push` / `pull` / `sync`
 
@@ -327,14 +340,19 @@ rollback on failure. Tag filters also apply when modules are named explicitly;
 dotular push [module...]
 dotular pull [module...]
 dotular sync [module...]
+dotular sync --rollback-timeout 30s
 ```
 
 Tag filters apply to all three commands, including named modules. Pass
-`--ignore-tags` to override them for one invocation.
+`--ignore-tags` to override them for one invocation. Like `apply`, all three
+commands accept `--rollback-timeout` with a two-minute default.
 
-Override the `direction` on all file and directory items for the run. Link items (`link: true`) are never overridden.
+These commands override `direction` on all file and directory items for the
+run. Link items (`link: true`) are never overridden.
 
-`pull` and `sync` reconcile files only: `package`, `script`, `binary`, `run`, and `setting` items are skipped for the run (listed with `--verbose`, recorded in the audit log). `push` behaves like `apply` and runs them.
+`pull` and `sync` reconcile files only: `package`, `script`, `binary`, `run`,
+and `setting` items are skipped for the run (listed with `--verbose`, recorded
+in the audit log). `push` behaves like `apply` and runs them.
 
 ### `verify`
 
@@ -439,7 +457,7 @@ fails without migrating either ref.
 | `--config`    | Path to config file (default `dotular.yaml`) |
 | `--dry-run`   | Print actions without executing |
 | `--verbose`   | Show skipped items and extra output |
-| `--no-atomic` | Disable snapshot/rollback per module |
+| `--no-atomic` | Bypass runtime snapshot capture, compensation, and rollback warnings/events |
 | `--no-cache`  | Re-fetch registry modules without changing existing pins |
 
 ---
@@ -552,23 +570,92 @@ command that explicitly authorizes replacing existing pins.
 
 ---
 
-## Atomic applies
+## Best-effort transactional rollback
 
-By default, dotular snapshots the destination of every `file` and `directory` item before running each module. If any item in the module fails, the snapshot is restored. Disable with `--no-atomic`.
+By default, `apply`, `push`, `pull`, and `sync` prepare one in-process
+transaction per module. This is **best-effort transactional rollback**, not
+database-style atomicity. Before the module's first mutating hook or action,
+dotular validates explicit rollback commands and captures every supported
+pre-state:
 
-Only `file` and `directory` items are snapshotted. `package`, `script`, `binary`, `run`, and `setting` items are not covered — an installed package, an executed script, or a written OS setting is not undone by a rollback.
+- `file` and `directory` items snapshot whichever side their effective
+  direction may write. `binary` items snapshot the exact install destination.
+  Existing paths, contents, permissions, and links are restored. If an action
+  creates missing parent directories, rollback removes the highest created
+  ancestor below the nearest pre-existing parent without deleting that parent.
+- A package installed by the transaction is automatically uninstalled only
+  when the package manager query proves that exact package was previously
+  absent. A package proved present is skipped. Unsupported, failed, malformed,
+  or imprecise state queries never authorize uninstall; `nix` package
+  attributes in particular cannot be mapped exactly to installed names.
+- On macOS, setting rollback can restore prior string, boolean, integer, and
+  float values. On Windows it can restore `REG_SZ`, `REG_EXPAND_SZ`,
+  `REG_BINARY`, `REG_DWORD`, `REG_MULTI_SZ`, and `REG_QWORD` values. A key is
+  deleted only when capture proves it was absent. Unsupported types and
+  inconclusive or failed capture never guess at prior state.
+- `script` and `run` items have no automatic compensation. Give them an
+  explicit item `rollback`. Hooks likewise use their matching command under
+  `hooks.rollback`.
+
+Typed automatic package or setting compensation takes precedence over an
+explicit item rollback. The explicit command is used only when typed capture is
+unavailable; it is not retried if a prepared automatic compensation later
+fails. Filesystem-backed `file`, `directory`, and `binary` items use snapshots
+and reject item rollback commands.
+
+Missing compensation for an applicable arbitrary command or hook emits a
+warning **before mutation and continues**. If the module later unwinds, that
+operation is reported as `uncompensated`.
+
+An action, hook, or item `verify` error, command cancellation, or panic starts
+rollback. Each attempted step is registered before it runs, so even the failing
+step is considered. Contextual compensations run in strict LIFO order on a
+fresh context and continue after ordinary failures. Once `--rollback-timeout`
+expires, dotular stops starting contextual compensation commands; the default
+timeout is two minutes. Context-free filesystem snapshot restore and discard
+may continue afterward, and their failures remain contextual errors. Panic
+rollback re-panics with the original value.
+
+A failed transaction exits nonzero even when every compensation succeeds, and
+the affected module reports `0 applied`. Detailed terminal and audit output
+use `rolled_back`, `rollback_failed`, and `uncompensated`; hooks are detailed
+without inflating item counts. Rollback failures do not prevent earlier
+compensations from being attempted.
+
+If final snapshot discard fails after all forward work succeeds, the command
+exits nonzero but does not start rollback or relabel the committed forward
+outcomes.
+
+Pass `--no-atomic` to a mutating command to bypass runtime preflight, state
+capture, compensation, warnings, and rollback events. Strict YAML decoding,
+configuration validation, and template validation still apply.
+
+The first supported termination signal (SIGINT, and SIGTERM on Unix) cancels
+forward work and starts rollback. A subsequent signal after rollback starts
+terminates immediately.
+SIGKILL, power loss, kernel failure, and process death cannot be recovered.
+Package dependency removal, automatic reversal of undeclared command effects,
+compensation retries, durable recovery, and restartable transactions are also
+out of scope.
 
 ---
 
 ## Audit log
 
-Every action is appended to `~/.local/share/dotular/history.log` as JSON lines:
+Every forward action is appended to
+`~/.local/share/dotular/history.log` as JSON lines. Rollback attempts add
+`phase: "rollback"`, a `scope` of `module` or `item`, the target and operation
+in `item`, and one of the structured outcomes `rolled_back`,
+`rollback_failed`, or `uncompensated`:
 
+```json
+{"time":"2026-08-15T12:00:00Z","command":"apply","module":"editor","item":"run \"install-plugin\"","outcome":"applied"}
+{"time":"2026-08-15T12:00:01Z","command":"apply","module":"editor","item":"run \"install-plugin\" [action]","phase":"rollback","scope":"item","outcome":"rolled_back"}
 ```
-TIME                  COMMAND   MODULE               OUTCOME   ITEM
-2024-01-15 12:00:00   apply     homebrew             skipped   script "https://..."
-2024-01-15 12:00:01   apply     Visual Studio Code   success   push settings.json -> ...
-```
+
+The final summary reports committed `applied` items separately from rollback
+operation counts. Each attempted item has one final item outcome; hook and
+filesystem rollback details do not inflate the applied item count.
 
 ---
 

@@ -1355,6 +1355,58 @@ func assertNoSnapshotFiles(t *testing.T, tempRoot string) {
 	}
 }
 
+func TestApplyModuleAuditUsesTransactionalOutcomeVocabulary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("audit.Log resolves its path from HOME only on Unix")
+	}
+	tests := []struct {
+		name    string
+		atomic  bool
+		outcome string
+	}{
+		{name: "atomic applied item", atomic: true, outcome: "applied"},
+		{name: "non-transactional legacy success", atomic: false, outcome: "success"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			action := &lifecycleAction{
+				description: "audit action",
+				prepare: func(context.Context) (actions.CompensationPreparation, error) {
+					return actions.CompensationPreparation{
+						Compensation: lifecycleCompensation{description: "undo audit action"},
+					}, nil
+				},
+			}
+			r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"audit-action": action})
+			r.Atomic = tt.atomic
+			r.Command = "apply"
+
+			result := r.ApplyModule(context.Background(), config.Module{
+				Name:  "audit-outcome",
+				Items: []config.Item{{Run: "audit-action"}},
+			})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			if result.Applied != 1 {
+				t.Fatalf("Applied = %d, want 1", result.Applied)
+			}
+
+			entries, err := audit.Read("audit-outcome", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("audit entries = %d, want 1", len(entries))
+			}
+			if entries[0].Outcome != tt.outcome {
+				t.Errorf("Outcome = %q, want %q", entries[0].Outcome, tt.outcome)
+			}
+		})
+	}
+}
+
 func TestApplyModuleAtomicPreflightStopsBeforeEffects(t *testing.T) {
 	t.Run("invalid applicable rollback syntax", func(t *testing.T) {
 		tempRoot := t.TempDir()
