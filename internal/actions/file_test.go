@@ -32,14 +32,11 @@ func TestFileActionResolvedTarget(t *testing.T) {
 	}
 }
 
-func TestFileActionWritePathsPinsTargetForRun(t *testing.T) {
+func TestFileActionWritePathsCoversTargetCreatedAsDirectoryBeforeRun(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.txt")
 	destination := filepath.Join(dir, "destination.conf")
 	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	action := &FileAction{
@@ -48,30 +45,25 @@ func TestFileActionWritePathsPinsTargetForRun(t *testing.T) {
 		Direction:   "push",
 	}
 
-	writePaths := action.WritePaths()
-	wantTarget := filepath.Join(destination, filepath.Base(source))
-	if !reflect.DeepEqual(writePaths, []string{wantTarget}) {
-		t.Fatalf("WritePaths() = %v, want [%s]", writePaths, wantTarget)
+	nestedTarget := filepath.Join(destination, filepath.Base(source))
+	if got, want := action.WritePaths(), []string{destination, nestedTarget}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("WritePaths() = %v, want %v", got, want)
 	}
-	if err := os.Remove(destination); err != nil {
+	if err := os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(destination, []byte("replaced by earlier operation"), 0o600); err != nil {
+	if got := action.ResolvedTarget(); got != nestedTarget {
+		t.Fatalf("ResolvedTarget() after destination creation = %q, want %q", got, nestedTarget)
+	}
+	if err := action.Run(context.Background(), false); err != nil {
 		t.Fatal(err)
 	}
-
-	if got := action.ResolvedTarget(); got != wantTarget {
-		t.Fatalf("ResolvedTarget() after WritePaths = %q, want pinned %q", got, wantTarget)
-	}
-	if err := action.Run(context.Background(), false); err == nil {
-		t.Fatal("Run() succeeded after the pinned target's parent became a file")
-	}
-	content, err := os.ReadFile(destination)
+	content, err := os.ReadFile(nestedTarget)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(content); got != "replaced by earlier operation" {
-		t.Fatalf("destination = %q, want earlier operation preserved", got)
+	if got := string(content); got != "source" {
+		t.Fatalf("nested target = %q, want source", got)
 	}
 }
 

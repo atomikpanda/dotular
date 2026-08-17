@@ -1355,6 +1355,56 @@ func TestApplyModuleFileItemWithSnapshot(t *testing.T) {
 	}
 }
 
+func TestApplyModuleAtomicFileTargetReflectsDirectoryCreatedByEarlierItem(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+	dir := t.TempDir()
+	modDir := filepath.Join(dir, "dynamic-file-target")
+	if err := os.MkdirAll(modDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modDir, "source.txt"), []byte("content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(dir, "destination.conf")
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+
+	mod := config.Module{
+		Name: "dynamic-file-target",
+		Items: []config.Item{
+			{Run: "mkdir -p " + destination},
+			{
+				File:        "source.txt",
+				Destination: config.PlatformMap{MacOS: destination},
+				Direction:   "push",
+			},
+		},
+	}
+	r := newTestRunner(config.Config{})
+	r.DryRun = false
+	r.Atomic = true
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	data, err := os.ReadFile(filepath.Join(destination, "source.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "content" {
+		t.Fatalf("destination content = %q, want content", data)
+	}
+}
+
 func TestApplyModuleDirItemWithSnapshot(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-only")
