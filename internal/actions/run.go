@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/atomikpanda/dotular/internal/color"
+	"github.com/atomikpanda/dotular/internal/procutil"
 )
 
 // RunAction executes an inline shell command declared directly in the module.
@@ -42,9 +43,9 @@ func (a *RunAction) Run(ctx context.Context, dryRun bool) error {
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "powershell", "-Command", a.Command)
+		cmd = procutil.CommandContext(ctx, "powershell", "-Command", a.Command)
 	} else {
-		cmd = exec.CommandContext(ctx, "sh", "-c", a.Command)
+		cmd = procutil.CommandContext(ctx, "sh", "-c", a.Command)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

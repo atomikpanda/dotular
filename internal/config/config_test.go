@@ -221,6 +221,79 @@ func TestLoadLegacyFormat(t *testing.T) {
 	}
 }
 
+func TestLoadRollbackConfiguration(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "mapping",
+			yaml: `modules:
+  - name: rollback
+    hooks:
+      before_apply: prepare-workspace
+      after_apply: finalize-workspace
+      rollback:
+        before_apply: undo-prepare
+        after_apply: undo-finalize
+    items:
+      - run: install-custom-service
+        rollback: uninstall-custom-service
+        hooks:
+          before_apply: prepare-item
+          rollback:
+            before_apply: undo-prepare-item
+`,
+		},
+		{
+			name: "legacy sequence",
+			yaml: `- name: rollback
+  hooks:
+    before_apply: prepare-workspace
+    after_apply: finalize-workspace
+    rollback:
+      before_apply: undo-prepare
+      after_apply: undo-finalize
+  items:
+    - run: install-custom-service
+      rollback: uninstall-custom-service
+      hooks:
+        before_apply: prepare-item
+        rollback:
+          before_apply: undo-prepare-item
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "dotular.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if len(cfg.Modules) != 1 || len(cfg.Modules[0].Items) != 1 {
+				t.Fatalf("Load() config = %#v, want one module with one item", cfg)
+			}
+			mod := cfg.Modules[0]
+			if mod.Hooks.Rollback.BeforeApply != "undo-prepare" ||
+				mod.Hooks.Rollback.AfterApply != "undo-finalize" {
+				t.Fatalf("module rollback hooks = %#v", mod.Hooks.Rollback)
+			}
+			item := mod.Items[0]
+			if item.Rollback != "uninstall-custom-service" {
+				t.Fatalf("item rollback = %q", item.Rollback)
+			}
+			if item.Hooks.Rollback.BeforeApply != "undo-prepare-item" {
+				t.Fatalf("item rollback hooks = %#v", item.Hooks.Rollback)
+			}
+		})
+	}
+}
+
 func TestLoadEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "dotular.yaml")
@@ -731,6 +804,154 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestValidateItemsRollbackPlacement(t *testing.T) {
+	allowed := []Item{
+		{Package: "git", Rollback: "remove-git"},
+		{Setting: "domain", Rollback: "restore-setting"},
+		{Script: "install.sh", Rollback: "uninstall.sh"},
+		{Run: "install-custom-service", Rollback: "uninstall-custom-service"},
+	}
+	for _, item := range allowed {
+		t.Run("allows "+item.Type(), func(t *testing.T) {
+			if err := ValidateItems([]Item{item}, ItemValidationOptions{}); err != nil {
+				t.Fatalf("ValidateItems() error = %v", err)
+			}
+		})
+	}
+
+	unsupported := []Item{
+		{File: ".vimrc", Rollback: "restore-file"},
+		{Directory: "nvim", Rollback: "restore-directory"},
+		{Binary: "tool", Rollback: "remove-tool"},
+	}
+	for _, item := range unsupported {
+		t.Run("rejects "+item.Type(), func(t *testing.T) {
+			err := ValidateItems([]Item{item}, ItemValidationOptions{})
+			want := "item 1: rollback is not supported for " + item.Type() + " items"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("ValidateItems() error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestRollbackHooksRequireMatchingForwardHook(t *testing.T) {
+	tests := []struct {
+		name        string
+		setForward  func(*ModuleHooks, *ItemHooks)
+		setRollback func(*RollbackHooks)
+	}{
+		{
+			name: "before_apply",
+			setForward: func(module *ModuleHooks, item *ItemHooks) {
+				module.BeforeApply = "prepare"
+				item.BeforeApply = "prepare"
+			},
+			setRollback: func(hooks *RollbackHooks) { hooks.BeforeApply = "undo-prepare" },
+		},
+		{
+			name: "after_apply",
+			setForward: func(module *ModuleHooks, item *ItemHooks) {
+				module.AfterApply = "finalize"
+				item.AfterApply = "finalize"
+			},
+			setRollback: func(hooks *RollbackHooks) { hooks.AfterApply = "undo-finalize" },
+		},
+		{
+			name: "before_sync",
+			setForward: func(module *ModuleHooks, item *ItemHooks) {
+				module.BeforeSync = "prepare"
+				item.BeforeSync = "prepare"
+			},
+			setRollback: func(hooks *RollbackHooks) { hooks.BeforeSync = "undo-prepare" },
+		},
+		{
+			name: "after_sync",
+			setForward: func(module *ModuleHooks, item *ItemHooks) {
+				module.AfterSync = "finalize"
+				item.AfterSync = "finalize"
+			},
+			setRollback: func(hooks *RollbackHooks) { hooks.AfterSync = "undo-finalize" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var rollback RollbackHooks
+			tt.setRollback(&rollback)
+
+			moduleHooks := ModuleHooks{Rollback: rollback}
+			err := (Config{Modules: []Module{{
+				Name:  "hooks",
+				Items: []Item{{Run: "do-work"}},
+				Hooks: moduleHooks,
+			}}}).Validate()
+			moduleWant := `module 1 ("hooks"): hooks.rollback.` + tt.name + " requires hooks." + tt.name
+			if err == nil || !strings.Contains(err.Error(), moduleWant) {
+				t.Fatalf("Config.Validate() error = %v, want %q", err, moduleWant)
+			}
+
+			itemHooks := ItemHooks{Rollback: rollback}
+			err = ValidateItems([]Item{{Run: "do-work", Hooks: itemHooks}}, ItemValidationOptions{})
+			itemWant := "item 1: hooks.rollback." + tt.name + " requires hooks." + tt.name
+			if err == nil || !strings.Contains(err.Error(), itemWant) {
+				t.Fatalf("ValidateItems() error = %v, want %q", err, itemWant)
+			}
+
+			tt.setForward(&moduleHooks, &itemHooks)
+			if err := (Config{Modules: []Module{{
+				Name:  "hooks",
+				Items: []Item{{Run: "do-work", Hooks: itemHooks}},
+				Hooks: moduleHooks,
+			}}}).Validate(); err != nil {
+				t.Fatalf("Config.Validate() matching hook pair error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRollbackCommandsRejectWhitespace(t *testing.T) {
+	t.Run("module hook", func(t *testing.T) {
+		err := (Config{Modules: []Module{{
+			Name:  "hooks",
+			Items: []Item{{Run: "do-work"}},
+			Hooks: ModuleHooks{
+				AfterApply: "finalize",
+				Rollback:   RollbackHooks{AfterApply: " \t"},
+			},
+		}}}).Validate()
+		want := `module 1 ("hooks"): hooks.rollback.after_apply must not be blank`
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Config.Validate() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("item action", func(t *testing.T) {
+		err := ValidateItems(
+			[]Item{{Run: "do-work", Rollback: " \t"}},
+			ItemValidationOptions{},
+		)
+		want := "item 1: rollback must not be blank"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("ValidateItems() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("item hook", func(t *testing.T) {
+		err := ValidateItems([]Item{{
+			Run: "do-work",
+			Hooks: ItemHooks{
+				BeforeApply: "prepare",
+				Rollback:    RollbackHooks{BeforeApply: "\n "},
+			},
+		}}, ItemValidationOptions{})
+		want := "item 1: hooks.rollback.before_apply must not be blank"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("ValidateItems() error = %v, want %q", err, want)
+		}
+	})
+}
+
 func TestLoadRejectsIssueExamples(t *testing.T) {
 	tests := []struct {
 		name string
@@ -743,6 +964,14 @@ func TestLoadRejectsIssueExamples(t *testing.T) {
 		{"no primary", "modules:\n  - name: bad\n    items:\n      - verify: 'true'\n", "expected exactly one primary field; found none"},
 		{"from and items", "modules:\n  - name: bad\n    from: github.com/example/modules/bad\n    items:\n      - package: git\n", "from and items are mutually exclusive"},
 		{"invalid direction", "modules:\n  - name: bad\n    items:\n      - file: .vimrc\n        direction: pul\n", `direction "pul" must be push, pull, or sync`},
+		{"unknown module rollback hook", "modules:\n  - name: bad\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_aply: undo\n    items:\n      - package: git\n", "before_aply"},
+		{"unknown item rollback hook", "modules:\n  - name: bad\n    items:\n      - run: install\n        hooks:\n          before_apply: prepare\n          rollback:\n            before_aply: undo\n", "before_aply"},
+		{"mapping empty module rollback hook", "modules:\n  - name: bad\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_apply: ''\n    items:\n      - package: git\n", `module 1 ("bad"): hooks.rollback.before_apply must not be blank`},
+		{"mapping empty item rollback action", "modules:\n  - name: bad\n    items:\n      - run: install\n        rollback: ''\n", `module 1 ("bad"): items: item 1: rollback must not be blank`},
+		{"legacy null item rollback action", "- name: bad\n  items:\n    - run: install\n      rollback: null\n", `module 1 ("bad"): items: item 1: rollback must not be blank`},
+		{"legacy null item rollback hook", "- name: bad\n  items:\n    - run: install\n      hooks:\n        before_apply: prepare\n        rollback:\n          before_apply: null\n", `module 1 ("bad"): items: item 1: hooks.rollback.before_apply must not be blank`},
+		{"mapping merged empty item rollback", "modules:\n  - name: bad\n    items:\n      - setting: holder\n        value: &rollback_item\n          rollback: ''\n      - <<: *rollback_item\n        run: install\n", `module 1 ("bad"): items: item 2: rollback must not be blank`},
+		{"legacy merge-sequence null item rollback hook", "- name: bad\n  items:\n    - setting: holder\n      value: &rollback_hook\n        before_apply: null\n    - run: install\n      hooks:\n        before_apply: prepare\n        rollback:\n          <<: [*rollback_hook]\n", `module 1 ("bad"): items: item 2: hooks.rollback.before_apply must not be blank`},
 	}
 
 	for _, tt := range tests {

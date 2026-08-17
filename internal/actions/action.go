@@ -18,6 +18,12 @@ type Action interface {
 	Run(ctx context.Context, dryRun bool) error
 }
 
+// CompensationPreparer is optionally implemented by actions whose pre-state
+// can be captured as a typed rollback before the action runs.
+type CompensationPreparer interface {
+	PrepareCompensation(ctx context.Context) (CompensationPreparation, error)
+}
+
 // Idempotent is optionally implemented by actions that can self-check whether
 // they have already been applied. The runner uses this for automatic skip logic.
 //

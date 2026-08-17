@@ -27,7 +27,7 @@ Go CLI dotfile manager using Cobra. Module path: `github.com/atomikpanda/dotular
 
 **Action types** (in `internal/actions/`): `package`, `script`, `file`, `directory`, `binary`, `run`, `setting` — each implements the `Action` interface (`Describe()`, `Run()`). Some also implement `Idempotent` (`IsApplied()`).
 
-**Cross-cutting concerns**: `internal/snapshot/` provides rollback per module, but the runner only records the destinations of `file` and `directory` items (`runner.go`, "snapshot destination before modification") — `package`, `script`, `binary`, `run`, and `setting` effects are not rolled back. `internal/audit/` logs all actions. `internal/tags/` filters modules by machine tags. `internal/ageutil/` handles age encryption for sensitive files.
+**Cross-cutting concerns**: `internal/runner/` prepares one best-effort module transaction before mutation. `internal/snapshot/` captures `file`, `directory`, and exact `binary` write paths (including created ancestors); packages and macOS/Windows settings use typed pre-state compensation when exact capture is available; `script`/`run`, package/setting fallbacks, and matching hooks use explicit rollback commands. The runner unwinds attempted operations in LIFO order and reports applied, rolled-back, failed, or uncompensated outcomes through `internal/audit/` and the UI. `internal/tags/` filters modules by machine tags. `internal/ageutil/` handles age encryption for sensitive files.
 
 ## YAML Config Schema
 

@@ -16,8 +16,10 @@ type Entry struct {
 	Command string    `json:"command"` // "apply" | "push" | "pull" | "sync" | "verify"
 	Module  string    `json:"module"`
 	Item    string    `json:"item"`
-	Outcome string    `json:"outcome"`          // "success" | "skipped" | "failure"
-	Reason  string    `json:"reason,omitempty"` // why, when Outcome is "skipped"
+	Phase   string    `json:"phase,omitempty"` // empty for forward operations, "rollback" for compensation
+	Scope   string    `json:"scope,omitempty"` // "module" or "item" for rollback identity
+	Outcome string    `json:"outcome"`         // forward or rollback outcome
+	Reason  string    `json:"reason,omitempty"`
 	Error   string    `json:"error,omitempty"`
 }
 

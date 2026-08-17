@@ -3,11 +3,14 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
+	"github.com/atomikpanda/dotular/internal/actions"
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/ui"
 )
@@ -25,6 +28,55 @@ func atomicRunner() *Runner {
 	r.Out = &buf
 	r.UI = ui.New(&buf, &bytes.Buffer{})
 	return r
+}
+
+func TestCompensatedHookFailureMarksModuleAndFinalSummariesFailed(t *testing.T) {
+	tests := []struct {
+		name  string
+		hooks config.ModuleHooks
+	}{
+		{
+			name: "before_apply",
+			hooks: config.ModuleHooks{
+				BeforeApply: "fail",
+				Rollback:    config.RollbackHooks{BeforeApply: "compensate"},
+			},
+		},
+		{
+			name: "after_apply",
+			hooks: config.ModuleHooks{
+				AfterApply: "fail",
+				Rollback:   config.RollbackHooks{AfterApply: "compensate"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mod := config.Module{Name: "hooks", Hooks: tt.hooks}
+			r := atomicRunner()
+			r.Config = config.Config{Modules: []config.Module{mod}}
+			r.shellRun = func(_ context.Context, command string) error {
+				if command == "fail" {
+					return errors.New("hook failed")
+				}
+				return nil
+			}
+
+			if err := r.ApplyAll(context.Background()); err == nil {
+				t.Fatal("ApplyAll() error = nil, want hook failure")
+			}
+			output := r.Out.(*bytes.Buffer).String()
+			const failedSummary = "[FAIL] 0 applied, 0 skipped, 0 failed"
+			if got := strings.Count(output, failedSummary); got != 2 {
+				t.Fatalf(
+					"summary failure markers = %d, want module and final summaries while item failures stay zero:\n%s",
+					got,
+					output,
+				)
+			}
+		})
+	}
 }
 
 // chdir points the process at dir for the duration of the test, because
@@ -244,5 +296,100 @@ func TestRollbackRestoresRepoSideOnPull(t *testing.T) {
 	}
 	if string(got) != "repo original" {
 		t.Errorf("rollback did not restore the repo-side file that pull overwrote: got %q, want %q", got, "repo original")
+	}
+}
+
+func TestAtomicLifecycleRestoresBinaryBytesModeAndCreatedParents(t *testing.T) {
+	tests := []struct {
+		name      string
+		prepare   func(*testing.T, string)
+		assertion func(*testing.T, string)
+	}{
+		{
+			name: "overwrite",
+			prepare: func(t *testing.T, target string) {
+				write(t, target, "old-binary\x00bytes", 0o751)
+			},
+			assertion: func(t *testing.T, target string) {
+				got, err := os.ReadFile(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != "old-binary\x00bytes" {
+					t.Fatalf("restored binary bytes = %q", got)
+				}
+				info, err := os.Stat(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != 0o751 {
+					t.Fatalf("restored binary mode = %04o, want 0751", info.Mode().Perm())
+				}
+			},
+		},
+		{
+			name:    "create with parent scaffolding",
+			prepare: func(*testing.T, string) {},
+			assertion: func(t *testing.T, target string) {
+				createdRoot := filepath.Dir(filepath.Dir(target))
+				if _, err := os.Lstat(createdRoot); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("created parent %q survived rollback: %v", createdRoot, err)
+				}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			target := filepath.Join(base, "created-root", "bin", "tool")
+			test.prepare(t, target)
+			forwardErr := errors.New("stop after binary")
+			binary := &lifecycleAction{
+				description: "install binary tool",
+				writePaths:  []string{target},
+				run: func(context.Context) error {
+					if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+						return err
+					}
+					if err := os.WriteFile(target, []byte("new-binary\x00bytes"), 0o700); err != nil {
+						return err
+					}
+					return os.Chmod(target, 0o700)
+				},
+			}
+			failure := &lifecycleAction{
+				description: "later failure",
+				run: func(context.Context) error {
+					return forwardErr
+				},
+			}
+			r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{
+				"tool": binary,
+				"stop": failure,
+			})
+			mod := config.Module{
+				Name: "binary-" + test.name,
+				Items: []config.Item{
+					{
+						Binary:  "tool",
+						Version: "1.0.0",
+						Source: config.PlatformMap{
+							MacOS: "https://example.invalid/tool",
+						},
+						InstallTo: filepath.Dir(target),
+					},
+					{Run: "stop"},
+				},
+			}
+
+			result := r.ApplyModule(context.Background(), mod)
+			if !errors.Is(result.Err, forwardErr) {
+				t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
+			}
+			test.assertion(t, target)
+			if strings.Contains(errOut.String(), "install binary tool") {
+				t.Fatalf("filesystem-backed binary was reported uncompensated: %q", errOut.String())
+			}
+		})
 	}
 }

@@ -188,6 +188,34 @@ items:
 	}
 }
 
+func TestParseModuleRollbackConfiguration(t *testing.T) {
+	data := []byte(`
+name: rollback-module
+items:
+  - run: install-custom-service
+    rollback: uninstall-custom-service
+    hooks:
+      before_apply: prepare-item
+      rollback:
+        before_apply: undo-prepare-item
+`)
+
+	mod, err := parseModule(data)
+	if err != nil {
+		t.Fatalf("parseModule() error = %v", err)
+	}
+	if len(mod.Items) != 1 {
+		t.Fatalf("items = %#v, want one item", mod.Items)
+	}
+	item := mod.Items[0]
+	if item.Rollback != "uninstall-custom-service" {
+		t.Fatalf("item rollback = %q", item.Rollback)
+	}
+	if item.Hooks.Rollback.BeforeApply != "undo-prepare-item" {
+		t.Fatalf("item rollback hooks = %#v", item.Hooks.Rollback)
+	}
+}
+
 func TestParseModuleInvalid(t *testing.T) {
 	_, err := parseModule([]byte("{{invalid"))
 	if err == nil {
@@ -220,6 +248,11 @@ func TestParseModuleRejectsUnknownFields(t *testing.T) {
 			name: "item hook",
 			data: "name: typo\nitems:\n  - package: neovim\n    hooks:\n      after_aply: echo done\n",
 			key:  "after_aply",
+		},
+		{
+			name: "nested item rollback hook",
+			data: "name: typo\nitems:\n  - run: install\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_aply: undo\n",
+			key:  "before_aply",
 		},
 	}
 
@@ -258,6 +291,56 @@ func TestParseModuleValidatesRawItems(t *testing.T) {
 			name: "invalid literal direction",
 			data: "name: bad-direction\nitems:\n  - file: config\n    direction: pul\n",
 			want: `validate registry module "bad-direction": items: item 1: direction "pul" must be push, pull, or sync`,
+		},
+		{
+			name: "rollback hook without forward hook",
+			data: "name: missing-forward\nitems:\n  - run: install\n    hooks:\n      rollback:\n        after_apply: undo-finalize\n",
+			want: `validate registry module "missing-forward": items: item 1: hooks.rollback.after_apply requires hooks.after_apply`,
+		},
+		{
+			name: "whitespace rollback action",
+			data: "name: blank-rollback\nitems:\n  - run: install\n    rollback: '  '\n",
+			want: `validate registry module "blank-rollback": items: item 1: rollback must not be blank`,
+		},
+		{
+			name: "whitespace rollback hook",
+			data: "name: blank-hook\nitems:\n  - run: install\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_apply: '  '\n",
+			want: `validate registry module "blank-hook": items: item 1: hooks.rollback.before_apply must not be blank`,
+		},
+		{
+			name: "unsupported rollback placement",
+			data: "name: unsupported\nitems:\n  - file: config\n    rollback: restore-config\n",
+			want: `validate registry module "unsupported": items: item 1: rollback is not supported for file items`,
+		},
+		{
+			name: "empty rollback action",
+			data: "name: empty-action\nitems:\n  - run: install\n    rollback: ''\n",
+			want: `validate registry module "empty-action": items: item 1: rollback must not be blank`,
+		},
+		{
+			name: "null rollback action",
+			data: "name: null-action\nitems:\n  - run: install\n    rollback: null\n",
+			want: `validate registry module "null-action": items: item 1: rollback must not be blank`,
+		},
+		{
+			name: "empty rollback hook",
+			data: "name: empty-hook\nitems:\n  - run: install\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_apply: ''\n",
+			want: `validate registry module "empty-hook": items: item 1: hooks.rollback.before_apply must not be blank`,
+		},
+		{
+			name: "null rollback hook",
+			data: "name: null-hook\nitems:\n  - run: install\n    hooks:\n      before_apply: prepare\n      rollback:\n        before_apply: null\n",
+			want: `validate registry module "null-hook": items: item 1: hooks.rollback.before_apply must not be blank`,
+		},
+		{
+			name: "merged empty rollback action",
+			data: "name: merged-action\nitems:\n  - setting: holder\n    value: &rollback_item\n      rollback: ''\n  - <<: *rollback_item\n    run: install\n",
+			want: `validate registry module "merged-action": items: item 2: rollback must not be blank`,
+		},
+		{
+			name: "merge-sequence null rollback hook",
+			data: "name: merged-hook\nitems:\n  - setting: holder\n    value: &rollback_hook\n      before_apply: null\n  - run: install\n    hooks:\n      before_apply: prepare\n      rollback:\n        <<: [*rollback_hook]\n",
+			want: `validate registry module "merged-hook": items: item 2: hooks.rollback.before_apply must not be blank`,
 		},
 	}
 

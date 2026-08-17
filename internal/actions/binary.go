@@ -32,6 +32,15 @@ type BinaryAction struct {
 	InstallTo string // destination directory (may contain ~ / $VARS)
 }
 
+func (a *BinaryAction) destinationPath() string {
+	return filepath.Join(platform.ExpandPath(a.InstallTo), a.Name)
+}
+
+// WritePaths implements PathWriter with the exact file Run installs.
+func (a *BinaryAction) WritePaths() []string {
+	return []string{a.destinationPath()}
+}
+
 func (a *BinaryAction) Describe() string {
 	v := ""
 	if a.Version != "" {
@@ -47,7 +56,8 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 		return nil
 	}
 
-	destDir := platform.ExpandPath(a.InstallTo)
+	destPath := a.destinationPath()
+	destDir := filepath.Dir(destPath)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		return fmt.Errorf("create install dir: %w", err)
 	}
@@ -70,8 +80,6 @@ func (a *BinaryAction) Run(ctx context.Context, dryRun bool) error {
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("finish download %s: %w", a.SourceURL, err)
 	}
-
-	destPath := filepath.Join(destDir, a.Name)
 
 	// Extract or install depending on the URL extension.
 	lower := strings.ToLower(a.SourceURL)

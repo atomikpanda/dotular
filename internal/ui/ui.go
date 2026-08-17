@@ -90,6 +90,28 @@ func (u *UI) ItemResult(desc string, dur time.Duration, err error) {
 	}
 }
 
+// RollbackResult writes one structured compensation outcome to Out.
+func (u *UI) RollbackResult(module, scope, target, operation, outcome, detail string) {
+	s := u.symbols()
+	icon := s.Check
+	colorFn := color.Green
+	switch outcome {
+	case "rollback_failed":
+		icon = s.Cross
+		colorFn = color.BoldRed
+	case "uncompensated":
+		icon = s.Warn
+		colorFn = color.BoldYellow
+	}
+	detailText := ""
+	if detail != "" {
+		detailText = ": " + detail
+	}
+	body := fmt.Sprintf("%s [rollback] %s %s %q %s: %s%s",
+		icon, module, scope, target, operation, outcome, detailText)
+	fmt.Fprintln(u.Out, colorFn(body))
+}
+
 // Skip writes a skipped item line to Out.
 func (u *UI) Skip(reason, desc string) {
 	s := u.symbols()
@@ -120,9 +142,9 @@ func (u *UI) Info(msg string) {
 }
 
 // summaryIcon returns the appropriate icon and color function for a summary line.
-func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
+func (u *UI) summaryIcon(applied, failed int, transactionFailed bool) (string, func(string) string) {
 	s := u.symbols()
-	if failed > 0 {
+	if transactionFailed || failed > 0 {
 		return s.Cross, color.BoldRed
 	}
 	if applied == 0 {
@@ -131,27 +153,54 @@ func (u *UI) summaryIcon(applied, failed int) (string, func(string) string) {
 	return s.Check, color.Green
 }
 
-// Summary writes a final summary line with counts and elapsed time to Out.
-func (u *UI) Summary(applied, skipped, unresolved, failed int, elapsed time.Duration) {
-	icon, colorFn := u.summaryIcon(applied, failed)
+// Summary writes a final summary line with forward and rollback counts.
+func (u *UI) Summary(
+	applied, skipped, unresolved, failed int,
+	rolledBack, rollbackFailed, uncompensated int,
+	transactionFailed bool,
+	elapsed time.Duration,
+) {
+	icon, colorFn := u.summaryIcon(
+		applied,
+		failed+rollbackFailed+uncompensated,
+		transactionFailed,
+	)
 	unresolvedText := ""
 	if unresolved > 0 {
 		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)
 	}
-	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed %s",
-		icon, applied, skipped, unresolvedText, failed, formatDuration(elapsed))
+	rollbackText := ""
+	if rolledBack != 0 || rollbackFailed != 0 || uncompensated != 0 {
+		rollbackText = fmt.Sprintf(", %d rolled back, %d rollback failed, %d uncompensated",
+			rolledBack, rollbackFailed, uncompensated)
+	}
+	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed%s %s",
+		icon, applied, skipped, unresolvedText, failed, rollbackText, formatDuration(elapsed))
 	fmt.Fprintf(u.Out, "\n%s\n", colorFn(body))
 }
 
 // ModuleSummary writes an indented summary line for a single module to Out.
-func (u *UI) ModuleSummary(applied, skipped, unresolved, failed int) {
-	icon, colorFn := u.summaryIcon(applied, failed)
+func (u *UI) ModuleSummary(
+	applied, skipped, unresolved, failed int,
+	rolledBack, rollbackFailed, uncompensated int,
+	transactionFailed bool,
+) {
+	icon, colorFn := u.summaryIcon(
+		applied,
+		failed+rollbackFailed+uncompensated,
+		transactionFailed,
+	)
 	unresolvedText := ""
 	if unresolved > 0 {
 		unresolvedText = fmt.Sprintf(", %d unresolved", unresolved)
 	}
-	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed",
-		icon, applied, skipped, unresolvedText, failed)
+	rollbackText := ""
+	if rolledBack != 0 || rollbackFailed != 0 || uncompensated != 0 {
+		rollbackText = fmt.Sprintf(", %d rolled back, %d rollback failed, %d uncompensated",
+			rolledBack, rollbackFailed, uncompensated)
+	}
+	body := fmt.Sprintf("%s %d applied, %d skipped%s, %d failed%s",
+		icon, applied, skipped, unresolvedText, failed, rollbackText)
 	fmt.Fprintf(u.Out, "  %s\n", colorFn(body))
 }
 

@@ -38,7 +38,7 @@ type FileAction struct {
 	Destination string // system-side directory (may contain ~ and $VARS)
 	Direction   string // "push" | "pull" | "sync"
 	Link        bool
-	Permissions string       // Unix octal string, e.g. "0600"
+	Permissions string // Unix octal string, e.g. "0600"
 	Encrypted   bool
 	AgeKey      *ageutil.Key // required when Encrypted is true
 }
@@ -68,23 +68,40 @@ func (a *FileAction) EffectiveDirection() string {
 	}
 }
 
-// WritePaths implements PathWriter. Push and link write the system target, pull
-// writes the repo copy, and sync may write either, so both sides are declared.
+// WritePaths implements PathWriter. Push, link, and sync declare both possible
+// system targets when destination shape is ambiguous: an earlier module item
+// may create or remove the destination directory before this action runs.
 func (a *FileAction) WritePaths() []string {
 	repo := a.Source
 	if a.Encrypted {
 		repo = ageutil.RepoPath(a.Source)
 	}
-	switch {
-	case a.Link:
-		return []string{a.ResolvedTarget()}
-	case a.Direction == "pull":
+	if !a.Link && a.Direction == "pull" {
 		return []string{repo}
-	case a.Direction == "sync":
-		return []string{a.ResolvedTarget(), repo}
-	default:
-		return []string{a.ResolvedTarget()}
 	}
+
+	neverDirectory := func(string) bool { return false }
+	alwaysDirectory := func(string) bool { return true }
+	directTarget := ResolveFileTarget(
+		a.Destination,
+		filepath.Base(a.Source),
+		platform.ExpandPath,
+		neverDirectory,
+	)
+	directoryTarget := ResolveFileTarget(
+		a.Destination,
+		filepath.Base(a.Source),
+		platform.ExpandPath,
+		alwaysDirectory,
+	)
+	paths := []string{directTarget}
+	if directoryTarget != directTarget {
+		paths = append(paths, directoryTarget)
+	}
+	if !a.Link && a.Direction == "sync" {
+		paths = append(paths, repo)
+	}
+	return paths
 }
 
 func (a *FileAction) Describe() string {
@@ -305,7 +322,7 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 		return fsutil.CopyFile(sysPath, a.Source)
 	default:
 		fmt.Printf("    %s\n", color.Dim("-> skipped"))
-		return nil
+		return fmt.Errorf("sync conflict skipped: %w", ErrSkipped)
 	}
 }
 

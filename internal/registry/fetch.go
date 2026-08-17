@@ -188,6 +188,11 @@ func parseModule(data []byte) (*RemoteModule, error) {
 		}
 		return nil, fmt.Errorf("parse registry module: line %d: multiple YAML documents are not supported", trailing.Line)
 	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parse registry module: %w", err)
+	}
+	config.MarkItemRollbackPresence(mod.Items, &document)
 	if err := config.ValidateItems(mod.Items, config.ItemValidationOptions{
 		AllowDirectionTemplates: true,
 	}); err != nil {

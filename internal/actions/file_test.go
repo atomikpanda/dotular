@@ -2,8 +2,10 @@ package actions
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
@@ -30,11 +32,46 @@ func TestFileActionResolvedTarget(t *testing.T) {
 	}
 }
 
+func TestFileActionWritePathsCoversTargetCreatedAsDirectoryBeforeRun(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	destination := filepath.Join(dir, "destination.conf")
+	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	action := &FileAction{
+		Source:      source,
+		Destination: destination,
+		Direction:   "push",
+	}
+
+	nestedTarget := filepath.Join(destination, filepath.Base(source))
+	if got, want := action.WritePaths(), []string{destination, nestedTarget}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("WritePaths() = %v, want %v", got, want)
+	}
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := action.ResolvedTarget(); got != nestedTarget {
+		t.Fatalf("ResolvedTarget() after destination creation = %q, want %q", got, nestedTarget)
+	}
+	if err := action.Run(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(nestedTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); got != "source" {
+		t.Fatalf("nested target = %q, want source", got)
+	}
+}
+
 func TestFileActionDescribe(t *testing.T) {
 	tests := []struct {
-		name      string
-		action    FileAction
-		contains  string
+		name     string
+		action   FileAction
+		contains string
 	}{
 		{"push", FileAction{Source: "a", Destination: "/tmp/", Direction: "push"}, "push"},
 		{"pull", FileAction{Source: "a", Destination: "/tmp/", Direction: "pull"}, "pull"},
@@ -491,9 +528,8 @@ func TestFileActionRunSyncBothDifferent(t *testing.T) {
 	defer func() { os.Stdin = oldStdin }()
 
 	err := a.Run(context.Background(), false)
-	// The explicit skip choice should not error.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrSkipped) {
+		t.Fatalf("Run() error = %v, want ErrSkipped", err)
 	}
 }
 

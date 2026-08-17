@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"runtime"
 
 	"github.com/atomikpanda/dotular/internal/color"
 	"github.com/atomikpanda/dotular/internal/httputil"
+	"github.com/atomikpanda/dotular/internal/procutil"
 )
 
 // ScriptAction runs a shell script, either from a local path or a remote URL.
@@ -86,7 +86,7 @@ func execScript(ctx context.Context, path string) error {
 	if runtime.GOOS == "windows" {
 		shell = "powershell"
 	}
-	cmd := exec.CommandContext(ctx, shell, path)
+	cmd := procutil.CommandContext(ctx, shell, path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
