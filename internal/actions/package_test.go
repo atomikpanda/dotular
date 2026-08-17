@@ -430,6 +430,54 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 	}
 }
 
+func TestPackageCompensationPacmanRequiresExactSyncPackageIdentity(t *testing.T) {
+	tests := []struct {
+		name             string
+		syncPackages     string
+		wantCompensation bool
+	}{
+		{name: "exact package", syncPackages: "bash\ngit\n", wantCompensation: true},
+		{name: "group or provider", syncPackages: "bash\nbase\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &recordingPackageExecutor{results: []packageCommandResult{
+				{output: []byte("bash\n")},
+				{output: []byte(tt.syncPackages)},
+				{},
+			}}
+			action := &PackageAction{Package: "git", Manager: "pacman", executor: executor.execute}
+
+			preparation, err := action.PrepareCompensation(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (preparation.Compensation != nil) != tt.wantCompensation {
+				t.Fatalf("Compensation present = %t, want %t; unavailable reason %q",
+					preparation.Compensation != nil, tt.wantCompensation, preparation.UnavailableReason)
+			}
+			wantCalls := []packageCommandCall{
+				{args: []string{"pacman", "-Qq"}, captureOutput: true},
+				{args: []string{"pacman", "-Slq"}, captureOutput: true},
+			}
+			if tt.wantCompensation {
+				if err := preparation.Compensation.Run(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				wantCalls = append(wantCalls, packageCommandCall{
+					args: []string{"sudo", "pacman", "-R", "--noconfirm", "git"},
+				})
+			} else if preparation.UnavailableReason == "" {
+				t.Fatal("ambiguous pacman target has no unavailable reason")
+			}
+			if !reflect.DeepEqual(executor.calls, wantCalls) {
+				t.Fatalf("calls = %#v, want %#v", executor.calls, wantCalls)
+			}
+		})
+	}
+}
+
 func TestPackageCompensationNoMatchInventoryDoesNotAuthorizeProviderUninstall(t *testing.T) {
 	tests := []struct {
 		name    string

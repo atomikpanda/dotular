@@ -135,6 +135,26 @@ func (a *PackageAction) captureState(ctx context.Context) (packageState, string,
 	if err != nil {
 		return packageStateUnknown, fmt.Sprintf("package state query %q could not establish exact state: %v", args, err), nil
 	}
+	if a.Manager == "pacman" && state == packageStateAbsent {
+		identityArgs := []string{"pacman", "-Slq"}
+		identityOutput, identityErr := a.commandExecutor()(ctx, identityArgs, true)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return packageStateUnknown, "", ctxErr
+		}
+		if errors.Is(identityErr, context.Canceled) || errors.Is(identityErr, context.DeadlineExceeded) {
+			return packageStateUnknown, "", identityErr
+		}
+		if identityErr != nil {
+			return packageStateUnknown, fmt.Sprintf("package identity query %q failed: %v", identityArgs, identityErr), nil
+		}
+		identityState, parseErr := parsePacmanState(a.Package, string(identityOutput))
+		if parseErr != nil {
+			return packageStateUnknown, fmt.Sprintf("package identity query %q could not establish exact state: %v", identityArgs, parseErr), nil
+		}
+		if identityState != packageStatePresent {
+			return packageStateUnknown, fmt.Sprintf("pacman target %q is not an exact sync package identity", a.Package), nil
+		}
+	}
 	return state, "", nil
 }
 
@@ -311,7 +331,7 @@ func parsePacmanState(pkg, output string) (packageState, error) {
 			return packageStatePresent, nil
 		}
 	}
-	return packageStateUnknown, fmt.Errorf("absent pacman target %q may name a package group", pkg)
+	return packageStateAbsent, nil
 }
 
 func versionSuffix(value string) string {

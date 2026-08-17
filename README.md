@@ -176,14 +176,17 @@ Package items are **idempotent** — dotular checks whether the package is alrea
 #### `script` — run a shell script
 
 ```yaml
-- script: scripts/install-shell-tools.sh
+# Replace these placeholders with scripts from your dotfiles repository.
+- script: /path/to/your/install-shell-tools.sh
   via: local
   skip_if: command -v shell-tool
   verify: shell-tool --version
-  rollback: scripts/uninstall-shell-tools.sh
+  rollback: /path/to/your/uninstall-shell-tools.sh
 ```
 
-`via: remote` downloads the script to a temp file and runs it. `via: local` runs the path as a local script.
+`via: local` runs a script path you provide; dotular does not ship the
+placeholder scripts above. `via: remote` downloads the script to a temp file
+and runs it.
 
 #### `file` — sync a config file
 
