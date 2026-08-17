@@ -281,6 +281,27 @@ func TestSettingActionPrepareMacOSCompensationLeavesInconclusiveStateUnknown(t *
 			results: []packageCommandResult{{output: []byte("Type is array\n")}},
 		},
 		{
+			name: "malformed boolean value",
+			results: []packageCommandResult{
+				{output: []byte("Type is boolean\n")},
+				{output: []byte("not-a-boolean\n")},
+			},
+		},
+		{
+			name: "malformed integer value",
+			results: []packageCommandResult{
+				{output: []byte("Type is integer\n")},
+				{output: []byte("not-an-integer\n")},
+			},
+		},
+		{
+			name: "malformed float value",
+			results: []packageCommandResult{
+				{output: []byte("Type is float\n")},
+				{output: []byte("not-a-float\n")},
+			},
+		},
+		{
 			name: "value read failure",
 			results: []packageCommandResult{
 				{output: []byte("Type is string\n")},

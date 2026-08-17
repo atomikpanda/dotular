@@ -162,9 +162,30 @@ func (a *SettingAction) captureMacOSState(ctx context.Context) (settingState, ca
 		return settingStateUnknown, capturedSettingValue{}, "defaults read returned non-UTF-8 output", nil
 	}
 
+	value := trimCommandLineEnding(string(valueOutput))
+	var valueErr error
+	switch typeFlag {
+	case "-bool":
+		if value != "0" && value != "1" {
+			valueErr = errors.New("want 0 or 1")
+		}
+	case "-int":
+		_, valueErr = strconv.ParseInt(value, 10, 64)
+	case "-float":
+		_, valueErr = strconv.ParseFloat(value, 64)
+	}
+	if valueErr != nil {
+		return settingStateUnknown, capturedSettingValue{}, fmt.Sprintf(
+			"defaults read returned malformed %s value %q: %v",
+			typeFlag,
+			value,
+			valueErr,
+		), nil
+	}
+
 	return settingStatePresent, capturedSettingValue{
 		typeArg: typeFlag,
-		value:   trimCommandLineEnding(string(valueOutput)),
+		value:   value,
 	}, "", nil
 }
 

@@ -600,6 +600,36 @@ func TestApplyAllValidationFailureMarksFinalSummaryFailed(t *testing.T) {
 	}
 }
 
+func TestApplyAllPanicMarksFinalSummaryFailed(t *testing.T) {
+	panicValue := &struct{ message string }{message: "forward panic"}
+	action := &lifecycleAction{
+		description: "panicking action",
+		run: func(context.Context) error {
+			panic(panicValue)
+		},
+	}
+	r, out, _ := newLifecycleRunner(t, map[string]actions.Action{"panic": action})
+	r.Config = config.Config{Modules: []config.Module{{
+		Name:  "panic-summary",
+		Items: []config.Item{{Run: "panic"}},
+	}}}
+
+	var recovered any
+	func() {
+		defer func() {
+			recovered = recover()
+		}()
+		_ = r.ApplyAll(context.Background())
+	}()
+
+	if recovered != panicValue {
+		t.Fatalf("recovered panic = %#v, want identical panic %#v", recovered, panicValue)
+	}
+	if output := out.String(); !strings.Contains(output, "[FAIL]") {
+		t.Fatalf("panic summary = %q, want failure severity", output)
+	}
+}
+
 func TestApplyAllTagFilter(t *testing.T) {
 	cfg := config.Config{
 		Modules: []config.Module{
@@ -2618,6 +2648,8 @@ func (a *preparingIdempotentAction) Run(ctx context.Context, _ bool) error {
 }
 
 func TestApplyModuleAtomicSkipsConclusivePreparedPresenceWithoutLiveCheck(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "skip-if-ran")
+	t.Setenv("DOTULAR_SKIP_IF_MARKER", marker)
 	idempotencyChecks := 0
 	actionRan := false
 	action := &preparingIdempotentAction{
@@ -2636,13 +2668,19 @@ func TestApplyModuleAtomicSkipsConclusivePreparedPresenceWithoutLiveCheck(t *tes
 	}
 	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"present-package": action})
 	mod := config.Module{
-		Name:  "conclusive-prepared-presence",
-		Items: []config.Item{{Run: "present-package"}},
+		Name: "conclusive-prepared-presence",
+		Items: []config.Item{{
+			Run:    "present-package",
+			SkipIf: `touch "$DOTULAR_SKIP_IF_MARKER"; false`,
+		}},
 	}
 
 	result := r.ApplyModule(context.Background(), mod)
 	if result.Err != nil {
 		t.Fatal(result.Err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("skip_if did not run before conclusive prepared skip: %v", err)
 	}
 	if idempotencyChecks != 0 {
 		t.Fatalf("live idempotency checks = %d, want none after conclusive prepared presence", idempotencyChecks)

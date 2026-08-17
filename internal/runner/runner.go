@@ -38,6 +38,7 @@ type preparedItem struct {
 	item              config.Item
 	action            actions.Action
 	skipReason        string
+	alreadyApplied    bool
 	isSync            bool
 	compensation      actions.Compensation
 	fallback          actions.Compensation
@@ -125,6 +126,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 	var totalApplied, totalSkipped, totalUnresolved, totalFailed int
 	var totalRolledBack, totalRollbackFailed, totalUncompensated int
 	var firstErr error
+	returnedNormally := false
 
 	defer func() {
 		r.UI.Summary(
@@ -135,7 +137,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 			totalRolledBack,
 			totalRollbackFailed,
 			totalUncompensated,
-			firstErr != nil,
+			firstErr != nil || !returnedNormally,
 			time.Since(start),
 		)
 	}()
@@ -165,6 +167,7 @@ func (r *Runner) ApplyAll(ctx context.Context) error {
 			break
 		}
 	}
+	returnedNormally = true
 	return firstErr
 }
 
@@ -448,7 +451,7 @@ func (r *Runner) prepareAtomicModule(ctx context.Context, mod config.Module) (pr
 
 func (p preparedModule) hasApplicableSyncItem() bool {
 	for _, entry := range p.items {
-		if entry.skipReason == "" && entry.isSync {
+		if entry.skipReason == "" && !entry.alreadyApplied && entry.isSync {
 			return true
 		}
 	}
@@ -508,7 +511,7 @@ func (r *Runner) capturePreparedModule(
 				)
 			}
 			if preparation.AlreadyApplied {
-				entry.skipReason = "already applied"
+				entry.alreadyApplied = true
 				continue
 			}
 			entry.compensation = preparation.Compensation
@@ -604,6 +607,9 @@ func (r *Runner) applyPreparedItem(
 		if exitsZero {
 			skipReason = "skip_if"
 		}
+	}
+	if skipReason == "" && prepared.alreadyApplied {
+		skipReason = "already applied"
 	}
 	if skipReason == "" {
 		if idempotent, ok := prepared.action.(actions.Idempotent); ok {
