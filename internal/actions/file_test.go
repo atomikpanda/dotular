@@ -2,6 +2,7 @@ package actions
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,9 +33,9 @@ func TestFileActionResolvedTarget(t *testing.T) {
 
 func TestFileActionDescribe(t *testing.T) {
 	tests := []struct {
-		name      string
-		action    FileAction
-		contains  string
+		name     string
+		action   FileAction
+		contains string
 	}{
 		{"push", FileAction{Source: "a", Destination: "/tmp/", Direction: "push"}, "push"},
 		{"pull", FileAction{Source: "a", Destination: "/tmp/", Direction: "pull"}, "pull"},
@@ -491,9 +492,8 @@ func TestFileActionRunSyncBothDifferent(t *testing.T) {
 	defer func() { os.Stdin = oldStdin }()
 
 	err := a.Run(context.Background(), false)
-	// The explicit skip choice should not error.
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !errors.Is(err, ErrSkipped) {
+		t.Fatalf("Run() error = %v, want ErrSkipped", err)
 	}
 }
 

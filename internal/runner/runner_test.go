@@ -447,6 +447,80 @@ func TestApplyModuleSyncConflictEOFIsFailure(t *testing.T) {
 	}
 }
 
+func TestApplyModuleAtomicSyncConflictSkipIsSkipped(t *testing.T) {
+	const (
+		moduleName = "skipped-conflict"
+		fileName   = "test.txt"
+	)
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	repoFile := filepath.Join(dir, moduleName, fileName)
+	systemDir := filepath.Join(dir, "system")
+	systemFile := filepath.Join(systemDir, fileName)
+	write(t, repoFile, "repo version", 0o644)
+	write(t, systemFile, "system version", 0o644)
+
+	stdin, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.WriteString("s\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = stdin
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		stdin.Close()
+	})
+
+	r := newTestRunner(config.Config{})
+	r.Atomic = true
+	r.DryRun = false
+	r.Command = "sync"
+	mod := config.Module{
+		Name: moduleName,
+		Items: []config.Item{{
+			File:        fileName,
+			Destination: config.PlatformMap{MacOS: systemDir + string(os.PathSeparator)},
+			Direction:   "sync",
+		}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Skipped != 1 || result.RolledBack != 0 {
+		t.Fatalf("ModuleResult = %+v, want exactly one skipped item", result)
+	}
+	entries, err := audit.Read(moduleName, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Outcome != "skipped" {
+		t.Fatalf("audit entries = %+v, want one skipped outcome", entries)
+	}
+	repoContent, err := os.ReadFile(repoFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(repoContent); got != "repo version" {
+		t.Fatalf("repo file = %q, want unchanged", got)
+	}
+	systemContent, err := os.ReadFile(systemFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(systemContent); got != "system version" {
+		t.Fatalf("system file = %q, want unchanged", got)
+	}
+}
+
 // Real modules list the same package once per manager (git via brew, apt, dnf,
 // winget, …), so most of them are platform-skipped on any given machine. Their
 // audit entries have to stay distinguishable.
@@ -2508,6 +2582,62 @@ func TestApplyModuleAtomicEvaluatesSkipIfAtOriginalItemPosition(t *testing.T) {
 	}
 	if result.Applied != 1 || result.Skipped != 1 {
 		t.Fatalf("ModuleResult = %+v, want one applied and one live skip", result)
+	}
+}
+
+func TestApplyModuleAtomicEvaluatesSkipIfBeforeSnapshottingItem(t *testing.T) {
+	action := &lifecycleAction{
+		description: "skipped invalid snapshot path",
+		writePaths:  []string{string([]byte{0})},
+		run: func(context.Context) error {
+			t.Fatal("skipped action ran")
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"skip-invalid-snapshot": action,
+	})
+	mod := config.Module{
+		Name: "skip-before-snapshot",
+		Items: []config.Item{{
+			Run:    "skip-invalid-snapshot",
+			SkipIf: "true",
+		}},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if result.Applied != 0 || result.Skipped != 1 {
+		t.Fatalf("ModuleResult = %+v, want exactly one skipped item", result)
+	}
+}
+
+func TestApplyModuleAtomicWarnsForUncompensatedItemBeforeModuleHook(t *testing.T) {
+	action := &lifecycleAction{description: "later uncompensated item"}
+	r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{
+		"uncompensated": action,
+	})
+	const itemWarning = `[rollback] item "later uncompensated item" will be uncompensated`
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": before-module" && !strings.Contains(errOut.String(), itemWarning) {
+			t.Fatalf("module hook ran before item warning: %q", errOut.String())
+		}
+		return nil
+	}
+	mod := config.Module{
+		Name:  "warn-before-module-hook",
+		Items: []config.Item{{Run: "uncompensated"}},
+		Hooks: config.ModuleHooks{
+			BeforeApply: ": before-module",
+			Rollback:    config.RollbackHooks{BeforeApply: ": undo-before-module"},
+		},
+	}
+
+	result := r.ApplyModule(context.Background(), mod)
+	if result.Err != nil {
+		t.Fatal(result.Err)
 	}
 }
 

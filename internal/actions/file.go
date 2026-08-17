@@ -38,7 +38,7 @@ type FileAction struct {
 	Destination string // system-side directory (may contain ~ and $VARS)
 	Direction   string // "push" | "pull" | "sync"
 	Link        bool
-	Permissions string       // Unix octal string, e.g. "0600"
+	Permissions string // Unix octal string, e.g. "0600"
 	Encrypted   bool
 	AgeKey      *ageutil.Key // required when Encrypted is true
 }
@@ -305,7 +305,7 @@ func (a *FileAction) resolveConflict(repoPath, sysPath string) error {
 		return fsutil.CopyFile(sysPath, a.Source)
 	default:
 		fmt.Printf("    %s\n", color.Dim("-> skipped"))
-		return nil
+		return fmt.Errorf("sync conflict skipped: %w", ErrSkipped)
 	}
 }
 

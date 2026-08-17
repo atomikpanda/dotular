@@ -44,6 +44,7 @@ type preparedItem struct {
 	fallback          actions.Compensation
 	unavailableReason string
 	filesystemBacked  bool
+	warningsEmitted   bool
 }
 
 type preparedModule struct {
@@ -490,6 +491,16 @@ func (r *Runner) capturePreparedModule(
 		entry.filesystemBacked = len(paths) != 0
 		for _, path := range paths {
 			if err := recorder.Record(path); err != nil {
+				if entry.item.SkipIf != "" {
+					exitsZero, evalErr := shell.Eval(ctx, entry.item.SkipIf)
+					if evalErr != nil {
+						return fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, evalErr)
+					}
+					if exitsZero {
+						entry.skipReason = "skip_if"
+						break
+					}
+				}
 				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, path, err)
 			}
 		}
@@ -527,6 +538,12 @@ func (r *Runner) capturePreparedModule(
 		if entry.compensation == nil && entry.fallback == nil && !entry.filesystemBacked &&
 			entry.unavailableReason == "" {
 			entry.unavailableReason = "no automatic compensation or explicit rollback"
+		}
+		if entry.skipReason == "" && !entry.alreadyApplied && entry.item.SkipIf == "" {
+			if _, canSkipLive := entry.action.(actions.Idempotent); !canSkipLive {
+				prepared.warnings = append(prepared.warnings, preparedItemWarnings(*entry)...)
+				entry.warningsEmitted = true
+			}
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -638,7 +655,11 @@ func (r *Runner) applyPreparedItem(
 		})
 		return outcomeSkipped, nil
 	}
-	r.warnPreparedItem(prepared)
+	if !prepared.warningsEmitted {
+		for _, warning := range preparedItemWarnings(prepared) {
+			r.UI.Warn(warning)
+		}
+	}
 
 	if err := r.runAtomicHook(
 		ctx,
@@ -780,31 +801,33 @@ func (r *Runner) applyPreparedItem(
 	return outcomeApplied, nil
 }
 
-func (r *Runner) warnPreparedItem(prepared preparedItem) {
+func preparedItemWarnings(prepared preparedItem) []string {
 	target := prepared.action.Describe()
+	var warnings []string
 	if prepared.compensation == nil && prepared.fallback == nil && !prepared.filesystemBacked {
-		r.UI.Warn(fmt.Sprintf(
+		warnings = append(warnings, fmt.Sprintf(
 			"[rollback] item %q will be uncompensated: %s",
 			target,
 			prepared.unavailableReason,
 		))
 	}
-	warnHook := func(hookName, forward, rollback string) {
+	addHookWarning := func(hookName, forward, rollback string) {
 		if forward == "" || rollback != "" {
 			return
 		}
-		r.UI.Warn(fmt.Sprintf(
+		warnings = append(warnings, fmt.Sprintf(
 			"[rollback] item %q hook %s will be uncompensated: no rollback hook declared",
 			target,
 			hookName,
 		))
 	}
-	warnHook("before_apply", prepared.item.Hooks.BeforeApply, prepared.item.Hooks.Rollback.BeforeApply)
-	warnHook("after_apply", prepared.item.Hooks.AfterApply, prepared.item.Hooks.Rollback.AfterApply)
+	addHookWarning("before_apply", prepared.item.Hooks.BeforeApply, prepared.item.Hooks.Rollback.BeforeApply)
+	addHookWarning("after_apply", prepared.item.Hooks.AfterApply, prepared.item.Hooks.Rollback.AfterApply)
 	if prepared.isSync {
-		warnHook("before_sync", prepared.item.Hooks.BeforeSync, prepared.item.Hooks.Rollback.BeforeSync)
-		warnHook("after_sync", prepared.item.Hooks.AfterSync, prepared.item.Hooks.Rollback.AfterSync)
+		addHookWarning("before_sync", prepared.item.Hooks.BeforeSync, prepared.item.Hooks.Rollback.BeforeSync)
+		addHookWarning("after_sync", prepared.item.Hooks.AfterSync, prepared.item.Hooks.Rollback.AfterSync)
 	}
+	return warnings
 }
 
 func (r *Runner) runAtomicHook(
