@@ -611,8 +611,10 @@ unavailable; it is not retried if a prepared automatic compensation later
 fails. Filesystem-backed `file`, `directory`, and `binary` items use snapshots
 and reject item rollback commands.
 
-Missing compensation for an applicable arbitrary command or hook emits a
-warning **before mutation and continues**. If the module later unwinds, that
+Missing compensation for an item that remains potentially applicable after
+preflight, or for a hook, emits a warning **before mutation and continues**.
+A live idempotency check may later skip that item, so its preflight warning is
+deliberately conservative. If the module unwinds after the item starts, the
 operation is reported as `uncompensated`.
 
 An action, hook, or item `verify` error, command cancellation, or panic starts

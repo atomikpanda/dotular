@@ -543,11 +543,9 @@ func (r *Runner) capturePreparedModule(
 			entry.unavailableReason == "" {
 			entry.unavailableReason = "no automatic compensation or explicit rollback"
 		}
-		if entry.skipReason == "" && !entry.alreadyApplied && entry.item.SkipIf == "" {
-			if _, canSkipLive := entry.action.(actions.Idempotent); !canSkipLive {
-				prepared.warnings = append(prepared.warnings, preparedItemWarnings(*entry)...)
-				entry.warningsEmitted = true
-			}
+		if entry.skipReason == "" && !entry.alreadyApplied {
+			prepared.warnings = append(prepared.warnings, preparedItemWarnings(*entry)...)
+			entry.warningsEmitted = true
 		}
 		if err := ctx.Err(); err != nil {
 			return err

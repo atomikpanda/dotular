@@ -2577,6 +2577,14 @@ func TestApplyModuleAtomicCommitsOnlyAfterModuleAfterApply(t *testing.T) {
 	assertNoSnapshotFiles(t, tempRoot)
 }
 
+type uncompensatedIdempotentAction struct {
+	*lifecycleAction
+}
+
+func (*uncompensatedIdempotentAction) IsApplied(context.Context) (bool, error) {
+	return false, nil
+}
+
 type liveIdempotentAction struct {
 	description string
 	isApplied   func(context.Context) (bool, error)
@@ -2682,7 +2690,9 @@ func TestApplyModuleAtomicEvaluatesSkipIfBeforeSnapshottingItem(t *testing.T) {
 }
 
 func TestApplyModuleAtomicWarnsForUncompensatedItemBeforeModuleHook(t *testing.T) {
-	action := &lifecycleAction{description: "later uncompensated item"}
+	action := &uncompensatedIdempotentAction{
+		lifecycleAction: &lifecycleAction{description: "later uncompensated item"},
+	}
 	r, _, errOut := newLifecycleRunner(t, map[string]actions.Action{
 		"uncompensated": action,
 	})
@@ -2968,11 +2978,12 @@ func TestApplyModuleAtomicLiveChecksPreparingIdempotentBeforeActivation(t *testi
 	}
 }
 
-func TestApplyModuleAtomicSuppressesUncompensatedWarningsForLiveSkips(t *testing.T) {
+func TestApplyModuleAtomicWarnsConservativelyForLiveIdempotencyChecks(t *testing.T) {
 	tests := []struct {
-		name   string
-		item   config.Item
-		action actions.Action
+		name        string
+		item        config.Item
+		action      actions.Action
+		wantWarning bool
 	}{
 		{
 			name: "skip_if",
@@ -3010,6 +3021,7 @@ func TestApplyModuleAtomicSuppressesUncompensatedWarningsForLiveSkips(t *testing
 					return nil
 				},
 			},
+			wantWarning: true,
 		},
 	}
 	for _, test := range tests {
@@ -3033,8 +3045,8 @@ func TestApplyModuleAtomicSuppressesUncompensatedWarningsForLiveSkips(t *testing
 			if result.Skipped != 1 {
 				t.Fatalf("ModuleResult = %+v, want one live skip", result)
 			}
-			if errOut.Len() != 0 {
-				t.Fatalf("skipped item emitted uncompensated warning: %q", errOut.String())
+			if gotWarning := errOut.Len() != 0; gotWarning != test.wantWarning {
+				t.Fatalf("warning present = %t, want %t; output %q", gotWarning, test.wantWarning, errOut.String())
 			}
 		})
 	}
