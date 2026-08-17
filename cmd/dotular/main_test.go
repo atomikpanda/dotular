@@ -25,6 +25,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/httputil"
 	"github.com/atomikpanda/dotular/internal/registry"
+	"github.com/atomikpanda/dotular/internal/runner"
 	"github.com/atomikpanda/dotular/internal/tags"
 	"github.com/atomikpanda/dotular/internal/testutil"
 	"github.com/atomikpanda/dotular/internal/ui"
@@ -398,6 +399,34 @@ func TestApplyCmd(t *testing.T) {
 	cmd := applyCmd()
 	if cmd.Use != "apply [module...]" {
 		t.Errorf("Use = %q", cmd.Use)
+	}
+}
+
+func TestApplyNamedModulesEmitsFinalSummary(t *testing.T) {
+	cfg := config.Config{Modules: []config.Module{
+		{Name: "selected", Items: []config.Item{{Run: "echo selected"}}},
+		{Name: "other", Items: []config.Item{{Run: "echo other"}}},
+	}}
+	selected := taggedConfig{
+		raw:         cfg,
+		active:      cfg,
+		activeMask:  []bool{true, true},
+		machineTags: []string{"test"},
+	}
+	var out bytes.Buffer
+	r := runner.New(cfg, true, false, true)
+	r.Out = &out
+	r.UI = ui.New(&out, &bytes.Buffer{})
+
+	if err := applyNamedModules(context.Background(), r, cfg, selected, []string{"selected"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "==> other") {
+		t.Fatalf("unselected module ran: %q", out.String())
+	}
+	const summaryCounts = "1 applied, 0 skipped, 0 failed"
+	if count := strings.Count(out.String(), summaryCounts); count != 2 {
+		t.Fatalf("%q count = %d, want module and final summaries in %q", summaryCounts, count, out.String())
 	}
 }
 

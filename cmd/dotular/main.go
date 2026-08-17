@@ -597,12 +597,8 @@ func applyNamedModules(
 	if err != nil {
 		return err
 	}
-	for _, mod := range mods {
-		if result := r.ApplyModule(ctx, mod); result.Err != nil {
-			return result.Err
-		}
-	}
-	return nil
+	r.Config.Modules = mods
+	return r.ApplyAll(ctx)
 }
 
 // --- push / pull / sync ------------------------------------------------------
