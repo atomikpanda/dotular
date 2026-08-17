@@ -600,6 +600,11 @@ pre-state:
   explicit item `rollback`. Hooks likewise use their matching command under
   `hooks.rollback`.
 
+Atomic preflight evaluates each `skip_if` before capturing that item's state and
+excludes items whose condition already succeeds. A false condition is checked
+again at the item's live position because earlier items may establish its skip
+state; keep `skip_if` commands side-effect-free.
+
 Typed automatic package or setting compensation takes precedence over an
 explicit item rollback. The explicit command is used only when typed capture is
 unavailable; it is not retried if a prepared automatic compensation later

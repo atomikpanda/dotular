@@ -2595,6 +2595,15 @@ func (a *liveIdempotentAction) Run(ctx context.Context, _ bool) error {
 	return a.run(ctx)
 }
 
+type recordingSnapshotRecorder struct {
+	paths []string
+}
+
+func (r *recordingSnapshotRecorder) Record(path string) error {
+	r.paths = append(r.paths, path)
+	return nil
+}
+
 func TestApplyModuleAtomicEvaluatesSkipIfAtOriginalItemPosition(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "earlier-item-finished")
 	t.Setenv("DOTULAR_LIVE_MARKER", marker)
@@ -2638,30 +2647,37 @@ func TestApplyModuleAtomicEvaluatesSkipIfAtOriginalItemPosition(t *testing.T) {
 
 func TestApplyModuleAtomicEvaluatesSkipIfBeforeSnapshottingItem(t *testing.T) {
 	action := &lifecycleAction{
-		description: "skipped invalid snapshot path",
-		writePaths:  []string{string([]byte{0})},
+		description: "skipped snapshot path",
+		writePaths:  []string{filepath.Join(t.TempDir(), "destination")},
 		run: func(context.Context) error {
 			t.Fatal("skipped action ran")
 			return nil
 		},
 	}
 	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
-		"skip-invalid-snapshot": action,
+		"skip-snapshot": action,
 	})
 	mod := config.Module{
 		Name: "skip-before-snapshot",
 		Items: []config.Item{{
-			Run:    "skip-invalid-snapshot",
+			Run:    "skip-snapshot",
 			SkipIf: "true",
 		}},
 	}
-
-	result := r.ApplyModule(context.Background(), mod)
-	if result.Err != nil {
-		t.Fatal(result.Err)
+	prepared, err := r.prepareAtomicModule(context.Background(), mod)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.Applied != 0 || result.Skipped != 1 {
-		t.Fatalf("ModuleResult = %+v, want exactly one skipped item", result)
+	recorder := &recordingSnapshotRecorder{}
+
+	if err := r.capturePreparedModule(context.Background(), mod, &prepared, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.paths) != 0 {
+		t.Fatalf("recorded snapshot paths = %q, want none", recorder.paths)
+	}
+	if got := prepared.items[0].skipReason; got != "skip_if" {
+		t.Fatalf("skip reason = %q, want skip_if", got)
 	}
 }
 

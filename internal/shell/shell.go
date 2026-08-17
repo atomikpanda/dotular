@@ -23,6 +23,9 @@ func Run(ctx context.Context, command string) error {
 func Eval(ctx context.Context, command string) (exitsZero bool, err error) {
 	cmd := shellCmd(ctx, command)
 	runErr := cmd.Run()
+	if contextErr := ctx.Err(); contextErr != nil {
+		return false, contextErr
+	}
 	if runErr == nil {
 		return true, nil
 	}

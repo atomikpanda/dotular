@@ -487,6 +487,16 @@ func (r *Runner) capturePreparedModule(
 		if entry.skipReason != "" {
 			continue
 		}
+		if entry.item.SkipIf != "" {
+			exitsZero, err := shell.Eval(ctx, entry.item.SkipIf)
+			if err != nil {
+				return fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, err)
+			}
+			if exitsZero {
+				entry.skipReason = "skip_if"
+				continue
+			}
+		}
 		writer, ok := entry.action.(actions.PathWriter)
 		if !ok {
 			continue
@@ -495,16 +505,6 @@ func (r *Runner) capturePreparedModule(
 		entry.filesystemBacked = len(paths) != 0
 		for _, path := range paths {
 			if err := recorder.Record(path); err != nil {
-				if entry.item.SkipIf != "" {
-					exitsZero, evalErr := shell.Eval(ctx, entry.item.SkipIf)
-					if evalErr != nil {
-						return fmt.Errorf("module %q: skip_if eval failed: %w", mod.Name, evalErr)
-					}
-					if exitsZero {
-						entry.skipReason = "skip_if"
-						break
-					}
-				}
 				return fmt.Errorf("module %q: snapshot %s: %w", mod.Name, path, err)
 			}
 		}

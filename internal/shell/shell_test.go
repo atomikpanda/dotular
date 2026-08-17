@@ -5,6 +5,7 @@ import (
 	"errors"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestRunSuccess(t *testing.T) {
@@ -50,6 +51,24 @@ func TestEvalFailure(t *testing.T) {
 	}
 	if ok {
 		t.Error("Eval(false) should return false")
+	}
+}
+
+func TestEvalReturnsCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell test uses Unix sleep")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(100*time.Millisecond, cancel)
+	defer timer.Stop()
+
+	ok, err := Eval(ctx, "sleep 10")
+
+	if ok {
+		t.Fatal("Eval() = true, want false")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Eval() error = %v, want context.Canceled", err)
 	}
 }
 
