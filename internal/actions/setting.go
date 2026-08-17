@@ -271,7 +271,7 @@ func macOSRestoreType(output string) (string, bool) {
 		return "-bool", true
 	case "Type is integer":
 		return "-int", true
-	case "Type is float":
+	case "Type is float", "Type is real":
 		return "-float", true
 	default:
 		return "", false

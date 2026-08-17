@@ -44,6 +44,7 @@ type preparedItem struct {
 	fallback          actions.Compensation
 	unavailableReason string
 	filesystemBacked  bool
+	filesystemPaths   []string
 	warningsEmitted   bool
 }
 
@@ -459,6 +460,7 @@ func (r *Runner) capturePreparedModule(
 			continue
 		}
 		paths := writer.WritePaths()
+		entry.filesystemPaths = append([]string(nil), paths...)
 		entry.filesystemBacked = len(paths) != 0
 		for _, path := range paths {
 			if err := recorder.Record(path); err != nil {
@@ -692,7 +694,7 @@ func (r *Runner) applyPreparedItem(
 	var filesystemMarker *rollbackItemMarker
 	if prepared.filesystemBacked {
 		var err error
-		filesystemMarker, err = transaction.activateFilesystemItem(actionIdentity)
+		filesystemMarker, err = transaction.activateFilesystemItem(actionIdentity, prepared.filesystemPaths)
 		if err != nil {
 			return outcomeFailed, fmt.Errorf("module %q: activate filesystem rollback accounting: %w", mod.Name, err)
 		}

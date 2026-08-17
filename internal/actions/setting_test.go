@@ -185,6 +185,7 @@ func TestSettingActionPrepareMacOSCompensationRestoresExactScalar(t *testing.T) 
 		{name: "boolean", typeOutput: "Type is boolean\n", valueOutput: "1\n", typeFlag: "-bool", value: "1"},
 		{name: "integer", typeOutput: "Type is integer\n", valueOutput: "-42\n", typeFlag: "-int", value: "-42"},
 		{name: "float", typeOutput: "Type is float\n", valueOutput: "3.125\n", typeFlag: "-float", value: "3.125"},
+		{name: "real", typeOutput: "Type is real\n", valueOutput: "3.125\n", typeFlag: "-float", value: "3.125"},
 	}
 
 	for _, tt := range tests {

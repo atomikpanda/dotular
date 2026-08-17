@@ -21,10 +21,11 @@ type savedRecord struct {
 // Snapshot holds ordered copies of paths that existed before an apply started,
 // plus the highest roots created by writes so rollback can remove them.
 type Snapshot struct {
-	dir      string
-	saved    []savedRecord
-	recorded map[string]struct{}
-	created  []string
+	dir           string
+	saved         []savedRecord
+	restoreTarget map[string]string
+	recordedPaths []string
+	created       []string
 }
 
 var (
@@ -39,7 +40,7 @@ func New() (*Snapshot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create snapshot dir: %w", err)
 	}
-	return &Snapshot{dir: dir, recorded: make(map[string]struct{})}, nil
+	return &Snapshot{dir: dir, restoreTarget: make(map[string]string)}, nil
 }
 
 // Record saves the current state of path so it can be restored later.
@@ -47,12 +48,13 @@ func New() (*Snapshot, error) {
 // below its closest existing parent. Calling Record twice for the same exact
 // path is a no-op after the first successful call.
 func (s *Snapshot) Record(path string) error {
-	if _, alreadyRecorded := s.recorded[path]; alreadyRecorded {
+	if _, alreadyRecorded := s.restoreTarget[path]; alreadyRecorded {
 		return nil
 	}
 	for _, ownedRoot := range s.created {
 		if pathWithin(ownedRoot, path) {
-			s.recorded[path] = struct{}{}
+			s.restoreTarget[path] = ownedRoot
+			s.recordedPaths = append(s.recordedPaths, path)
 			return nil
 		}
 	}
@@ -65,7 +67,8 @@ func (s *Snapshot) Record(path string) error {
 		if err != nil {
 			return fmt.Errorf("snapshot %s: %w", path, err)
 		}
-		s.recorded[path] = struct{}{}
+		s.restoreTarget[path] = createdRoot
+		s.recordedPaths = append(s.recordedPaths, path)
 		s.created = append(s.created, createdRoot)
 		return nil
 	}
@@ -86,7 +89,8 @@ func (s *Snapshot) Record(path string) error {
 		return fmt.Errorf("snapshot %s: %w", path, err)
 	}
 	s.saved = append(s.saved, savedRecord{destination: path, snapshotPath: tmpPath})
-	s.recorded[path] = struct{}{}
+	s.restoreTarget[path] = path
+	s.recordedPaths = append(s.recordedPaths, path)
 	return nil
 }
 
@@ -114,23 +118,48 @@ func pathWithin(root, path string) bool {
 		!strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
+// RestoreResult reports the restore outcome for one path passed to Record.
+type RestoreResult struct {
+	Path string
+	Err  error
+}
+
 // Restore writes saved paths back in reverse capture order, then removes owned
 // created roots in reverse declaration order. Every failure remains observable.
 func (s *Snapshot) Restore() error {
-	var errs []error
+	results := s.RestoreResults()
+	errs := make([]error, 0, len(results))
+	for _, result := range results {
+		errs = append(errs, result.Err)
+	}
+	return errors.Join(errs...)
+}
+
+// RestoreResults restores the snapshot and reports each recorded path separately.
+func (s *Snapshot) RestoreResults() []RestoreResult {
+	outcomes := make(map[string]error, len(s.saved)+len(s.created))
 	for i := len(s.saved) - 1; i >= 0; i-- {
 		record := s.saved[i]
 		if err := restoreSavedPath(record); err != nil {
-			errs = append(errs, fmt.Errorf("restore %s: %w", record.destination, err))
+			outcomes[record.destination] = fmt.Errorf("restore %s: %w", record.destination, err)
+		} else {
+			outcomes[record.destination] = nil
 		}
 	}
 	for i := len(s.created) - 1; i >= 0; i-- {
 		path := s.created[i]
 		if err := removeCreatedPath(path); err != nil {
-			errs = append(errs, fmt.Errorf("remove created path %s: %w", path, err))
+			outcomes[path] = fmt.Errorf("remove created path %s: %w", path, err)
+		} else {
+			outcomes[path] = nil
 		}
 	}
-	return errors.Join(errs...)
+
+	results := make([]RestoreResult, 0, len(s.recordedPaths))
+	for _, path := range s.recordedPaths {
+		results = append(results, RestoreResult{Path: path, Err: outcomes[s.restoreTarget[path]]})
+	}
+	return results
 }
 
 func restoreSaved(record savedRecord) error {

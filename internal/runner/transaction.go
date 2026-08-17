@@ -38,6 +38,7 @@ const (
 
 type rollbackItemMarker struct {
 	identity operationIdentity
+	paths    []string
 	active   bool
 }
 
@@ -94,15 +95,29 @@ type moduleTransaction struct {
 }
 
 type snapshotCompensation struct {
-	snapshot moduleSnapshot
+	snapshot       moduleSnapshot
+	restoreResults []snapshot.RestoreResult
+	hasResults     bool
 }
 
-func (c snapshotCompensation) Describe() string {
+func (c *snapshotCompensation) Describe() string {
 	return "restore filesystem snapshot"
 }
 
-func (c snapshotCompensation) Run(context.Context) error {
-	return c.snapshot.Restore()
+func (c *snapshotCompensation) Run(context.Context) error {
+	detailed, ok := c.snapshot.(interface {
+		RestoreResults() []snapshot.RestoreResult
+	})
+	if !ok {
+		return c.snapshot.Restore()
+	}
+	c.restoreResults = detailed.RestoreResults()
+	c.hasResults = true
+	errs := make([]error, 0, len(c.restoreResults))
+	for _, result := range c.restoreResults {
+		errs = append(errs, result.Err)
+	}
+	return errors.Join(errs...)
 }
 
 func newModuleTransaction() *moduleTransaction {
@@ -128,7 +143,7 @@ func newModuleTransactionWithSnapshot(snap moduleSnapshot) *moduleTransaction {
 			target:    "filesystem",
 			operation: "snapshot restore",
 		},
-		compensation:     snapshotCompensation{snapshot: snap},
+		compensation:     &snapshotCompensation{snapshot: snap},
 		active:           true,
 		contextFree:      true,
 		accountingSource: rollbackAccountingFilesystemSnapshot,
@@ -178,7 +193,7 @@ func (t *moduleTransaction) deactivate(entry *journalEntry) error {
 
 // activateFilesystemItem records an attempted filesystem-backed item whose
 // final rollback outcome is determined by the shared snapshot restore.
-func (t *moduleTransaction) activateFilesystemItem(identity operationIdentity) (*rollbackItemMarker, error) {
+func (t *moduleTransaction) activateFilesystemItem(identity operationIdentity, paths []string) (*rollbackItemMarker, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -189,7 +204,7 @@ func (t *moduleTransaction) activateFilesystemItem(identity operationIdentity) (
 		return nil, errTransactionRolledBack
 	}
 
-	marker := &rollbackItemMarker{identity: identity, active: true}
+	marker := &rollbackItemMarker{identity: identity, paths: append([]string(nil), paths...), active: true}
 	t.filesystemItems = append(t.filesystemItems, marker)
 	return marker, nil
 }
@@ -294,12 +309,47 @@ func (t *moduleTransaction) recordRollbackResult(
 	case rollbackAccountingItem:
 		report.itemOutcomes = append(report.itemOutcomes, result)
 	case rollbackAccountingFilesystemSnapshot:
+		snapshotRestore, hasDetailedRestore := entry.compensation.(*snapshotCompensation)
+		hasDetailedRestore = hasDetailedRestore && snapshotRestore.hasResults
+		resultsByPath := make(map[string]error)
+		if hasDetailedRestore {
+			resultsByPath = make(map[string]error, len(snapshotRestore.restoreResults))
+			for _, restoreResult := range snapshotRestore.restoreResults {
+				resultsByPath[restoreResult.Path] = restoreResult.Err
+			}
+		}
 		for _, marker := range t.filesystemItems {
 			if !marker.active {
 				continue
 			}
 			itemResult := result
 			itemResult.identity = marker.identity
+			if hasDetailedRestore {
+				var restoreErrs []error
+				for _, path := range marker.paths {
+					restoreErr, found := resultsByPath[path]
+					if !found {
+						restoreErr = fmt.Errorf("snapshot restore result missing for %s", path)
+					}
+					if restoreErr != nil {
+						restoreErrs = append(restoreErrs, restoreErr)
+					}
+				}
+				if restoreErr := errors.Join(restoreErrs...); restoreErr != nil {
+					itemResult.outcome = rollbackOutcomeFailed
+					itemResult.err = fmt.Errorf(
+						"rollback %s %q %s with %q: %w",
+						marker.identity.scope,
+						marker.identity.target,
+						marker.identity.operation,
+						result.compensation,
+						restoreErr,
+					)
+				} else {
+					itemResult.outcome = rollbackOutcomeRolledBack
+					itemResult.err = nil
+				}
+			}
 			report.itemOutcomes = append(report.itemOutcomes, itemResult)
 			report.results = append(report.results, itemResult)
 		}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2030,10 +2029,11 @@ func TestApplyModuleAtomicMixedRollbackJournalCountsOnlyItems(t *testing.T) {
 	}
 }
 
-func TestApplyModuleAtomicSnapshotFailureMarksFilesystemItemsRollbackFailed(t *testing.T) {
-	parent := t.TempDir()
-	firstPath := filepath.Join(parent, "first")
-	secondPath := filepath.Join(parent, "second")
+func TestApplyModuleAtomicSnapshotFailureReportsPerItemOutcomes(t *testing.T) {
+	firstParent := t.TempDir()
+	secondParent := t.TempDir()
+	firstPath := filepath.Join(firstParent, "first")
+	secondPath := filepath.Join(secondParent, "second")
 	for _, path := range []string{firstPath, secondPath} {
 		if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
 			t.Fatal(err)
@@ -2047,10 +2047,10 @@ func TestApplyModuleAtomicSnapshotFailureMarksFilesystemItemsRollbackFailed(t *t
 		description: "second filesystem item",
 		writePaths:  []string{secondPath},
 		run: func(context.Context) error {
-			if err := os.RemoveAll(parent); err != nil {
+			if err := os.RemoveAll(secondParent); err != nil {
 				return err
 			}
-			return os.WriteFile(parent, []byte("blocks snapshot restore"), 0o600)
+			return os.WriteFile(secondParent, []byte("blocks snapshot restore"), 0o600)
 		},
 	}
 	r, out, _ := newLifecycleRunner(t, map[string]actions.Action{
@@ -2077,9 +2077,9 @@ func TestApplyModuleAtomicSnapshotFailureMarksFilesystemItemsRollbackFailed(t *t
 	if !errors.Is(result.Err, forwardErr) {
 		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
 	}
-	if result.Applied != 0 || result.RolledBack != 0 ||
-		result.RollbackFailed != 2 || result.Uncompensated != 0 {
-		t.Fatalf("ModuleResult = %+v, want exactly two rollback-failed filesystem item outcomes", result)
+	if result.Applied != 0 || result.RolledBack != 1 ||
+		result.RollbackFailed != 1 || result.Uncompensated != 0 {
+		t.Fatalf("ModuleResult = %+v, want one rolled-back and one rollback-failed filesystem item", result)
 	}
 	entries, err := audit.Read(mod.Name, 0)
 	if err != nil {
@@ -2091,18 +2091,20 @@ func TestApplyModuleAtomicSnapshotFailureMarksFilesystemItemsRollbackFailed(t *t
 			rollbackOutcomes[entry.Item] = append(rollbackOutcomes[entry.Item], entry.Outcome)
 		}
 	}
-	for _, item := range []string{"first filesystem item [action]", "second filesystem item [action]"} {
-		if !reflect.DeepEqual(rollbackOutcomes[item], []string{rollbackOutcomeFailed}) {
-			t.Fatalf("rollback audit outcomes for %q = %v, want [%s]", item, rollbackOutcomes[item], rollbackOutcomeFailed)
-		}
+	if !reflect.DeepEqual(rollbackOutcomes["first filesystem item [action]"], []string{rollbackOutcomeRolledBack}) {
+		t.Fatalf("first item rollback outcomes = %v, want [%s]", rollbackOutcomes["first filesystem item [action]"], rollbackOutcomeRolledBack)
+	}
+	if !reflect.DeepEqual(rollbackOutcomes["second filesystem item [action]"], []string{rollbackOutcomeFailed}) {
+		t.Fatalf("second item rollback outcomes = %v, want [%s]", rollbackOutcomes["second filesystem item [action]"], rollbackOutcomeFailed)
 	}
 	if !reflect.DeepEqual(rollbackOutcomes["filesystem [snapshot restore]"], []string{rollbackOutcomeFailed}) {
 		t.Fatalf("snapshot rollback audit outcomes = %v, want [%s]", rollbackOutcomes["filesystem [snapshot restore]"], rollbackOutcomeFailed)
 	}
-	for _, item := range []string{"first filesystem item", "second filesystem item"} {
-		if !strings.Contains(out.String(), fmt.Sprintf(`item %q action: rollback_failed`, item)) {
-			t.Fatalf("rollback output lacks failed item outcome for %q: %q", item, out.String())
-		}
+	if !strings.Contains(out.String(), `item "first filesystem item" action: rolled_back`) {
+		t.Fatalf("rollback output lacks successful first item outcome: %q", out.String())
+	}
+	if !strings.Contains(out.String(), `item "second filesystem item" action: rollback_failed`) {
+		t.Fatalf("rollback output lacks failed second item outcome: %q", out.String())
 	}
 }
 
