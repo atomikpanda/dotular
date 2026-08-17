@@ -405,49 +405,6 @@ func (r *Runner) prepareAtomicModule(ctx context.Context, mod config.Module) (pr
 		prepared.items = append(prepared.items, entry)
 	}
 
-	for _, pair := range []struct {
-		command  string
-		identity string
-		enabled  bool
-	}{
-		{mod.Hooks.Rollback.BeforeApply, "module hook before_apply", true},
-		{mod.Hooks.Rollback.AfterApply, "module hook after_apply", true},
-		{mod.Hooks.Rollback.BeforeSync, "module hook before_sync", prepared.hasApplicableSyncItem()},
-		{mod.Hooks.Rollback.AfterSync, "module hook after_sync", prepared.hasApplicableSyncItem()},
-	} {
-		if pair.enabled {
-			if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
-				return preparedModule{}, fmt.Errorf("module %q: %w", mod.Name, err)
-			}
-		}
-	}
-	for _, entry := range prepared.items {
-		if entry.skipReason != "" {
-			continue
-		}
-		for _, pair := range []struct {
-			command  string
-			identity string
-			enabled  bool
-		}{
-			{entry.item.Rollback, "item rollback", true},
-			{entry.item.Hooks.Rollback.BeforeApply, "item hook before_apply", true},
-			{entry.item.Hooks.Rollback.AfterApply, "item hook after_apply", true},
-			{entry.item.Hooks.Rollback.BeforeSync, "item hook before_sync", entry.isSync},
-			{entry.item.Hooks.Rollback.AfterSync, "item hook after_sync", entry.isSync},
-		} {
-			if pair.enabled {
-				if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
-					return preparedModule{}, fmt.Errorf(
-						"module %q item %q: %w",
-						mod.Name,
-						entry.action.Describe(),
-						err,
-					)
-				}
-			}
-		}
-	}
 	if err := ctx.Err(); err != nil {
 		return preparedModule{}, err
 	}
@@ -553,6 +510,49 @@ func (r *Runner) capturePreparedModule(
 	}
 
 	prepared.hasSyncItem = prepared.hasApplicableSyncItem()
+	for _, pair := range []struct {
+		command  string
+		identity string
+		enabled  bool
+	}{
+		{mod.Hooks.Rollback.BeforeApply, "module hook before_apply", true},
+		{mod.Hooks.Rollback.AfterApply, "module hook after_apply", true},
+		{mod.Hooks.Rollback.BeforeSync, "module hook before_sync", prepared.hasSyncItem},
+		{mod.Hooks.Rollback.AfterSync, "module hook after_sync", prepared.hasSyncItem},
+	} {
+		if pair.enabled {
+			if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
+				return fmt.Errorf("module %q: %w", mod.Name, err)
+			}
+		}
+	}
+	for _, entry := range prepared.items {
+		if entry.skipReason != "" || entry.alreadyApplied {
+			continue
+		}
+		for _, pair := range []struct {
+			command  string
+			identity string
+			enabled  bool
+		}{
+			{entry.item.Rollback, "item rollback", true},
+			{entry.item.Hooks.Rollback.BeforeApply, "item hook before_apply", true},
+			{entry.item.Hooks.Rollback.AfterApply, "item hook after_apply", true},
+			{entry.item.Hooks.Rollback.BeforeSync, "item hook before_sync", entry.isSync},
+			{entry.item.Hooks.Rollback.AfterSync, "item hook after_sync", entry.isSync},
+		} {
+			if pair.enabled {
+				if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
+					return fmt.Errorf(
+						"module %q item %q: %w",
+						mod.Name,
+						entry.action.Describe(),
+						err,
+					)
+				}
+			}
+		}
+	}
 	addHookWarning := func(scope, target, hookName, forward, rollback string) {
 		if forward == "" || rollback != "" {
 			return

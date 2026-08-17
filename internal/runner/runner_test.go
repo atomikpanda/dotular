@@ -1572,6 +1572,71 @@ func TestApplyModuleAtomicPreflightStopsBeforeEffects(t *testing.T) {
 		assertNoSnapshotFiles(t, tempRoot)
 	})
 
+	t.Run("invalid rollback on skip_if item is ignored", func(t *testing.T) {
+		action := &lifecycleAction{
+			description: "skipped invalid rollback action",
+			run: func(context.Context) error {
+				t.Fatal("skipped action ran")
+				return nil
+			},
+		}
+		r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"skipped": action})
+		mod := config.Module{
+			Name: "skip-invalid-rollback",
+			Items: []config.Item{{
+				Run:      "skipped",
+				SkipIf:   "true",
+				Rollback: "'unterminated",
+			}},
+		}
+
+		result := r.ApplyModule(context.Background(), mod)
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+		if result.Skipped != 1 {
+			t.Fatalf("ModuleResult = %+v, want one skipped item", result)
+		}
+	})
+
+	t.Run("invalid module sync rollback is ignored when all sync items skip", func(t *testing.T) {
+		action := &lifecycleAction{
+			description: "skipped sync action",
+			run: func(context.Context) error {
+				t.Fatal("skipped sync action ran")
+				return nil
+			},
+		}
+		r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"sync-file": action})
+		r.shellRun = func(context.Context, string) error {
+			t.Fatal("sync hook ran without an applicable sync item")
+			return nil
+		}
+		mod := config.Module{
+			Name: "skip-invalid-sync-rollback",
+			Items: []config.Item{{
+				File:        "sync-file",
+				Destination: config.PlatformMap{MacOS: "unused"},
+				Direction:   "sync",
+				SkipIf:      "true",
+			}},
+			Hooks: config.ModuleHooks{
+				BeforeSync: ": should-not-run",
+				Rollback: config.RollbackHooks{
+					BeforeSync: "'unterminated",
+				},
+			},
+		}
+
+		result := r.ApplyModule(context.Background(), mod)
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+		if result.Skipped != 1 {
+			t.Fatalf("ModuleResult = %+v, want one skipped sync item", result)
+		}
+	})
+
 	t.Run("fatal typed capture discards snapshot", func(t *testing.T) {
 		tempRoot := t.TempDir()
 		t.Setenv("TMPDIR", tempRoot)
