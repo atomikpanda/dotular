@@ -327,7 +327,14 @@ func parsePacmanState(pkg, output string) (packageState, error) {
 		if len(fields) != 1 {
 			return packageStateUnknown, fmt.Errorf("invalid pacman package identity line %q", line)
 		}
-		if fields[0] == pkg {
+		identity := fields[0]
+		if repository, name, qualified := strings.Cut(identity, "/"); qualified {
+			if repository == "" || name == "" || strings.Contains(name, "/") {
+				return packageStateUnknown, fmt.Errorf("invalid pacman package identity line %q", line)
+			}
+			identity = name
+		}
+		if identity == pkg {
 			return packageStatePresent, nil
 		}
 	}

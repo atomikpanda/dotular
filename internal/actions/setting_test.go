@@ -361,11 +361,11 @@ func TestSettingActionPrepareWindowsCompensationRestoresExactRegistryValue(t *te
 				Value:    "new",
 				OS:       "windows",
 				executor: executor.execute,
-				windowsReader: func(ctx context.Context, domain, key string) (bool, uint32, []byte, error) {
+				windowsReader: func(ctx context.Context, domain, key string) (windowsRegistryValueState, error) {
 					if domain != `HKCU\Software\Dotular` || key != "sample" {
 						t.Fatalf("native reader got domain/key %q/%q", domain, key)
 					}
-					return true, tt.valueType, tt.data, nil
+					return windowsRegistryValueState{present: true, valueType: tt.valueType, data: tt.data}, nil
 				},
 			}
 
@@ -395,8 +395,8 @@ func TestSettingActionPrepareWindowsCompensationDeletesProvenMissingValue(t *tes
 		Value:    "new",
 		OS:       "windows",
 		executor: executor.execute,
-		windowsReader: func(context.Context, string, string) (bool, uint32, []byte, error) {
-			return false, 0, nil, nil
+		windowsReader: func(context.Context, string, string) (windowsRegistryValueState, error) {
+			return windowsRegistryValueState{}, nil
 		},
 	}
 
@@ -413,6 +413,35 @@ func TestSettingActionPrepareWindowsCompensationDeletesProvenMissingValue(t *tes
 
 	assertSettingCalls(t, executor.calls,
 		packageCommandCall{args: []string{"reg", "delete", `HKCU\Software\Dotular`, "/v", "sample", "/f"}},
+	)
+}
+
+func TestSettingActionPrepareWindowsCompensationDeletesCreatedRegistryKeyTree(t *testing.T) {
+	executor := &recordingSettingExecutor{results: []packageCommandResult{{}}}
+	action := &SettingAction{
+		Domain:   `HKCU\Software\Dotular`,
+		Key:      "sample",
+		Value:    "new",
+		OS:       "windows",
+		executor: executor.execute,
+		windowsReader: func(context.Context, string, string) (windowsRegistryValueState, error) {
+			return windowsRegistryValueState{deleteKey: `HKCU\Software\Dotular`}, nil
+		},
+	}
+
+	preparation, err := action.PrepareCompensation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preparation.Compensation == nil {
+		t.Fatalf("Compensation = nil, unavailable reason %q", preparation.UnavailableReason)
+	}
+	if err := preparation.Compensation.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	assertSettingCalls(t, executor.calls,
+		packageCommandCall{args: []string{"reg", "delete", `HKCU\Software\Dotular`, "/f"}},
 	)
 }
 
@@ -441,8 +470,8 @@ func TestSettingActionPrepareWindowsCompensationLeavesInconclusiveStateUnknown(t
 				Key:    "sample",
 				Value:  "new",
 				OS:     "windows",
-				windowsReader: func(context.Context, string, string) (bool, uint32, []byte, error) {
-					return tt.present, tt.valueType, tt.data, tt.err
+				windowsReader: func(context.Context, string, string) (windowsRegistryValueState, error) {
+					return windowsRegistryValueState{present: tt.present, valueType: tt.valueType, data: tt.data}, tt.err
 				},
 			}
 
@@ -535,8 +564,8 @@ func TestSettingCompensationUsesFreshRollbackContextAndReportsFailures(t *testin
 				executor: executor.execute,
 			}
 			if tt.windowsMissing {
-				action.windowsReader = func(context.Context, string, string) (bool, uint32, []byte, error) {
-					return false, 0, nil, nil
+				action.windowsReader = func(context.Context, string, string) (windowsRegistryValueState, error) {
+					return windowsRegistryValueState{}, nil
 				}
 			}
 			captureCtx := context.WithValue(context.Background(), settingContextKey{}, "capture")
@@ -609,12 +638,16 @@ func TestSettingActionPrepareWindowsCompensationReadsNativeUnicodeValue(t *testi
 		Value:    "new",
 		OS:       "windows",
 		executor: executor.execute,
-		windowsReader: func(ctx context.Context, domain, key string) (bool, uint32, []byte, error) {
+		windowsReader: func(ctx context.Context, domain, key string) (windowsRegistryValueState, error) {
 			read = true
 			if domain != `HKCU\Software\Dotular` || key != "sample" {
 				t.Fatalf("native reader got domain/key %q/%q", domain, key)
 			}
-			return true, testWindowsRegistryStringType, nativeRegistryStringBytes("日本語 café"), nil
+			return windowsRegistryValueState{
+				present:   true,
+				valueType: testWindowsRegistryStringType,
+				data:      nativeRegistryStringBytes("日本語 café"),
+			}, nil
 		},
 	}
 
@@ -645,9 +678,13 @@ func TestSettingActionPrepareWindowsCompensationChecksContextAfterNativeRead(t *
 		Domain: "domain",
 		Key:    "key",
 		OS:     "windows",
-		windowsReader: func(context.Context, string, string) (bool, uint32, []byte, error) {
+		windowsReader: func(context.Context, string, string) (windowsRegistryValueState, error) {
 			cancel()
-			return true, testWindowsRegistryStringType, nativeRegistryStringBytes("old"), nil
+			return windowsRegistryValueState{
+				present:   true,
+				valueType: testWindowsRegistryStringType,
+				data:      nativeRegistryStringBytes("old"),
+			}, nil
 		},
 	}
 

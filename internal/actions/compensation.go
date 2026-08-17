@@ -2,8 +2,8 @@ package actions
 
 import (
 	"context"
+	"github.com/atomikpanda/dotular/internal/procutil"
 	"os"
-	"os/exec"
 )
 
 // Compensation reverses a successfully applied action.
@@ -24,7 +24,7 @@ type CompensationPreparation struct {
 type commandExecutor func(context.Context, []string, bool) ([]byte, error)
 
 func executeCommand(ctx context.Context, args []string, captureOutput bool) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := procutil.CommandContext(ctx, args[0], args[1:]...)
 	if captureOutput {
 		output, err := cmd.Output()
 		if ctxErr := ctx.Err(); ctxErr != nil {

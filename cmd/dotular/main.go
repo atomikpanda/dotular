@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,6 +21,7 @@ import (
 	"github.com/atomikpanda/dotular/internal/config"
 	"github.com/atomikpanda/dotular/internal/fsutil"
 	"github.com/atomikpanda/dotular/internal/platform"
+	"github.com/atomikpanda/dotular/internal/procutil"
 	"github.com/atomikpanda/dotular/internal/registry"
 	"github.com/atomikpanda/dotular/internal/runner"
 	"github.com/atomikpanda/dotular/internal/scanner"
@@ -1257,7 +1257,7 @@ modules to add to your dotular.yaml.`,
 				if checkArgs == nil {
 					return false
 				}
-				c := exec.CommandContext(ctx, checkArgs[0], checkArgs[1:]...)
+				c := procutil.CommandContext(ctx, checkArgs[0], checkArgs[1:]...)
 				return c.Run() == nil
 			}
 

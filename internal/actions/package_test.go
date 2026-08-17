@@ -465,6 +465,7 @@ func TestPackageCompensationPacmanRequiresExactSyncPackageIdentity(t *testing.T)
 		wantCompensation bool
 	}{
 		{name: "exact package", syncPackages: "bash\ngit\n", wantCompensation: true},
+		{name: "repository-qualified exact package", syncPackages: "core/bash\nextra/git\n", wantCompensation: true},
 		{name: "group or provider", syncPackages: "bash\nbase\n"},
 	}
 

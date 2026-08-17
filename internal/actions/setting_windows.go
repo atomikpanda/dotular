@@ -11,55 +11,76 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-func readWindowsRegistryValue(ctx context.Context, domain, valueName string) (bool, uint32, []byte, error) {
+func readWindowsRegistryValue(ctx context.Context, domain, valueName string) (windowsRegistryValueState, error) {
 	if err := ctx.Err(); err != nil {
-		return false, 0, nil, err
+		return windowsRegistryValueState{}, err
 	}
 
 	hive, path, err := splitWindowsRegistryPath(domain)
 	if err != nil {
-		return false, 0, nil, err
+		return windowsRegistryValueState{}, err
 	}
-	key, err := registry.OpenKey(hive, path, registry.QUERY_VALUE)
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, 0, nil, ctxErr
+	hiveName, _, _ := strings.Cut(domain, `\`)
+	parts := strings.Split(path, `\`)
+	var targetKey registry.Key
+	for index, part := range parts {
+		if part == "" {
+			return windowsRegistryValueState{}, fmt.Errorf("registry path %q contains an empty subkey", domain)
+		}
+		prefix := strings.Join(parts[:index+1], `\`)
+		key, openErr := registry.OpenKey(hive, prefix, registry.QUERY_VALUE)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			if openErr == nil {
+				_ = key.Close()
+			}
+			return windowsRegistryValueState{}, ctxErr
+		}
+		if errors.Is(openErr, registry.ErrNotExist) {
+			return windowsRegistryValueState{deleteKey: hiveName + `\` + prefix}, nil
+		}
+		if openErr != nil {
+			return windowsRegistryValueState{}, fmt.Errorf("open registry key: %w", openErr)
+		}
+		if index == len(parts)-1 {
+			targetKey = key
+		} else {
+			_ = key.Close()
+		}
 	}
-	if errors.Is(err, registry.ErrNotExist) {
-		return false, 0, nil, nil
-	}
-	if err != nil {
-		return false, 0, nil, fmt.Errorf("open registry key: %w", err)
-	}
-	defer key.Close()
+	defer targetKey.Close()
 
-	size, _, err := key.GetValue(valueName, nil)
+	size, _, err := targetKey.GetValue(valueName, nil)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, 0, nil, ctxErr
+		return windowsRegistryValueState{}, ctxErr
 	}
 	if errors.Is(err, registry.ErrNotExist) {
-		return false, 0, nil, nil
+		return windowsRegistryValueState{}, nil
 	}
 	if err != nil {
-		return false, 0, nil, fmt.Errorf("query registry value size: %w", err)
+		return windowsRegistryValueState{}, fmt.Errorf("query registry value size: %w", err)
 	}
 
 	data := make([]byte, size)
 	for {
-		read, actualType, err := key.GetValue(valueName, data)
+		read, actualType, err := targetKey.GetValue(valueName, data)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return false, 0, nil, ctxErr
+			return windowsRegistryValueState{}, ctxErr
 		}
 		if errors.Is(err, registry.ErrNotExist) {
-			return false, 0, nil, nil
+			return windowsRegistryValueState{}, nil
 		}
 		if errors.Is(err, registry.ErrShortBuffer) {
 			data = make([]byte, read)
 			continue
 		}
 		if err != nil {
-			return false, 0, nil, fmt.Errorf("query registry value: %w", err)
+			return windowsRegistryValueState{}, fmt.Errorf("query registry value: %w", err)
 		}
-		return true, actualType, append([]byte(nil), data[:read]...), nil
+		return windowsRegistryValueState{
+			present:   true,
+			valueType: actualType,
+			data:      append([]byte(nil), data[:read]...),
+		}, nil
 	}
 }
 

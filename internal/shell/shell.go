@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+
+	"github.com/atomikpanda/dotular/internal/procutil"
 )
 
 // Run executes command in a shell and returns an error if the exit code is non-zero.
@@ -59,7 +61,7 @@ func Validate(ctx context.Context, command string) error {
 
 func shellValidationCmd(ctx context.Context, command string) *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		cmd := exec.CommandContext(
+		cmd := procutil.CommandContext(
 			ctx,
 			"powershell",
 			"-NoProfile",
@@ -70,12 +72,12 @@ func shellValidationCmd(ctx context.Context, command string) *exec.Cmd {
 		cmd.Env = append(os.Environ(), "DOTULAR_VALIDATE_COMMAND="+command)
 		return cmd
 	}
-	return exec.CommandContext(ctx, "sh", "-n", "-c", command)
+	return procutil.CommandContext(ctx, "sh", "-n", "-c", command)
 }
 
 func shellCmd(ctx context.Context, command string) *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		return exec.CommandContext(ctx, "powershell", "-Command", command)
+		return procutil.CommandContext(ctx, "powershell", "-Command", command)
 	}
-	return exec.CommandContext(ctx, "sh", "-c", command)
+	return procutil.CommandContext(ctx, "sh", "-c", command)
 }

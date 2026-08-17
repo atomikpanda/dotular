@@ -25,7 +25,7 @@ type SettingAction struct {
 	OS     string
 
 	executor      commandExecutor
-	windowsReader func(context.Context, string, string) (bool, uint32, []byte, error)
+	windowsReader func(context.Context, string, string) (windowsRegistryValueState, error)
 }
 
 // SettingsSupported reports whether system settings can be applied on goos.
@@ -71,8 +71,16 @@ const (
 )
 
 type capturedSettingValue struct {
-	typeArg string
-	value   string
+	typeArg   string
+	value     string
+	deleteKey string
+}
+
+type windowsRegistryValueState struct {
+	present   bool
+	valueType uint32
+	data      []byte
+	deleteKey string
 }
 
 // PrepareCompensation captures the exact scalar setting state before Run.
@@ -121,7 +129,11 @@ func (a *SettingAction) PrepareCompensation(ctx context.Context) (CompensationPr
 	case "windows":
 		if state == settingStateAbsent {
 			compensation.delete = true
-			compensation.args = []string{"reg", "delete", a.Domain, "/v", a.Key, "/f"}
+			if captured.deleteKey != "" {
+				compensation.args = []string{"reg", "delete", captured.deleteKey, "/f"}
+			} else {
+				compensation.args = []string{"reg", "delete", a.Domain, "/v", a.Key, "/f"}
+			}
 		} else {
 			compensation.args = []string{"reg", "add", a.Domain, "/v", a.Key, "/t", captured.typeArg, "/d", captured.value, "/f"}
 		}
@@ -190,18 +202,18 @@ func (a *SettingAction) captureMacOSState(ctx context.Context) (settingState, ca
 }
 
 func (a *SettingAction) captureWindowsState(ctx context.Context) (settingState, capturedSettingValue, string, error) {
-	present, valueType, data, err := a.windowsStateReader()(ctx, a.Domain, a.Key)
+	registryState, err := a.windowsStateReader()(ctx, a.Domain, a.Key)
 	if canceledErr := settingContextError(ctx, err); canceledErr != nil {
 		return settingStateUnknown, capturedSettingValue{}, "", canceledErr
 	}
 	if err != nil {
 		return settingStateUnknown, capturedSettingValue{}, fmt.Sprintf("native registry state query failed: %v", err), nil
 	}
-	if !present {
-		return settingStateAbsent, capturedSettingValue{}, "", nil
+	if !registryState.present {
+		return settingStateAbsent, capturedSettingValue{deleteKey: registryState.deleteKey}, "", nil
 	}
 
-	regType, value, err := encodeWindowsRegistryValue(valueType, data)
+	regType, value, err := encodeWindowsRegistryValue(registryState.valueType, registryState.data)
 	if err != nil {
 		return settingStateUnknown, capturedSettingValue{}, fmt.Sprintf("native registry value cannot be restored exactly: %v", err), nil
 	}
@@ -222,7 +234,7 @@ func (a *SettingAction) commandExecutor() commandExecutor {
 	return executeCommand
 }
 
-func (a *SettingAction) windowsStateReader() func(context.Context, string, string) (bool, uint32, []byte, error) {
+func (a *SettingAction) windowsStateReader() func(context.Context, string, string) (windowsRegistryValueState, error) {
 	if a.windowsReader != nil {
 		return a.windowsReader
 	}
