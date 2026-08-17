@@ -51,12 +51,20 @@ func (a *PackageAction) Run(ctx context.Context, dryRun bool) error {
 	return err
 }
 
-// IsApplied uses the manager's original per-package exit-status check. Rollback
-// capture is intentionally independent because its stricter inventory parsing
-// may be unable to authorize an automatic uninstall.
+// IsApplied uses the manager's per-package exit-status check except for mas,
+// whose inventory command succeeds even when the requested package is absent.
+// Rollback capture is otherwise intentionally independent because its stricter
+// inventory parsing may be unable to authorize an automatic uninstall.
 func (a *PackageAction) IsApplied(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
+	}
+	if a.Manager == "mas" {
+		state, _, err := a.captureState(ctx)
+		if err != nil {
+			return false, err
+		}
+		return state == packageStatePresent, nil
 	}
 	args := CheckArgs(a.Manager, a.Package)
 	if args == nil {

@@ -552,6 +552,37 @@ func TestPackageActionIsAppliedUsesPerPackageExitStatus(t *testing.T) {
 	}
 }
 
+func TestPackageActionIsAppliedMASUsesExactInventoryIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		output  string
+		applied bool
+	}{
+		{name: "present", output: "497799835 Xcode (16.4)\n", applied: true},
+		{name: "absent", output: "409183694 Keynote (14.4)\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &recordingPackageExecutor{results: []packageCommandResult{{
+				output: []byte(tt.output),
+			}}}
+			action := &PackageAction{Package: "497799835", Manager: "mas", executor: executor.execute}
+
+			applied, err := action.IsApplied(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if applied != tt.applied {
+				t.Fatalf("IsApplied() = %t, want %t", applied, tt.applied)
+			}
+			if got, want := executor.calls[0].args, []string{"mas", "list"}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("IsApplied() args = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestPackageActionCanceledStateCheckReturnsError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

@@ -312,6 +312,9 @@ func decodeWindowsRegistryMultiString(data []byte) ([]string, error) {
 	}
 
 	content := codeUnits[:len(codeUnits)-1]
+	if len(content) == 1 {
+		return nil, nil
+	}
 	values := make([]string, 0)
 	start := 0
 	for i, codeUnit := range content {

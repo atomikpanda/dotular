@@ -327,6 +327,7 @@ func TestSettingActionPrepareWindowsCompensationRestoresExactRegistryValue(t *te
 		{name: "qword", valueType: 11, data: nativeRegistryQWORDBytes(42), regType: "REG_QWORD", value: "0x000000000000002a"},
 		{name: "binary", valueType: 3, data: []byte{0xde, 0xad, 0xbe, 0xef}, regType: "REG_BINARY", value: "deadbeef"},
 		{name: "multi string", valueType: 7, data: nativeRegistryMultiStringBytes("one", "two"), regType: "REG_MULTI_SZ", value: `one\0two`},
+		{name: "empty multi string", valueType: 7, data: nativeRegistryMultiStringBytes(), regType: "REG_MULTI_SZ", value: ""},
 		{name: "leading spaces", valueType: 1, data: nativeRegistryStringBytes("  padded"), regType: "REG_SZ", value: "  padded"},
 	}
 
@@ -645,6 +646,9 @@ func nativeRegistryMultiStringBytes(values ...string) []byte {
 	var encoded []uint16
 	for _, value := range values {
 		encoded = append(encoded, utf16.Encode([]rune(value))...)
+		encoded = append(encoded, 0)
+	}
+	if len(values) == 0 {
 		encoded = append(encoded, 0)
 	}
 	encoded = append(encoded, 0)
