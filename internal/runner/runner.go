@@ -68,6 +68,28 @@ func (c commandCompensation) Run(ctx context.Context) error {
 	return c.run(ctx, c.command)
 }
 
+type retainedStateCompensation struct {
+	target     string
+	idempotent actions.Idempotent
+}
+
+func (c retainedStateCompensation) Describe() string {
+	return "retain pre-transaction state for " + c.target
+}
+func (c retainedStateCompensation) Run(ctx context.Context) error {
+	if c.idempotent == nil {
+		return nil
+	}
+	applied, err := c.idempotent.IsApplied(ctx)
+	if err != nil {
+		return fmt.Errorf("check retained state for %s: %w", c.target, err)
+	}
+	if !applied {
+		return fmt.Errorf("pre-transaction state for %s is no longer applied", c.target)
+	}
+	return nil
+}
+
 // ModuleResult holds the outcome counts for a single applied module.
 type ModuleResult struct {
 	Applied        int
@@ -486,10 +508,15 @@ func (r *Runner) capturePreparedModule(
 			}
 			if preparation.AlreadyApplied {
 				entry.alreadyApplied = true
-				continue
+				idempotent, _ := entry.action.(actions.Idempotent)
+				entry.compensation = retainedStateCompensation{
+					target:     entry.action.Describe(),
+					idempotent: idempotent,
+				}
+			} else {
+				entry.compensation = preparation.Compensation
+				entry.unavailableReason = preparation.UnavailableReason
 			}
-			entry.compensation = preparation.Compensation
-			entry.unavailableReason = preparation.UnavailableReason
 		}
 		if entry.item.Rollback != "" {
 			entry.fallback = commandCompensation{
@@ -502,7 +529,7 @@ func (r *Runner) capturePreparedModule(
 			entry.unavailableReason == "" {
 			entry.unavailableReason = "no automatic compensation or explicit rollback"
 		}
-		if entry.skipReason == "" && !entry.alreadyApplied {
+		if entry.skipReason == "" {
 			prepared.warnings = append(prepared.warnings, preparedItemWarnings(*entry)...)
 			entry.warningsEmitted = true
 		}
@@ -532,27 +559,13 @@ func (r *Runner) capturePreparedModule(
 		if entry.skipReason != "" || entry.alreadyApplied {
 			continue
 		}
-		for _, pair := range []struct {
-			command  string
-			identity string
-			enabled  bool
-		}{
-			{entry.item.Rollback, "item rollback", true},
-			{entry.item.Hooks.Rollback.BeforeApply, "item hook before_apply", true},
-			{entry.item.Hooks.Rollback.AfterApply, "item hook after_apply", true},
-			{entry.item.Hooks.Rollback.BeforeSync, "item hook before_sync", entry.isSync},
-			{entry.item.Hooks.Rollback.AfterSync, "item hook after_sync", entry.isSync},
-		} {
-			if pair.enabled {
-				if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
-					return fmt.Errorf(
-						"module %q item %q: %w",
-						mod.Name,
-						entry.action.Describe(),
-						err,
-					)
-				}
-			}
+		if err := validatePreparedItemRollback(ctx, entry); err != nil {
+			return fmt.Errorf(
+				"module %q item %q: %w",
+				mod.Name,
+				entry.action.Describe(),
+				err,
+			)
 		}
 	}
 	addHookWarning := func(scope, target, hookName, forward, rollback string) {
@@ -630,7 +643,9 @@ func (r *Runner) applyPreparedItem(
 		}
 	}
 	if skipReason == "" && prepared.alreadyApplied {
-		skipReason = "already applied"
+		if _, canRecheck := prepared.action.(actions.Idempotent); !canRecheck {
+			skipReason = "already applied"
+		}
 	}
 	if skipReason == "" {
 		if idempotent, ok := prepared.action.(actions.Idempotent); ok {
@@ -641,6 +656,16 @@ func (r *Runner) applyPreparedItem(
 			if alreadyApplied {
 				skipReason = "already applied"
 			}
+		}
+	}
+	if skipReason == "" && prepared.alreadyApplied {
+		if err := validatePreparedItemRollback(ctx, prepared); err != nil {
+			return outcomeFailed, fmt.Errorf(
+				"module %q item %q: %w",
+				mod.Name,
+				prepared.action.Describe(),
+				err,
+			)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -803,6 +828,27 @@ func (r *Runner) applyPreparedItem(
 		return outcomeFailed, fmt.Errorf("module %q: %w", mod.Name, err)
 	}
 	return outcomeApplied, nil
+}
+
+func validatePreparedItemRollback(ctx context.Context, entry preparedItem) error {
+	for _, pair := range []struct {
+		command  string
+		identity string
+		enabled  bool
+	}{
+		{entry.item.Rollback, "item rollback", true},
+		{entry.item.Hooks.Rollback.BeforeApply, "item hook before_apply", true},
+		{entry.item.Hooks.Rollback.AfterApply, "item hook after_apply", true},
+		{entry.item.Hooks.Rollback.BeforeSync, "item hook before_sync", entry.isSync},
+		{entry.item.Hooks.Rollback.AfterSync, "item hook after_sync", entry.isSync},
+	} {
+		if pair.enabled {
+			if err := validateRollbackCommand(ctx, pair.command, pair.identity); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func preparedItemWarnings(prepared preparedItem) []string {

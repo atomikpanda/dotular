@@ -2971,49 +2971,67 @@ func (a *preparingIdempotentAction) Run(ctx context.Context, _ bool) error {
 	return a.run(ctx)
 }
 
-func TestApplyModuleAtomicSkipsConclusivePreparedPresenceWithoutLiveCheck(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "skip-if-ran")
-	t.Setenv("DOTULAR_SKIP_IF_MARKER", marker)
+func TestApplyModuleAtomicRechecksPreparedPresenceAtLiveItemPosition(t *testing.T) {
+	statePresent := true
 	idempotencyChecks := 0
 	actionRan := false
+	earlier := &lifecycleAction{
+		description: "remove package-like state",
+		run: func(context.Context) error {
+			statePresent = false
+			return nil
+		},
+	}
 	action := &preparingIdempotentAction{
 		description: "conclusively present package",
 		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			if !statePresent {
+				t.Fatal("package-like state was not present during preflight")
+			}
 			return actions.CompensationPreparation{AlreadyApplied: true}, nil
 		},
 		isApplied: func(context.Context) (bool, error) {
 			idempotencyChecks++
-			return false, nil
+			return statePresent, nil
 		},
 		run: func(context.Context) error {
 			actionRan = true
+			statePresent = true
 			return nil
 		},
 	}
-	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"present-package": action})
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{
+		"remove-package":  earlier,
+		"present-package": action,
+	})
+	forwardErr := errors.New("module after_apply failed")
+	r.shellRun = func(_ context.Context, command string) error {
+		if command == ": fail-module" {
+			return forwardErr
+		}
+		return nil
+	}
 	mod := config.Module{
-		Name: "conclusive-prepared-presence",
-		Items: []config.Item{{
-			Run:    "present-package",
-			SkipIf: `touch "$DOTULAR_SKIP_IF_MARKER"; false`,
-		}},
+		Name: "recheck-prepared-presence",
+		Items: []config.Item{
+			{Run: "remove-package"},
+			{Run: "present-package"},
+		},
+		Hooks: config.ModuleHooks{AfterApply: ": fail-module"},
 	}
 
 	result := r.ApplyModule(context.Background(), mod)
-	if result.Err != nil {
-		t.Fatal(result.Err)
+	if !errors.Is(result.Err, forwardErr) {
+		t.Fatalf("ApplyModule() error = %v, want errors.Is(forwardErr)", result.Err)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("skip_if did not run before conclusive prepared skip: %v", err)
+	if idempotencyChecks != 2 {
+		t.Fatalf("idempotency checks = %d, want one live check and one rollback check", idempotencyChecks)
 	}
-	if idempotencyChecks != 0 {
-		t.Fatalf("live idempotency checks = %d, want none after conclusive prepared presence", idempotencyChecks)
+	if !actionRan || !statePresent {
+		t.Fatalf("package-like action ran = %v, state present = %v; want restored live state", actionRan, statePresent)
 	}
-	if actionRan {
-		t.Fatal("conclusively present prepared action ran")
-	}
-	if result.Applied != 0 || result.Skipped != 1 {
-		t.Fatalf("ModuleResult = %+v, want one conclusive prepared skip", result)
+	if result.RolledBack != 1 {
+		t.Fatalf("ModuleResult = %+v, want restored package-like item counted as rolled back", result)
 	}
 }
 

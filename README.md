@@ -643,6 +643,9 @@ configuration validation, and template validation still apply.
 The first supported termination signal (SIGINT, and SIGTERM on Unix) cancels
 forward work and starts rollback. A second supported termination signal
 terminates immediately, whether rollback has started or not.
+On Unix, cancellation kills the forward command's process group. A command that
+deliberately daemonizes or starts a new session can escape that boundary and may
+continue running; do not use daemonizing commands in an atomic module.
 SIGKILL, power loss, kernel failure, and process death cannot be recovered.
 Package dependency removal, automatic reversal of undeclared command effects,
 compensation retries, durable recovery, and restartable transactions are also
