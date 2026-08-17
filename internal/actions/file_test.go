@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
@@ -28,6 +29,49 @@ func TestFileActionResolvedTarget(t *testing.T) {
 				t.Errorf("ResolvedTarget() base = %q, want %q (full: %q)", filepath.Base(got), tt.wantSuffix, got)
 			}
 		})
+	}
+}
+
+func TestFileActionWritePathsPinsTargetForRun(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	destination := filepath.Join(dir, "destination.conf")
+	if err := os.WriteFile(source, []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	action := &FileAction{
+		Source:      source,
+		Destination: destination,
+		Direction:   "push",
+	}
+
+	writePaths := action.WritePaths()
+	wantTarget := filepath.Join(destination, filepath.Base(source))
+	if !reflect.DeepEqual(writePaths, []string{wantTarget}) {
+		t.Fatalf("WritePaths() = %v, want [%s]", writePaths, wantTarget)
+	}
+	if err := os.Remove(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(destination, []byte("replaced by earlier operation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := action.ResolvedTarget(); got != wantTarget {
+		t.Fatalf("ResolvedTarget() after WritePaths = %q, want pinned %q", got, wantTarget)
+	}
+	if err := action.Run(context.Background(), false); err == nil {
+		t.Fatal("Run() succeeded after the pinned target's parent became a file")
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); got != "replaced by earlier operation" {
+		t.Fatalf("destination = %q, want earlier operation preserved", got)
 	}
 }
 

@@ -2296,6 +2296,57 @@ func TestApplyModuleAtomicRollbackFailuresContinueAndAuditTruthfully(t *testing.
 	}
 }
 
+type delayedCancellationContext struct {
+	context.Context
+	suppressErrors int
+}
+
+func (c *delayedCancellationContext) Err() error {
+	err := c.Context.Err()
+	if err != nil && c.suppressErrors > 0 {
+		c.suppressErrors--
+		return nil
+	}
+	return err
+}
+
+func TestApplyModuleAtomicRollsBackCancellationBeforeCommit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	delayedCtx := &delayedCancellationContext{Context: ctx, suppressErrors: 1}
+	compensated := false
+	action := &lifecycleAction{
+		description: "cancel before commit",
+		prepare: func(context.Context) (actions.CompensationPreparation, error) {
+			return actions.CompensationPreparation{
+				Compensation: lifecycleCompensation{
+					description: "undo canceled action",
+					run: func(context.Context) error {
+						compensated = true
+						return nil
+					},
+				},
+			}, nil
+		},
+		run: func(context.Context) error {
+			cancel()
+			return nil
+		},
+	}
+	r, _, _ := newLifecycleRunner(t, map[string]actions.Action{"cancel-before-commit": action})
+	mod := config.Module{Name: "cancel-before-commit", Items: []config.Item{{Run: "cancel-before-commit"}}}
+
+	result := r.ApplyModule(delayedCtx, mod)
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("ApplyModule() error = %v, want context.Canceled", result.Err)
+	}
+	if !compensated {
+		t.Fatal("cancellation committed without compensation")
+	}
+	if result.Applied != 0 || result.RolledBack != 1 {
+		t.Fatalf("ModuleResult = %+v, want one rolled-back item", result)
+	}
+}
+
 func TestApplyModuleAtomicRollbackUsesFreshContext(t *testing.T) {
 	type contextKey string
 	const key contextKey = "rollback-value"

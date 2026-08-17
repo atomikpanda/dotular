@@ -369,6 +369,10 @@ func (r *Runner) applyAtomicModule(ctx context.Context, mod config.Module) (resu
 		finished = true
 		return r.failAtomicModule(ctx, mod.Name, transaction, result, err)
 	}
+	if err := ctx.Err(); err != nil {
+		finished = true
+		return r.failAtomicModule(ctx, mod.Name, transaction, result, err)
+	}
 
 	if err := transaction.commit(); err != nil {
 		r.UI.Warn(fmt.Sprintf("[rollback] committed module %q cleanup failed: %v", mod.Name, err))

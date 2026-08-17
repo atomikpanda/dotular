@@ -41,11 +41,17 @@ type FileAction struct {
 	Permissions string // Unix octal string, e.g. "0600"
 	Encrypted   bool
 	AgeKey      *ageutil.Key // required when Encrypted is true
+
+	resolvedTarget string
+	targetResolved bool
 }
 
 // ResolvedTarget returns the fully expanded destination file path.
 // See ResolveFileTarget for the resolution rules; the scanner shares it.
 func (a *FileAction) ResolvedTarget() string {
+	if a.targetResolved {
+		return a.resolvedTarget
+	}
 	return ResolveFileTarget(a.Destination, filepath.Base(a.Source), platform.ExpandPath, OSIsDir)
 }
 
@@ -71,19 +77,23 @@ func (a *FileAction) EffectiveDirection() string {
 // WritePaths implements PathWriter. Push and link write the system target, pull
 // writes the repo copy, and sync may write either, so both sides are declared.
 func (a *FileAction) WritePaths() []string {
+	target := a.ResolvedTarget()
+	a.resolvedTarget = target
+	a.targetResolved = true
+
 	repo := a.Source
 	if a.Encrypted {
 		repo = ageutil.RepoPath(a.Source)
 	}
 	switch {
 	case a.Link:
-		return []string{a.ResolvedTarget()}
+		return []string{target}
 	case a.Direction == "pull":
 		return []string{repo}
 	case a.Direction == "sync":
-		return []string{a.ResolvedTarget(), repo}
+		return []string{target, repo}
 	default:
-		return []string{a.ResolvedTarget()}
+		return []string{target}
 	}
 }
 
