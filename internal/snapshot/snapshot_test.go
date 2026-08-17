@@ -332,6 +332,60 @@ func TestRecordMissingPathOwnsHighestMissingAncestor(t *testing.T) {
 	}
 }
 
+func TestRestoreMissingPathUsesCapturedSymlinkParentTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only")
+	}
+
+	root := t.TempDir()
+	capturedParent := t.TempDir()
+	replacementParent := t.TempDir()
+	link := filepath.Join(root, "parent")
+	if err := os.Symlink(capturedParent, link); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(link, "created", "tool")
+
+	snap, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Discard()
+	if err := snap.Record(target); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("installed"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(replacementParent, link); err != nil {
+		t.Fatal(err)
+	}
+	replacementTarget := filepath.Join(replacementParent, "created", "tool")
+	if err := os.MkdirAll(filepath.Dir(replacementTarget), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(replacementTarget, []byte("pre-existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := snap.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(capturedParent, "created")); !os.IsNotExist(err) {
+		t.Errorf("captured created root still exists after restore: %v", err)
+	}
+	if data, err := os.ReadFile(replacementTarget); err != nil || string(data) != "pre-existing" {
+		t.Errorf("replacement symlink target = %q, %v; want pre-existing data untouched", data, err)
+	}
+}
+
 func TestRecordMissingPathsDeduplicatesSharedCreatedAncestor(t *testing.T) {
 	existingParent := t.TempDir()
 	createdRoot := filepath.Join(existingParent, "created")

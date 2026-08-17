@@ -99,7 +99,15 @@ func highestMissingAncestor(path string) (string, error) {
 	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
 		_, err := os.Lstat(parent)
 		if err == nil {
-			return missing, nil
+			resolvedParent, err := filepath.EvalSymlinks(parent)
+			if err != nil {
+				return "", err
+			}
+			relative, err := filepath.Rel(parent, missing)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(resolvedParent, relative), nil
 		}
 		if !os.IsNotExist(err) {
 			return "", err
