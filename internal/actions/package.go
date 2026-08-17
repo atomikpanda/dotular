@@ -315,7 +315,7 @@ func parseBrewState(pkg, output string) (packageState, error) {
 	if ambiguousName != "" {
 		return packageStateUnknown, fmt.Errorf("Homebrew identity %q may refer to installed package %q", pkg, ambiguousName)
 	}
-	return packageStateUnknown, fmt.Errorf("Homebrew cannot prove absent identity %q without canonical alias resolution", pkg)
+	return packageStateAbsent, nil
 }
 
 func parsePacmanState(pkg, output string) (packageState, error) {

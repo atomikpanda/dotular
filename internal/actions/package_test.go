@@ -182,24 +182,22 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 		absenceUnavailable bool
 	}{
 		{
-			manager:            "brew",
-			pkg:                "foo",
-			query:              []string{"brew", "list", "--formula", "--full-name"},
-			uninstall:          []string{"brew", "uninstall", "foo"},
-			prefixOutput:       "foobar\n",
-			presentOutput:      "foobar\nfoo\n",
-			malformedOutput:    string([]byte{0xff}),
-			absenceUnavailable: true,
+			manager:         "brew",
+			pkg:             "foo",
+			query:           []string{"brew", "list", "--formula", "--full-name"},
+			uninstall:       []string{"brew", "uninstall", "foo"},
+			prefixOutput:    "foobar\n",
+			presentOutput:   "foobar\nfoo\n",
+			malformedOutput: string([]byte{0xff}),
 		},
 		{
-			manager:            "brew-cask",
-			pkg:                "foo",
-			query:              []string{"brew", "list", "--cask", "--full-name"},
-			uninstall:          []string{"brew", "uninstall", "--cask", "foo"},
-			prefixOutput:       "foobar\n",
-			presentOutput:      "foobar\nfoo\n",
-			malformedOutput:    string([]byte{0xff}),
-			absenceUnavailable: true,
+			manager:         "brew-cask",
+			pkg:             "foo",
+			query:           []string{"brew", "list", "--cask", "--full-name"},
+			uninstall:       []string{"brew", "uninstall", "--cask", "foo"},
+			prefixOutput:    "foobar\n",
+			presentOutput:   "foobar\nfoo\n",
+			malformedOutput: string([]byte{0xff}),
 		},
 		{
 			manager:         "mas",
@@ -426,6 +424,36 @@ func TestPackageCompensationManagerMatrix(t *testing.T) {
 					t.Fatalf("canceled state made %d calls, want fail-fast without a query", len(executor.calls))
 				}
 			})
+		})
+	}
+}
+
+func TestPackageCompensationBrewEmptyInventoryIsAbsent(t *testing.T) {
+	tests := []struct {
+		manager   string
+		uninstall []string
+	}{
+		{manager: "brew", uninstall: []string{"brew", "uninstall", "foo"}},
+		{manager: "brew-cask", uninstall: []string{"brew", "uninstall", "--cask", "foo"}},
+	}
+	for _, test := range tests {
+		t.Run(test.manager, func(t *testing.T) {
+			executor := &recordingPackageExecutor{results: []packageCommandResult{{}, {}}}
+			action := &PackageAction{Package: "foo", Manager: test.manager, executor: executor.execute}
+
+			preparation, err := action.PrepareCompensation(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if preparation.AlreadyApplied || preparation.Compensation == nil || preparation.UnavailableReason != "" {
+				t.Fatalf("empty inventory preparation = %#v, want exact compensation", preparation)
+			}
+			if err := preparation.Compensation.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := executor.calls[1].args; !reflect.DeepEqual(got, test.uninstall) {
+				t.Fatalf("uninstall args = %#v, want %#v", got, test.uninstall)
+			}
 		})
 	}
 }
@@ -953,11 +981,11 @@ func TestPackageCompensationAmbiguousIdentitySafety(t *testing.T) {
 			wantUnknown: true,
 		},
 		{
-			name:        "brew_non_version_alias_is_unknown_without_canonical_resolution",
-			manager:     "brew",
-			pkg:         "gpg",
-			output:      "gnupg\n",
-			wantUnknown: true,
+			name:       "brew_nonmatching_inventory_name_is_absent",
+			manager:    "brew",
+			pkg:        "gpg",
+			output:     "gnupg\n",
+			wantAbsent: true,
 		},
 		{
 			name:        "rpm_unresolved_version_like_target_is_unknown",

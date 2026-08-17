@@ -151,15 +151,18 @@ func restoreSaved(record savedRecord) error {
 	}
 }
 
-// restoreFile writes a saved regular file back to dest. If the apply replaced
-// dest with a symlink (a link item does exactly that), the link is removed
-// first: writing through it would overwrite its target — typically the repo-side
-// copy the link points at — instead of restoring dest.
+// restoreFile writes a saved regular file back to dest. A non-regular
+// replacement is removed first: writing through a symlink would overwrite its
+// target, while copying over a directory cannot recreate the captured file.
 func restoreFile(tmp, dest string) error {
-	if info, err := os.Lstat(dest); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		if err := os.Remove(dest); err != nil {
-			return fmt.Errorf("remove symlink at destination: %w", err)
+	info, err := os.Lstat(dest)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		if err := os.RemoveAll(dest); err != nil {
+			return fmt.Errorf("remove non-regular destination: %w", err)
 		}
+	case err != nil && !os.IsNotExist(err):
+		return fmt.Errorf("inspect destination: %w", err)
 	}
 	return fsutil.CopyFile(tmp, dest)
 }

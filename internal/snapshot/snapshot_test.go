@@ -58,6 +58,49 @@ func TestRecordExistingFileAndRestore(t *testing.T) {
 	}
 }
 
+func TestRecordFileRestoresOverReplacementDirectory(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Discard()
+	if err := snap.Record(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "replacement"), []byte("directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := snap.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("restored mode = %v, want regular file", info.Mode())
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(content); got != "original" {
+		t.Fatalf("restored content = %q, want original", got)
+	}
+}
+
 func TestRecordNonExistentFile(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "newfile.txt")
